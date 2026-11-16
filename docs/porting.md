@@ -227,11 +227,61 @@ so the mod never calls the game for them) into `<mod dir>/mod.elf`. It
 needs clang, ld.lld and llvm-nm. The image is linked at the region's
 base, or at `--origin` (hex, 16-byte aligned, in the region) for a second
 mod that loads with the first. The build fails when the mod defines a name
-`mod_api.h` gives a game function or the runtime (the script's address would win over the
-mod's own definition, silently), when a loaded section is not one `mod.ld`
+`mod_api.h` gives a game function or the runtime (the script's address
+would win over the mod's own definition, silently), when a loaded section is not one `mod.ld`
 places (`--orphan-handling=error`), and when the image runs past the
 region's guard word and stack. An overlay file too short for its id word
 is an error.
+
+A PS1 mod can be Odin instead: `.odin` files in the mod directory are one
+package, built against `game/game.odin` (written beside `mod_api.h`),
+which it imports as `"api:game"`. Each game function is a `game.Fn` named
+as `mod_api.h` names it, called through a proc type the mod gives it
+(`game.call(proc "c" (u32) -> u32, game.ram_80012345)(x)`); a hook is a
+global `game.Hook(type_of(fn)){kind, target, fn}` marked
+`@(export, link_section = ".mod_hooks")`, and
+`game.original` is `mod_call_original`. Odin has no MIPS target, so
+build.sh compiles the package to LLVM IR for 32-bit ARM (little endian,
+32-bit pointers, as the R3000), with no entry point, allocator, RTTI or
+thread locals, retargets the IR to mipsel, compiles it with llc
+(`-mcpu=mips1`, soft float) and links it as a C mod, `--gc-sections`
+dropping what the runtime adds and the mod does not use. It needs odin
+and llc too. The code runs on no Odin runtime: no `context`, no
+allocator, no startup code. The IR follows the ARM ABI, so a hook or a
+`game.call` passes and returns integers and pointers only. A global whose
+initializer Odin cannot place at link time (inside a struct, a `rawptr`
+of a proc or the address of a variable) is set by startup code the mod
+does not run; build.sh compiles the package once unoptimized, one module
+per package, to find those stores, and fails naming the global. C and
+Odin files can share a mod.
+
+A mod's settings are ints the user picks. In C, `MOD_SETTING(var, def,
+min, max, step, label)` defines `struct mod_setting var` in
+`.mod_settings`, whose `var.value` the mod reads; in Odin, a global
+`game.Setting{def, min, max, step, "name", "label"}` marked
+`@(export, link_section = ".mod_settings")`. A record is six words: the value (the
+ELF's is the default), the range and step, and the addresses of the name
+and label strings in the image. A default outside the range, or a step
+below 1, fails a C build. `mod_elf_read` gives them as
+`Mod_Image.settings`, in declaration order, each with its record's
+address, and refuses a bad range or step, strings not in the image's
+file bytes, a name that is not a C identifier, or a name that repeats. The user's
+values are in `settings.tsv` in the mods directory, beside `mods.tsv`:
+lines of a mod id, a setting's name and a decimal value, tab separated.
+A setting without a line has its default. A line for a mod not loaded is
+kept for when it is; a malformed line, an unknown setting or a value out
+of range gets a warning and is skipped. After the images load, the
+console writes each value over its record's value word in the region
+(`core.mod_values_write`), so the mod's code reads it as any global.
+Values take effect at boot. `core.run_settings` lists the loaded mods'
+settings (load order, then declaration order) with the value the run uses
+and the one saved, for a port's menu; `core.mod_setting_save` writes a
+new value to `settings.tsv` for the next run, keeping the other lines,
+with no line for a default. `core.run_mods`, which input records and
+netplay carry, is `core.mod_run_hash`: `mod_set_hash` while every value
+is its default, otherwise a hash of it and every value off its default.
+The mods blob stays keyed by `mod_set_hash`, so a changed value does not
+compile it again.
 
 A PS2 mod's API comes the same way from an EE options file (`exe`, and
 `disc`): its functions are the ones recomp finds, in one space, `ram`,

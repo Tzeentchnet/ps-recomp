@@ -2,7 +2,8 @@
  *
  * The image goes at MOD_ORIGIN (mods/build.sh --origin; the mod region's
  * base by default) and must end before the region's guard word and stack.
- * .mod_hooks is not loaded: the runtime reads it from the ELF. Each game
+ * .mod_settings is loaded, as the runtime writes the settings' values into
+ * it; .mod_hooks is not, the runtime reads it from the ELF. Each game
  * function is a symbol at its address, and mod_call_original is the
  * runtime's. */
 
@@ -35,6 +36,7 @@ SECTIONS {
 	.rodata : { *(.rodata .rodata.*) }
 	.data : { *(.data .data.* .sdata .sdata.*) }
 	.got : { *(.got) }
+	.mod_settings : { KEEP(*(.mod_settings)) }
 	.bss : { *(.bss .bss.* .sbss .sbss.* COMMON) }
 	mod_end = .;
 	.mod_hooks 0 (INFO) : { KEEP(*(.mod_hooks)) }

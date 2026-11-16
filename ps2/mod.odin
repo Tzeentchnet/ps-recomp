@@ -171,6 +171,7 @@ mods_load :: proc(set: core.Mod_Set) -> (err: string) {
 	who := make([]string, len(set.mods), context.temp_allocator)
 	for m, k in set.mods {who[k] = m.id}
 	if err = mem.mod_ram_load(set.images, who); err != "" {return}
+	core.mod_values_write(set, mem.mod_ram, mem.MOD_BASE)
 	chains: []core.Mod_Chain
 	if chains, err = core.mod_chains(set.mods, set.order, set.hooks, core.long_allocator()); err != "" {return}
 	return mod_install(set.mods, chains, kernel.k.exec.boot_prog)

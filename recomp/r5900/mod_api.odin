@@ -44,16 +44,16 @@ mod_api_load :: proc(o: mips.Options) -> (spaces: []mips.Mod_Api_Space, rows: []
 // Write the API of the program o names into out.
 mod_api_write :: proc(o: mips.Options, out: string) {
 	spaces, rows := mod_api_load(o)
-	header, script, skips, err := mod_api(spaces, rows)
+	header, script, game, skips, err := mod_api(spaces, rows)
 	if err != "" {
 		mips.fail("%s: %s", o.path, err)
 	}
-	mips.mod_api_files(out, header, script)
+	mips.mod_api_files(out, header, script, game)
 	fmt.printfln("mod api: %d functions, %d not in the image, program %08x", len(rows), skips.outside, spaces[0].id)
 }
 
 // The header and linker script for rows (mips.mod_api).
-mod_api :: proc(spaces: []mips.Mod_Api_Space, rows: []mips.Mod_Api_Row) -> (header, script: string, skips: mips.Mod_Api_Skips, err: string) {
+mod_api :: proc(spaces: []mips.Mod_Api_Space, rows: []mips.Mod_Api_Row) -> (header, script, game: string, skips: mips.Mod_Api_Skips, err: string) {
 	return mips.mod_api(TARGET, spaces, rows)
 }
 

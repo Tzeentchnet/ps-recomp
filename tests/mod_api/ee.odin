@@ -103,8 +103,8 @@ ee :: proc(tmp: string, update: bool) {
 	check(fmt.tprint(entries) == fmt.tprint([]u32{EE_TEXT, EE_TEXT + 0x20, EE_TEXT + 0x40}), fmt.tprintf("ee functions %x", entries))
 	kernel.exec_boot_program(elf)
 	check(spaces[0].id == kernel.k.exec.boot_prog, fmt.tprintf("ee id %08x, the kernel's %08x", spaces[0].id, kernel.k.exec.boot_prog))
-	header, script, skips, err := r5900.mod_api(spaces, rows)
-	check(err == "" && skips == {}, fmt.tprint("ee", err, skips))
+	header, script, game, skips, err := r5900.mod_api(spaces, rows)
+	check(err == "" && skips == {} && game == "", fmt.tprint("ee", err, skips, "game.odin", len(game)))
 	if update {
 		write(EE_DIR, "mod_api.h", transmute([]u8)header)
 		write(EE_DIR, "mod.ld", transmute([]u8)script)
@@ -116,7 +116,7 @@ ee :: proc(tmp: string, update: bool) {
 	check(script == string(golden_ld), "ee mod.ld is the golden one")
 
 	ps, prows := r5900.mod_api_load(mips.load_options(join({dir, "patched.tsv"})))
-	h2, ld2, _, _ := r5900.mod_api(ps, prows)
+	h2, ld2, _, _, _ := r5900.mod_api(ps, prows)
 	check(h2 == header && ld2 == script, "ee: a words patch changes no key")
 
 	ee_hooked_blob(dir)

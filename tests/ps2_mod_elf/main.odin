@@ -227,8 +227,8 @@ api_and_build :: proc(elf: []u8, update: bool) {
 	write(tmp, "game.elf", elf)
 	write(tmp, "options.tsv", transmute([]u8)fmt.tprintf("key\tvalue\nbackend\tr5900\nexe\t%s\nquiet\ttrue\n", join({tmp, "game.elf"})))
 	spaces, rows := r5900.mod_api_load(mips.load_options(join({tmp, "options.tsv"})))
-	header, script, skips, err := r5900.mod_api(spaces, rows)
-	check(err == "" && skips == {} && len(rows) == 5, fmt.tprint("api:", err, skips, len(rows)))
+	header, script, game, skips, err := r5900.mod_api(spaces, rows)
+	check(err == "" && skips == {} && len(rows) == 5 && game == "", fmt.tprint("api:", err, skips, len(rows), "game.odin", len(game)))
 	if update {
 		write(DIR + "/api", "mod_api.h", transmute([]u8)header)
 		write(DIR + "/api", "mod.ld", transmute([]u8)script)

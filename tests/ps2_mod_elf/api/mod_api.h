@@ -45,6 +45,25 @@ struct mod_hook {
 #define MOD_AFTER(target, fn) MOD_HOOK_(1, target, fn)
 #define MOD_REPLACE(target, fn) MOD_HOOK_(2, target, fn)
 
+// A .mod_settings record (core/mod_elf.odin), loaded with the mod: the
+// setting's value, least and greatest values and step, its name and its
+// label. The value the ELF gives is the default.
+struct mod_setting {
+	int value, min, max, step;
+	const char *name, *label;
+};
+
+// Define var, a setting the user picks: var.value is def until the mods
+// directory's settings.tsv gives another value in min..max, which the
+// runtime writes into it before the game starts. A port's menu shows label
+// and moves the value by step; a 0..1 setting is a switch. var is the
+// setting's name.
+#define MOD_SETTING(var, def, min, max, step, label) \
+	_Static_assert((min) <= (def) && (def) <= (max) && (step) >= 1, \
+		"mod: setting " #var ": def outside min..max, or step below 1"); \
+	__attribute__((section(".mod_settings"), used, aligned(4))) \
+	struct mod_setting var = {def, min, max, step, #var, label}
+
 typedef unsigned long long u64;
 
 // From a replacement: run the function it replaces, without its hooks, on

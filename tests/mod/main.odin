@@ -6,6 +6,12 @@
 // replacements of one function are an error naming both mods. The hooked
 // set's hash is the same in the runtime (core) and the recompiler
 // (recomp/mips), and pinned: code built for a set names it by that value.
+// Settings: settings.tsv gives values in range to settings of loaded mods,
+// skips the rest and keeps defaults; the run's hash is the set's while
+// every value is its default and changes with any other; mods_note lists
+// the settings in load order; mod_setting_save rewrites settings.tsv,
+// keeping other mods' lines and dropping a default's, and refuses a value
+// out of range; mod_values_write puts the values at their variables.
 package main
 
 import "core:fmt"
@@ -203,11 +209,70 @@ slice_clone :: proc(a: []u32) -> []u32 {
 	return b
 }
 
+test_settings :: proc() {
+	tmp, terr := os.make_directory_temp("", "ps_mod_test_*", context.allocator)
+	if terr != nil {
+		check(false, fmt.tprint("temp directory:", terr))
+		return
+	}
+	defer os.remove_all(tmp)
+	path := fmt.tprintf("%s/settings.tsv", tmp)
+	mods := []core.Mod_Manifest{mod("a"), mod("b")}
+	BASE :: u32(0x1f40_0000)
+	a_set := []core.Mod_Setting {
+		{addr = BASE + 0x10, def = 1, min = 0, max = 1, step = 1, name = "on", label = "On"},
+		{addr = BASE + 0x14, def = 128, min = 0, max = 1024, step = 16, name = "rate", label = "Rate"},
+	}
+	b_set := []core.Mod_Setting{{addr = BASE + 0x20, def = 0, min = -8, max = 8, step = 1, name = "bias", label = "Bias"}}
+	images := []core.Mod_Image{{settings = a_set}, {settings = b_set}}
+	set := core.Mod_Set{mods = mods, order = {1, 0}, tsv = {nil, nil}, elf = {nil, nil}, images = images, settings = path}
+
+	// No file: defaults, and the run's hash is the set's.
+	values, err := core.mod_values_read(path, mods, images)
+	check(err == "" && values[0][0] == 1 && values[0][1] == 128 && values[1][0] == 0, "no settings.tsv: defaults")
+	set.values = values
+	code := core.mod_set_hash(set)
+	check(core.mod_run_hash(set) == code, "defaults: the set's hash")
+
+	text := "# values\na\trate\t512\nc\tgone\t3\nb\tbias\t9\na\tnone\t1\nb\tbias\nb\tbias\t-x\nb\tbias\t-2\r\n"
+	check(os.write_entire_file(path, transmute([]u8)text) == nil, "write settings.tsv")
+	values, err = core.mod_values_read(path, mods, images)
+	check(err == "" && values[0][0] == 1 && values[0][1] == 512 && values[1][0] == -2, fmt.tprint("settings.tsv values:", values))
+	set.values = values
+	h := core.mod_run_hash(set)
+	check(h != code && h != 0, "a changed value changes the run's hash")
+	check(core.mod_run_hash(set) == h, "the run's hash is stable")
+	values[1][0] = -3
+	check(core.mod_run_hash(set) != h, "another value, another hash")
+	values[1][0] = -2
+
+	core.mods_note(set, "test")
+	check(core.run_mods == h, "mods_note: run_mods is the run's hash")
+	rs := core.run_settings
+	check(len(rs) == 3 && rs[0].mod == "b" && rs[0].name == "bias" && rs[0].value == -2 && rs[1].name == "on" && rs[2].name == "rate" && rs[2].value == 512 && rs[2].step == 16 && rs[2].label == "Rate", fmt.tprint("run_settings:", rs))
+
+	check(core.mod_setting_save(2, 2000) != "", "save out of range refused")
+	check(core.mod_setting_save(2, 128) == "" && core.run_settings[2].saved == 128 && core.run_settings[2].value == 512, "save rate at its default")
+	check(core.mod_setting_save(1, 0) == "", "save on 0")
+	saved, _ := os.read_entire_file(path, context.temp_allocator)
+	want := "# values\nc\tgone\t3\nb\tbias\t9\na\tnone\t1\nb\tbias\nb\tbias\t-x\nb\tbias\t-2\na\ton\t0\n"
+	check(string(saved) == want, fmt.tprintf("saved settings.tsv: %q", string(saved)))
+
+	ram := make([]u8, 0x40, context.temp_allocator)
+	core.mod_values_write(set, ram, BASE)
+	word :: proc(ram: []u8, at: int) -> i32 {return i32((^i32le)(&ram[at])^)}
+	check(word(ram, 0x10) == 1 && word(ram, 0x14) == 512 && word(ram, 0x20) == -2, "mod_values_write")
+
+	core.mods_note({}, "test")
+	check(core.run_mods == 0 && len(core.run_settings) == 0, "no mods: no settings")
+}
+
 main :: proc() {
 	test_manifest()
 	test_order()
 	test_chains()
 	test_hooks_hash()
+	test_settings()
 	free_all(context.temp_allocator)
 	if failed != 0 {os.exit(1)}
 	fmt.println("ok mod")

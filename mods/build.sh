@@ -1,8 +1,8 @@
 #!/bin/sh
-# Build a mod's C into <mod dir>/mod.elf, against a game's mod API (the
-# directory `recomp --mod-api` wrote: mod_api.h and mod.ld). The console is
-# the one mod_api.h names: `#define MOD_ARCH r5900` an EE mod, none a PS1
-# mod.
+# Build a mod's C or Odin into <mod dir>/mod.elf, against a game's mod API
+# (the directory `recomp --mod-api` wrote: mod_api.h, mod.ld and, for the
+# PS1, game/game.odin). The console is the one mod_api.h names:
+# `#define MOD_ARCH r5900` an EE mod, none a PS1 mod.
 #
 #   mods/build.sh <api dir> <mod dir> [--origin <hex>]
 #
@@ -10,6 +10,20 @@
 # memmove, memcmp, which clang may call for struct copies: they must be the
 # mod's own, not the game's). Needs clang, ld.lld and llvm-nm, and for the
 # EE llvm-objdump.
+#
+# When the mod dir has *.odin files they are one package, built with the
+# API's game package as "api:game" (PS1 only; needs odin and llc too).
+# Odin has no MIPS target: the package is compiled to LLVM IR for 32-bit
+# ARM, little endian with 32-bit pointers as the R3000, with no runtime
+# (no entry point, context or allocator), retargeted to mipsel and
+# compiled with llc, and linked with --gc-sections, which drops what the
+# runtime adds and the mod does not use (.mod_hooks and .mod_settings are
+# kept, and what they reach). The IR is the ARM ABI's, so at the game's
+# boundary (hooks, game.call) pass and return integers and pointers only,
+# no struct by value. A global whose initializer Odin cannot place at link
+# time is set by its startup code, which a mod does not run: the build
+# fails, naming it (build.sh compiles once unoptimized to see that code).
+# The string literals Odin puts in a global's link_section go to .rodata.
 #
 # The mod is linked at the mod region's base, or at --origin (hex, 16-byte
 # aligned, in the region; mod.ld checks it): two mods loaded together must
@@ -57,14 +71,32 @@ fi
 	echo "mods/build.sh: $api has no mod_api.h and mod.ld (recomp --mod-api writes them)" >&2
 	exit 1
 }
+odin=
+for f in "$dir"/*.odin; do
+	[ -f "$f" ] && odin=1
+done
 if grep -qx '#define MOD_ARCH r5900' "$api/mod_api.h"; then
 	arch=r5900
 	tools="clang ld.lld llvm-nm llvm-objdump"
 	set -- --target=mips64el-elf -march=mips3 -mabi=n32 -msingle-float -mno-check-zero-division
+	[ -z "$odin" ] || {
+		echo "mods/build.sh: $dir has .odin files: Odin mods are PS1 only" >&2
+		exit 1
+	}
 else
 	arch=r3000
 	tools="clang ld.lld llvm-nm"
 	set -- --target=mipsel-elf -march=mips1 -mabi=32
+fi
+if [ -n "$odin" ]; then
+	# llc makes soft-float code, so the R3000 gets no FPU instruction; the
+	# C must have the same float ABI to link with it.
+	set -- "$@" -msoft-float
+	tools="$tools odin llc"
+	[ -f "$api/game/game.odin" ] || {
+		echo "mods/build.sh: $api has no game/game.odin (recomp --mod-api writes it)" >&2
+		exit 1
+	}
 fi
 for tool in $tools; do
 	command -v $tool >/dev/null 2>&1 || {
@@ -90,10 +122,46 @@ for c in "$dir"/*.c "$here/rt.c"; do
 		exit 1
 	}
 done
-[ $n -gt 1 ] || {
-	echo "mods/build.sh: no .c files in $dir" >&2
+if [ -n "$odin" ]; then
+	# odin_ir <-o: mode> [flag]: the package's IR in $obj/<mode>.
+	odin_ir() {
+		mkdir -p "$obj/$1"
+		odin build "$dir" -collection:api="$api" -target:freestanding_arm32 -build-mode:llvm-ir \
+			-no-entry-point -default-to-nil-allocator -no-rtti -no-thread-local \
+			-o:"$1" -out:"$obj/$1" ${2:-} >&2 || exit 1
+	}
+	# One module per package, unoptimized: only that IR keeps a package's
+	# startup code (a single module drops it, leaving the global zero).
+	odin_ir none
+	# Each global a package's startup code stores to; "?" when it has
+	# startup code but no plain store to name.
+	late=$(awk '
+		/^define .*@"__\$startup_runtime\$[0-9]+"/ { on = 1; seen = 1; next }
+		on && /^}/ { on = 0 }
+		on && /store / && match($0, /, ptr @[^ ,]+/) {
+			g = substr($0, RSTART + 7, RLENGTH - 7); gsub(/"/, "", g); print g; named = 1
+		}
+		END { if (seen && !named) print "?" }
+	' "$obj"/none/*.ll | sort -u)
+	[ -z "$late" ] || {
+		for g in $late; do
+			echo "mods/build.sh: global $g needs Odin's startup code, which a mod does not run, to be set: give it a constant initializer (a proc of its own type, not rawptr; no address of a variable inside a struct)" >&2
+		done
+		exit 1
+	}
+	odin_ir speed -use-single-module
+	sed -e 's/^target datalayout = .*/target datalayout = "e-m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64"/' \
+		-e 's/^target triple = .*/target triple = "mipsel-unknown-none-elf"/' \
+		-e 's/"target-cpu"="[^"]*"//g' -e 's/"target-features"="[^"]*"//g' \
+		-e '/^@[^ ]* = private unnamed_addr constant \[/s/, section "[^"]*"//' \
+		"$obj/speed/.ll" >"$obj/mod.ll"
+	llc -O2 -mtriple=mipsel-unknown-none-elf -mcpu=mips1 -mattr=+soft-float,+noabicalls \
+		-relocation-model=static -mips-ssection-threshold=0 -function-sections -data-sections \
+		-filetype=obj "$obj/mod.ll" -o "$obj/odin.o"
+elif [ $n -lt 2 ]; then
+	echo "mods/build.sh: no .c or .odin files in $dir" >&2
 	exit 1
-}
+fi
 # The mod's own global names, against every name mod.ld gives an address.
 LC_ALL=C
 export LC_ALL
@@ -107,6 +175,7 @@ clash=$(comm -12 "$obj/game" "$obj/own")
 	exit 1
 }
 set -- -T "$api/mod.ld" --orphan-handling=error -o "$dir/mod.elf"
+[ -z "$odin" ] || set -- "$@" --gc-sections
 [ -z "$origin" ] || set -- "$@" --defsym=MOD_ORIGIN="$origin"
 ld.lld "$@" "$obj"/*.o
 [ $arch = r5900 ] || exit 0

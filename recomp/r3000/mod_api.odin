@@ -1,6 +1,7 @@
 // The mod API of a PS1 program: `recomp --mod-api <options.tsv> <out dir>`
 // writes <out dir>/mod_api.h and <out dir>/mod.ld, what a mod's C is built
-// against (mods/build.sh). It reads the options' exe, overlays and funcs and
+// against (mods/build.sh), and <out dir>/game/game.odin, the package an
+// Odin mod imports. It reads the options' exe, overlays and funcs and
 // compiles nothing.
 //
 // Each funcs.tsv row is a function (recomp/mips/mod_api.odin); its spaces
@@ -54,16 +55,16 @@ mod_api_write :: proc(o: mips.Options, out: string) {
 	if lerr != "" {
 		mips.fail("%s: %s", o.path, lerr)
 	}
-	header, script, skips, err := mod_api(spaces, rows)
+	header, script, game, skips, err := mod_api(spaces, rows)
 	if err != "" {
 		mips.fail("%s: %s", mips.option(o, "funcs"), err)
 	}
-	mips.mod_api_files(out, header, script)
+	mips.mod_api_files(out, header, script, game)
 	fmt.printfln("mod api: %d rows, %d not in their image, %d names not aliases", len(rows), skips.outside, skips.names)
 }
 
 // The header and linker script for rows (mips.mod_api).
-mod_api :: proc(spaces: []Mod_Api_Space, rows: []Mod_Api_Row) -> (header, script: string, skips: Mod_Api_Skips, err: string) {
+mod_api :: proc(spaces: []Mod_Api_Space, rows: []Mod_Api_Row) -> (header, script, game: string, skips: Mod_Api_Skips, err: string) {
 	return mips.mod_api(TARGET, spaces, rows)
 }
 
@@ -76,6 +77,7 @@ TARGET :: mips.Mod_Api_Target {
 	base      = MOD_BASE,
 	image_end = MOD_IMAGE_END,
 	original  = MOD_ORIGINAL,
+	odin      = true,
 }
 
 @(private = "file")

@@ -7,6 +7,12 @@
 // 2 replace), the hooked function's key (slot, id, addr, sig[4]) and the
 // mod function's address, which must be in one of the ELF's segments.
 //
+// .mod_settings is loaded with the image, word aligned. Its record is six
+// words: the setting's value (the default as the ELF gives it; the runtime
+// writes the user's over it), its least and greatest values, its step, and
+// its name and label, each the address of a NUL-terminated string in a
+// segment's file bytes. Names are unique in a mod.
+//
 // The ELF's .symtab names the mod's functions: each STT_FUNC symbol with a
 // size, word aligned, in an executable segment's file bytes. They are what
 // play compiles to native code (psx/native/mods.odin); an ELF without a
@@ -31,6 +37,15 @@ Mod_Func :: struct {
 	bytes: []u8,
 }
 
+// A setting from .mod_settings: an int at addr (its record's value word)
+// the user picks, def until set, in [min, max], step apart in a menu. name
+// and label slice the ELF.
+Mod_Setting :: struct {
+	addr:                u32,
+	def, min, max, step: i32,
+	name, label:         string,
+}
+
 // A mod's code. lo and hi bound its segments, physical addresses (the low
 // 29 bits); segments and hooks are in the read's allocator, and bytes slice
 // the ELF, as do the funcs, sorted by address, one per address.
@@ -39,9 +54,14 @@ Mod_Image :: struct {
 	segments: []Mod_Segment,
 	hooks:    []Mod_Hook,
 	funcs:    []Mod_Func,
+	settings: []Mod_Setting,
 }
 
 MOD_HOOK_WORDS :: 9
+MOD_SETTING_WORDS :: 6
+// Longest setting name and label, in bytes.
+MOD_SETTING_NAME_MAX :: 64
+MOD_SETTING_LABEL_MAX :: 128
 
 @(private = "file")
 ELF_LOAD :: 1
@@ -106,8 +126,9 @@ mod_elf_read :: proc(elf: []u8, lo, hi: u32, mod: int, allocator := context.allo
 	}
 	img.segments = segs[:]
 
-	// .mod_hooks, found by name, and the symbol table.
-	hooks, syms: []u8
+	// .mod_hooks and .mod_settings, found by name, and the symbol table.
+	hooks, settings, syms: []u8
+	settings_addr: u32
 	if shnum != 0 {
 		names_at := shoff + shstr * shsize
 		names_off, names_size := u32_at(elf, names_at + 16), u32_at(elf, names_at + 20)
@@ -116,6 +137,9 @@ mod_elf_read :: proc(elf: []u8, lo, hi: u32, mod: int, allocator := context.allo
 			return {}, "bad section names"
 		}
 		names := elf[names_off:][:names_size]
+		named :: proc(names: []u8, at: u32, want: string) -> bool {
+			return u64(at) + u64(len(want)) < u64(len(names)) && string(names[at:][:len(want)]) == want && names[at + u32(len(want))] == 0
+		}
 		for k in 0 ..< shnum {
 			sh := shoff + k * shsize
 			if u32_at(elf, sh + 4) == ELF_SYMTAB && syms == nil {
@@ -128,15 +152,21 @@ mod_elf_read :: proc(elf: []u8, lo, hi: u32, mod: int, allocator := context.allo
 				continue
 			}
 			name := u32_at(elf, sh)
-			if u64(name) + len(".mod_hooks") >= u64(names_size) || string(names[name:][:len(".mod_hooks") + 1]) != ".mod_hooks\x00" {
-				continue
-			}
 			off, size := u32_at(elf, sh + 16), u32_at(elf, sh + 20)
-			if u64(off) + u64(size) > u64(n) || size % (MOD_HOOK_WORDS * 4) != 0 {
-				mod_image_delete(img, allocator)
-				return {}, "bad .mod_hooks section"
+			if named(names, name, ".mod_hooks") {
+				if u64(off) + u64(size) > u64(n) || size % (MOD_HOOK_WORDS * 4) != 0 {
+					mod_image_delete(img, allocator)
+					return {}, "bad .mod_hooks section"
+				}
+				hooks = elf[off:][:size]
+			} else if named(names, name, ".mod_settings") {
+				if u64(off) + u64(size) > u64(n) || size % (MOD_SETTING_WORDS * 4) != 0 {
+					mod_image_delete(img, allocator)
+					return {}, "bad .mod_settings section"
+				}
+				settings = elf[off:][:size]
+				settings_addr = u32_at(elf, sh + 12)
 			}
-			hooks = elf[off:][:size]
 		}
 	}
 	img.funcs = mod_elf_funcs(img.segments, syms, allocator)
@@ -162,7 +192,77 @@ mod_elf_read :: proc(elf: []u8, lo, hi: u32, mod: int, allocator := context.allo
 			return {}, e
 		}
 	}
+	if e := mod_elf_settings(&img, settings, settings_addr, allocator); e != "" {
+		mod_image_delete(img, allocator)
+		return {}, e
+	}
 	return img, ""
+}
+
+// img.settings from the .mod_settings records in b, linked at at. err is in
+// the temp allocator.
+@(private = "file")
+mod_elf_settings :: proc(img: ^Mod_Image, b: []u8, at: u32, allocator := context.allocator) -> (err: string) {
+	u32_at :: proc(b: []u8, at: u32) -> u32 {
+		return u32(b[at]) | u32(b[at + 1]) << 8 | u32(b[at + 2]) << 16 | u32(b[at + 3]) << 24
+	}
+	out := make([]Mod_Setting, len(b) / (MOD_SETTING_WORDS * 4), allocator)
+	img.settings = out
+	for &s, k in out {
+		r := u32(k) * MOD_SETTING_WORDS * 4
+		s = {
+			addr = at + r,
+			def  = i32(u32_at(b, r)),
+			min  = i32(u32_at(b, r + 4)),
+			max  = i32(u32_at(b, r + 8)),
+			step = i32(u32_at(b, r + 12)),
+		}
+		ok: bool
+		s.name, ok = mod_image_string(img^, u32_at(b, r + 16), MOD_SETTING_NAME_MAX)
+		if !ok || !mod_setting_name_ok(s.name) {
+			return fmt.tprintf("setting %d: its name is not a C name of at most %d bytes in the image", k, MOD_SETTING_NAME_MAX)
+		}
+		if s.label, ok = mod_image_string(img^, u32_at(b, r + 20), MOD_SETTING_LABEL_MAX); !ok {
+			return fmt.tprintf("setting %s: its label is not a string of at most %d bytes in the image", s.name, MOD_SETTING_LABEL_MAX)
+		}
+		if s.addr % 4 != 0 || !mod_image_has(img^, s.addr) || !mod_image_has(img^, s.addr + MOD_SETTING_WORDS * 4 - 1) {
+			return fmt.tprintf("setting %s: its record %08x is not word aligned in the image (.mod_settings not loaded?)", s.name, s.addr)
+		}
+		if s.min > s.max || s.def < s.min || s.def > s.max || s.step < 1 {
+			return fmt.tprintf("setting %s: default %d, range %d..%d, step %d", s.name, s.def, s.min, s.max, s.step)
+		}
+		for o in out[:k] {
+			if o.name == s.name {return fmt.tprintf("setting %s twice", s.name)}
+		}
+	}
+	return ""
+}
+
+// The NUL-terminated string at addr in a segment's file bytes: at most max
+// bytes before its NUL, none a control character.
+@(private = "file")
+mod_image_string :: proc(img: Mod_Image, addr: u32, max: int) -> (s: string, ok: bool) {
+	p := addr & 0x1fff_ffff
+	for seg in img.segments {
+		if p < seg.addr || p - seg.addr >= u32(len(seg.bytes)) {continue}
+		b := seg.bytes[p - seg.addr:]
+		for c, i in b {
+			if c == 0 {return string(b[:i]), true}
+			if i >= max || c < 0x20 || c == 0x7f {return "", false}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// Whether s is a setting's name: a C identifier of at most
+// MOD_SETTING_NAME_MAX bytes, which settings.tsv keys a value by.
+mod_setting_name_ok :: proc(s: string) -> bool {
+	if s == "" || len(s) > MOD_SETTING_NAME_MAX || (s[0] >= '0' && s[0] <= '9') {return false}
+	for c in transmute([]u8)s {
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {return false}
+	}
+	return true
 }
 
 // Whether addr is in a segment of img.
@@ -178,6 +278,7 @@ mod_image_delete :: proc(img: Mod_Image, allocator := context.allocator) {
 	delete(img.segments, allocator)
 	delete(img.hooks, allocator)
 	delete(img.funcs, allocator)
+	delete(img.settings, allocator)
 }
 
 // The functions syms (.symtab's entries) names in segs: STT_FUNC, sized,
