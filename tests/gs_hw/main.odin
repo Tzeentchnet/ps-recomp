@@ -125,6 +125,57 @@ ZMSK :: 1 << 32
 
 @(private = "file")
 PSMT8 :: 0x13
+@(private = "file")
+PSMT4 :: 0x14
+
+@(private = "file")
+Span_Case :: struct {
+	name:           string,
+	psm, bp, bw:    u32,
+	x1, y1:         u32,
+	want:           [2]u32,
+}
+
+@(private = "file")
+SPAN_CASES := [?]Span_Case {
+	{"tiny T4 at end", PSMT4, 0x3fff, 2, 7, 7, {511, 1}},
+	{"crossing T4 at end", PSMT4, 0x3fff, 2, 32, 16, {511, 2}},
+	{"unaligned T4 page", PSMT4, 1, 2, 127, 127, {0, 2}},
+	{"tiny T8 at end", PSMT8, 0x3fff, 2, 15, 15, {511, 1}},
+	{"tiny CT32 at end", 0, 0x3fff, 1, 7, 7, {511, 1}},
+	{"crossing CT32 at end", 0, 0x3fff, 1, 8, 7, {511, 2}},
+	{"CT32 past width", 0, 0, 1, 127, 31, {0, 2}},
+}
+
+@(private = "file")
+span_page :: proc(psm, bp, bw, x, y: u32) -> u32 {
+	switch psm {
+	case 0: return gs.addr32(psm, bp, bw, x, y) >> 11
+	case PSMT8: return gs.addr8(bp, bw, x, y) >> 13
+	case PSMT4: return gs.addr4(bp, bw, x, y) >> 14
+	}
+	return 0
+}
+
+@(private = "file")
+span_tests :: proc() {
+	for c in SPAN_CASES {
+		got := gs.probe_hw_tex_span(c.psm, c.bp, c.bw, c.x1, c.y1)
+		if got != c.want {
+			fail("FAIL gs_hw %s span: got %v, want %v", c.name, got, c.want)
+			continue
+		}
+		for y in 0 ..= c.y1 {
+			for x in 0 ..= c.x1 {
+				p := span_page(c.psm, c.bp, c.bw, x, y)
+				if (p + 512 - got[0]) % 512 >= got[1] {
+					fail("FAIL gs_hw %s span %v misses page %d at %d,%d", c.name, got, p, x, y)
+					break
+				}
+			}
+		}
+	}
+}
 
 // The frame as a 1024 x 512 texture, each pixel from the one below. At
 // scales 1 and 2 the GPU decodes it; at scale 3 it is too big to decode
@@ -251,6 +302,7 @@ main :: proc() {
 		scale, _ := strconv.parse_uint(os.args[1])
 		child(u32(scale))
 	}
+	span_tests()
 	self, err := os.get_executable_path(context.temp_allocator)
 	if err != nil {
 		fmt.eprintfln("FAIL gs_hw: cannot find the test: %v", err)
