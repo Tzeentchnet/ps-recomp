@@ -362,14 +362,25 @@ notes, settings and picture it holds a port that builds as it is:
 | `port/build.sh` | Builds `port/game` with `COMMIT` set to the submodule's commit. |
 | `port/src/main.odin` | Boots the disc with the generated code, as the player does. Change the game here. |
 | `port/src/local.odin` | Reads `local.tsv`: the disc image, the player's data for the disc, its settings, memory cards and learned code. |
-| `tests/run.sh` | A headless compatibility run of `port/game`, `press.txt` as its input, to a frame count (3600 by default). |
+| `tests/run.sh` | A headless compatibility run of `port/game`, `press.txt` as its input, to a frame count (3600 by default), on the player's memory cards for the disc. |
 | `local.tsv` | Where the disc image and the player's data are. Git ignores it. |
 
 The README gives the commands: add ps-recomp as a submodule at the
 commit of the player that wrote the export, then `sh setup.sh`. The
 learned code the player compiled for the disc is used only while the
-submodule is at that commit; at another, the port interprets what it
-did not recompile. The generated `port/src/rec` is ignored by git, so a
+submodule is at that commit, and only when the player was built with
+`-define:COMMIT=$(git rev-parse HEAD)`: the full hash, as
+`port/build.sh` passes. A player built with a short hash or with no
+`COMMIT` writes learned code the port cannot use. When the port does not
+use it, it says why and interprets what it did not recompile.
+
+`tests/run.sh` runs on the player's memory cards for the disc, as
+`COMPAT_CARDS=keep` does, not on the blank ones a player compatibility
+run starts with, so a game with saves can take another route. To compare
+its compat line with the row in the export's `docs/notes.md`, make that
+row with `COMPAT_CARDS=keep play --compat <disc image>`. The line gives
+`interp_insns`; the row's `interp_share` is `interp_insns *
+cycles_per_insn / cycles`, at most 1. The generated `port/src/rec` is ignored by git, so a
 fresh clone runs `setup.sh` again. Mods are not exported. The scripts need a POSIX shell and have
 only been run on Linux; Windows and macOS are untested.
 

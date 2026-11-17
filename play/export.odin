@@ -361,7 +361,10 @@ PORT_RUN :: `#!/bin/sh
 # A compatibility run of the port, as play --compat makes one: no window,
 # FRAMES vblanks (the first argument, default 3600), press.txt as the PRESS
 # script when there is one, and the compat line on stderr at the end, to
-# compare with the player's (docs/notes.md).
+# compare with the player's (the export's docs/notes.md). It runs on the
+# player's memory cards for the disc, as COMPAT_CARDS=keep does, not on
+# blank ones. The line gives interp_insns; the notes give interp_share,
+# interp_insns * cycles_per_insn / cycles.
 set -e
 cd "$(dirname "$0")/.."
 PS_PRESS=
@@ -372,7 +375,7 @@ export PS_PRESS
 PS_HEADLESS=1 PS_COMPAT=1 PS_FRAMES=${1:-3600} exec port/game
 `
 
-// The compat.tsv columns docs/notes.md shows, in order.
+// The compat.tsv columns the export's docs/notes.md shows, in order.
 @(private = "file")
 NOTES_COLUMNS :: [?]Column {
 	.Result,
@@ -590,7 +593,7 @@ export_readme :: proc(id: string, info: [Info]string, files: bit_set[Export_File
 		"- `setup.sh`, `tools/recomp.tsv`, `port/`: a port of the game, built from\n" +
 		"  your disc (below)\n" +
 		"- `tests/run.sh`: a compatibility run of the port, as `play --compat` makes\n" +
-		"  one\n\n" +
+		"  one, on the player's memory cards for the disc (as `COMPAT_CARDS=keep`)\n\n" +
 		"`.gitignore` lists the files that are tracked; add a line there to track\n" +
 		"another.\n\n## Build the port\n\n" +
 		"With git and Odin, in this directory (the submodule add downloads\n" +
