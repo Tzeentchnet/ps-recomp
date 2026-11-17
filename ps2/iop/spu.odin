@@ -138,7 +138,12 @@ Sdr_Block :: struct {
 	loop:       bool,
 	on:         bool,
 	play:       bool, // libsd's: its samples play and it raises its interrupt (sd_block_arm)
+	generation: u64,
 	next:       u64, // the bytes moved since `cycles` at its next half-buffer crossing
+	audio:      [SD_BLOCK_QUEUE][2]i16,
+	audio_read, audio_write: u64,
+	audio_capture, audio_available: u64, // bytes in the source stream
+	audio_underruns: u64,
 }
 
 // sceSdBlockTrans mode bits, from what the EE side sends: 2 stops, 3
@@ -151,6 +156,8 @@ SD_TRANS_START_AT :: 3
 SD_BLOCK_LOOP :: 0x10
 @(private = "file")
 SD_BLOCK_RATE :: 48000 * 4
+@(private = "file")
+SD_BLOCK_QUEUE :: 4096
 
 // Where block transfer b reads now: an IOP address.
 @(private = "file")
@@ -594,25 +601,44 @@ spu_mix :: proc(out: []i32) {
 	if iop_sd.pending != 0 {iop_wake_set()}
 }
 
-// Adds block transfer b's samples, scaled by vol (BVOLL, BVOLR), to the
-// interleaved stereo acc, from where it reads now on; a one-shot one is
-// silent past its end.
+// Adds captured block-transfer samples, scaled by vol (BVOLL, BVOLR), to the
+// interleaved stereo acc. Capturing keeps refilled halves in stream order:
+// reading the source buffer directly can reach a half before its interrupt
+// refills it, or after the following refill overwrites it.
 @(private = "file")
 sd_block_mix :: proc(b: ^Sdr_Block, vol: [2]i32, acc: []i32) {
-	off := sdr_block_pos(b) - b.base
-	s16 :: #force_inline proc(a: u32) -> i32 {
-		p := iop_mem(a &~ 1, 2)
-		return len(p) < 2 ? 0 : i32(i16(u16(p[0]) | u16(p[1]) << 8))
-	}
+	sd_block_audio_fill(b)
 	for n := 0; n + 1 < len(acc); n += 2 {
-		if off >= b.size {
-			if !b.loop {return}
-			off = 0
+		if b.audio_read >= b.audio_write {
+			sd_block_audio_fill(b)
 		}
+		if b.audio_read >= b.audio_write {
+			if b.loop {b.audio_underruns += u64((len(acc) - n) / 2)}
+			break
+		}
+		x := b.audio[b.audio_read & (SD_BLOCK_QUEUE - 1)]
+		b.audio_read += 1
+		acc[n] += i32(x[0]) * vol[0] >> 15
+		acc[n + 1] += i32(x[1]) * vol[1] >> 15
+	}
+	sd_block_audio_fill(b)
+}
+
+@(private = "file")
+sd_block_audio_fill :: proc(b: ^Sdr_Block) {
+	if b.size == 0 {return}
+	for b.audio_capture + 4 <= b.audio_available && b.audio_write - b.audio_read < SD_BLOCK_QUEUE {
+		off := u32((u64(b.start) + b.audio_capture) % u64(b.size))
 		l := b.base + (off &~ 1023) + (off & 1023) / 4 * 2
-		acc[n] += s16(l) * vol[0] >> 15
-		acc[n + 1] += s16(l + 512) * vol[1] >> 15
-		off += 4
+		p := iop_mem(l &~ 1, 2)
+		q := iop_mem((l + 512) &~ 1, 2)
+		if len(p) < 2 || len(q) < 2 {break}
+		b.audio[b.audio_write & (SD_BLOCK_QUEUE - 1)] = {
+			i16(u16(p[0]) | u16(p[1]) << 8),
+			i16(u16(q[0]) | u16(q[1]) << 8),
+		}
+		b.audio_write += 1
+		b.audio_capture += 4
 	}
 }
 
@@ -840,7 +866,15 @@ sd_block_trans :: proc(channel, mode, addr, size, start: u32) -> u32 {
 		b.start, b.on = r - b.base, false
 		return r
 	}
-	b^ = {base = addr, size = size, cycles = cpu.state.cycles, loop = mode & SD_BLOCK_LOOP != 0, on = true}
+	generation := b.generation + 1
+	b^ = {
+		base = addr,
+		size = size,
+		cycles = cpu.state.cycles,
+		loop = mode & SD_BLOCK_LOOP != 0,
+		on = true,
+		generation = generation,
+	}
 	if mode & 3 == SD_TRANS_START_AT && start - addr < size {b.start = start - addr}
 	return 0
 }
@@ -1130,6 +1164,8 @@ sd_block_arm :: proc(channel: u32) {
 	b.play = true
 	half := u64(b.size / 2)
 	b.next = half == 0 ? max(u64) : (u64(b.start) / half + 1) * half - u64(b.start)
+	b.audio_available = b.loop ? u64(b.size) : u64(b.size - b.start)
+	sd_block_audio_fill(b)
 }
 
 // The EE cycle of b's next half-buffer crossing, or max(u64): it has none
@@ -1142,11 +1178,26 @@ sd_block_due :: proc(b: ^Sdr_Block) -> u64 {
 }
 
 // Takes channel's next half-buffer crossing if it is due by EE cycle now.
-sd_block_cross :: proc(channel: u32, now: u64) -> bool {
+sd_block_cross :: proc(channel: u32, now: u64) -> (crossed: bool, generation: u64) {
 	b := &spu.block[channel & 1]
-	if sd_block_due(b) > now {return false}
+	if sd_block_due(b) > now {return}
+	generation = b.generation
 	b.next += u64(b.size / 2)
-	return true
+	crossed = true
+	return
+}
+
+// The half consumed at the crossing has been refilled by its interrupt
+// handler. Make those future samples available to the bounded host queue.
+sd_block_refilled :: proc(channel: u32, generation: u64) {
+	b := &spu.block[channel & 1]
+	if !b.on || !b.play || !b.loop || b.generation != generation {return}
+	b.audio_available += u64(b.size / 2)
+	sd_block_audio_fill(b)
+}
+
+sd_block_underruns :: proc(channel: u32) -> u64 {
+	return spu.block[channel & 1].audio_underruns
 }
 
 // When, in EE cycles, libsd's interrupts are due: at once (the IOP's clock)

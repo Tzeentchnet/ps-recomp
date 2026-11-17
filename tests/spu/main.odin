@@ -4,8 +4,9 @@
 //
 // Voices play SPU ADPCM blocks (16 bytes: shift and filter, loop flags, 28
 // samples) at pitch 0x1000, one sample per mixed sample, so a block lasts 28.
-// The snapshot part keys a voice on, saves, mixes, scribbles over its
-// blocks and loads: mixing again must give the same samples.
+// The snapshot part keys a voice on and starts a block transfer, saves, mixes,
+// scribbles over their sources and loads: mixing again must give the same
+// samples.
 // The FMOD reverb (reverb_set, reverb_mix) runs each preset over a fixed
 // send, and FMOD's Reverb_SetProperties (fmod_reverb) through a sequence of
 // settings; hashes of its return pin the output. A core's reverb (spu_effect,
@@ -19,7 +20,8 @@
 // them with its voices; core 0's master leaves them alone.
 // sdrdrv's block transfer keeps time: its status address moves with EE
 // cycles, wraps a looping buffer, stops a one-shot one at its end, and a
-// stop answers where it was and resumes from there.
+// stop answers where it was and resumes from there. Its ADMA PCM is captured
+// before refills overwrite each half and plays in stream order.
 package main
 
 import "core:fmt"
@@ -606,6 +608,8 @@ sdr_call :: proc(fno: u32, args: ..u32) -> u32 {
 
 BLOCK_BASE :: 0x30000
 BLOCK_SIZE :: 0x4000
+BLOCK_AUDIO_SIZE :: 0x1000
+BLOCK_AUDIO_LARGE :: 0x8000
 
 block_trans :: proc() {
 	SECOND :: u64(cpu.EE_CLOCK)
@@ -626,6 +630,109 @@ block_trans :: proc() {
 	sdr_call(0x80e0, 1, 2)
 }
 
+block_audio_chunk :: proc(chunk: u32, value: i16) {
+	base := BLOCK_BASE + chunk * 1024
+	for n in u32(0) ..< 256 {
+		for side in u32(0) ..< 2 {
+			at := base + side * 512 + n * 2
+			iop.iop_ram[at] = u8(u16(value) & 0xff)
+			iop.iop_ram[at + 1] = u8(u16(value) >> 8)
+		}
+	}
+}
+
+block_audio_half :: proc(half: u32, value: i16) {
+	block_audio_chunk(half * 2, value)
+	block_audio_chunk(half * 2 + 1, value)
+}
+
+block_audio_level :: proc(value: i16) -> i32 {
+	at_bvol := i32(value) * 0x7fff >> 15
+	return i32(i64(at_bvol) * 0x3fff >> 14)
+}
+
+block_audio_is :: proc(out: []i32, value: i16) -> bool {
+	want := block_audio_level(value)
+	for x in out {if x != want {return false}}
+	return true
+}
+
+block_audio :: proc() {
+	iop.sd_init()
+	iop.sd_lib_init()
+	iop.spu_master(0, 0x3fff, 0x3fff)
+	iop.spu_master(1, 0, 0)
+	iop.sd_core_param(0x0f00, 0x7fff)
+	iop.sd_core_param(0x1000, 0x7fff)
+
+	block_audio_half(0, 1000)
+	block_audio_half(1, 2000)
+	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_SIZE, 0)
+	iop.sd_block_arm(0)
+
+	// The initial half is already captured: replacing its source before the
+	// crossing must not replace samples waiting to play.
+	block_audio_half(0, 3000)
+	check(block_audio_is(mix(512), 1000), "block audio keeps the captured first half")
+	crossed, generation := iop.sd_block_cross(0, max(u64))
+	check(crossed, "block audio reaches its first refill")
+	iop.sd_block_refilled(0, generation)
+	check(block_audio_is(mix(512), 2000), "block audio keeps the captured second half in order")
+	check(block_audio_is(mix(512), 3000), "block audio appends the refilled first half")
+
+	block_audio_half(1, 4000)
+	crossed, generation = iop.sd_block_cross(0, max(u64))
+	check(crossed, "block audio reaches its second refill")
+	iop.sd_block_refilled(0, generation)
+	check(block_audio_is(mix(512), 4000), "block audio appends the refilled second half")
+	check(iop.sd_block_underruns(0) == 0, "ordered block audio does not underrun")
+
+	// A looping transfer can start within the buffer: its initial capture
+	// follows the requested offset through the wrap.
+	for chunk in u32(0) ..< 4 {block_audio_chunk(chunk, i16(1000 + chunk * 1000))}
+	iop.sd_block_trans(0, 0x13, BLOCK_BASE, BLOCK_AUDIO_SIZE, BLOCK_BASE + 1024)
+	iop.sd_block_arm(0)
+	out := mix(1024)
+	check(block_audio_is(out[:256 * 2], 2000), "offset block audio starts at the requested ADMA chunk")
+	check(block_audio_is(out[256 * 2:512 * 2], 3000), "offset block audio continues after its start")
+	check(block_audio_is(out[512 * 2:768 * 2], 4000), "offset block audio reaches the buffer end")
+	check(block_audio_is(out[768 * 2:], 1000), "offset block audio wraps to the buffer start")
+	check(iop.sd_block_underruns(0) == 0, "offset block audio does not underrun")
+
+	// The fixed ring bounds lookahead, not source size or one mix call.
+	for chunk in u32(0) ..< BLOCK_AUDIO_LARGE / 1024 {
+		block_audio_chunk(chunk, i16(500 + chunk * 100))
+	}
+	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_LARGE, 0)
+	iop.sd_block_arm(0)
+	out = mix(BLOCK_AUDIO_LARGE / 4)
+	large_ok := true
+	for chunk in 0 ..< BLOCK_AUDIO_LARGE / 1024 {
+		if !block_audio_is(out[chunk * 256 * 2:(chunk + 1) * 256 * 2], i16(500 + chunk * 100)) {
+			large_ok = false
+		}
+	}
+	check(large_ok, "block audio progressively captures a source larger than its queue")
+	check(iop.sd_block_underruns(0) == 0, "large block audio does not underrun")
+
+	// A refill belonging to a stopped transfer must not extend a replacement
+	// transfer, even when both were started during the same EE cycle.
+	iop.sd_block_trans(0, 2, 0, 0, 0)
+	block_audio_half(0, 5000)
+	block_audio_half(1, 6000)
+	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_SIZE, 0)
+	iop.sd_block_arm(0)
+	iop.sd_block_refilled(0, generation)
+	out = mix(1025)
+	check(block_audio_is(out[:512 * 2], 5000), "replacement block audio starts with its first half")
+	check(block_audio_is(out[512 * 2:1024 * 2], 6000), "replacement block audio continues with its second half")
+	check(out[1024 * 2] == 0 && out[1024 * 2 + 1] == 0, "a stale refill does not append samples")
+	check(iop.sd_block_underruns(0) == 1, "block audio counts missing loop samples")
+	iop.sd_block_trans(0, 2, 0, 0, 0)
+	iop.sd_core_param(0x0f00, 0)
+	iop.sd_core_param(0x1000, 0)
+}
+
 game :: proc(_: rawptr) {
 	reset_irq()
 	voices()
@@ -638,6 +745,7 @@ game :: proc(_: rawptr) {
 	effects()
 	adx()
 	block_trans()
+	block_audio()
 	for n in 0 ..< BLOCKS {
 		b: [16]u8
 		b[0] = u8(n) << 4 // filters 0..2
@@ -645,6 +753,13 @@ game :: proc(_: rawptr) {
 		for &x, k in b[2:] {x = u8(k * 37 + n * 11)}
 		iop.spu_write(SNAP + u32(n) * 16, b[:])
 	}
+	block_audio_half(0, 7000)
+	block_audio_half(1, 8000)
+	iop.sd_core_param(0x0f00, 0)
+	iop.sd_core_param(0x1000, 0x1000)
+	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_SIZE, 0)
+	iop.sd_block_arm(0)
+	mix(37)
 	iop.spu_voice_on(0, 7, key(SNAP))
 	core.snap_op, core.snap_target = .Save, &snap
 	core.snap_yield()
@@ -654,14 +769,19 @@ game :: proc(_: rawptr) {
 		zero: [BLOCKS * 16]u8
 		iop.spu_write(SNAP, zero[:])
 		iop.spu_voice_off(0, 7)
+		block_audio_half(0, 0)
+		iop.sd_block_trans(0, 2, 0, 0, 0)
 		loaded = true
 		core.snap_op, core.snap_target = .Load, &snap
 		core.snap_yield()
 	}
 	heard := false
-	for s in mixed[0] {if s != 0 {heard = true}}
+	for i := 0; i < len(mixed[0]); i += 2 {if mixed[0][i] != 0 {heard = true}}
 	check(heard, "snapshot voice heard")
-	check(mixed[0] == mixed[1], "sound RAM and voice restored by the snapshot")
+	check(mixed[0] == mixed[1], "sound RAM, voice and block audio restored by the snapshot")
+	check(iop.sd_block_underruns(0) == 0, "restored block audio does not underrun")
+	iop.sd_block_trans(0, 2, 0, 0, 0)
+	iop.sd_core_param(0x1000, 0)
 	if failed {os.exit(1)}
 	fmt.println("ok spu")
 	os.exit(0)
