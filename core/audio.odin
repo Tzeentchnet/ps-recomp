@@ -51,6 +51,55 @@ AUDIO_DRIFT_S :: 10.0
 // Slowest emulated speed audio_push stretches for.
 AUDIO_MIN_SPEED :: 0.25
 
+// Interlaced games can alternate light and heavy fields. Average disjoint
+// groups so every interval contributes once and paired fields stay together.
+AUDIO_SPEED_SAMPLES :: 4
+
+// A host this slow would consume most of the queued latency while waiting for
+// a second timing window, so react after the first one.
+AUDIO_SPEED_IMMEDIATE :: 0.8
+
+Audio_Speed :: struct {
+	value:     f64,
+	elapsed:   f64,
+	count:     int,
+	candidate: f64,
+	sustained: bool,
+}
+
+audio_speed_update :: proc(state: ^Audio_Speed, expected_seconds, elapsed_seconds: f64) -> f64 {
+	if expected_seconds <= 0 || elapsed_seconds <= 0 || elapsed_seconds > expected_seconds * 4 {
+		state.elapsed, state.count, state.candidate = 0, 0, 0
+		return state.value
+	}
+	state.elapsed += elapsed_seconds
+	state.count += 1
+	if state.count < AUDIO_SPEED_SAMPLES {
+		return state.value
+	}
+
+	target := clamp(expected_seconds * f64(state.count) / state.elapsed, AUDIO_MIN_SPEED, 1)
+	state.elapsed, state.count = 0, 0
+	if target > 0.98 {
+		state.value, state.candidate, state.sustained = 1, 0, false
+		return state.value
+	}
+	if target < AUDIO_SPEED_IMMEDIATE || state.sustained {
+		state.value, state.candidate, state.sustained = target, 0, true
+		return state.value
+	}
+	// A moderate one-window delay is usually scheduler jitter. Two consecutive
+	// windows establish sustained slowness; their harmonic mean combines their
+	// equal expected durations.
+	if state.candidate == 0 {
+		state.candidate = target
+		return state.value
+	}
+	state.value = 2 / (1 / state.candidate + 1 / target)
+	state.candidate, state.sustained = 0, true
+	return state.value
+}
+
 // Batches are resampled this many input frames at a time.
 @(private = "file")
 AUDIO_CHUNK :: 256

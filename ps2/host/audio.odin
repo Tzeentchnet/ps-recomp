@@ -23,13 +23,13 @@ audio_init :: proc(headless: bool) {
 // behind the voices the IOP's clock reads. Core pads or drops on the device
 // side instead. A netplay rerun mixes without pushing.
 @(private)
-audio_frame :: proc(v: int, push: bool) {
+audio_frame :: proc(v: int, push: bool, speed := 1.0) {
 	n := iop.vblank_samples(u64(v))
 	buf := make([][2]i16, n, context.temp_allocator)
 	t := cpu.prof_start()
 	mix_frame(([^]i16)(raw_data(buf))[:n * 2])
 	cpu.prof_end(.MIX, t)
-	if push {core.audio_push(buf)}
+	if push {core.audio_push(buf, speed)}
 }
 
 // The sources add into one wide buffer, saturated once into out, so a source
