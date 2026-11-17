@@ -244,6 +244,10 @@ learned :: proc(l: Local, kind: core.Blob_Kind, blob, key: core.Disc_File) -> st
 		return ""
 	}
 	fields := strings.fields(string(text), context.temp_allocator)
+	if core.COMMIT == "dev" {
+		fmt.eprintln("the port was built without -define:COMMIT: interpreting the player's learned code")
+		return ""
+	}
 	if len(fields) != 3 || !core.blob_cached(l.data, core.COMMIT, kind, fields[2]) {
 		fmt.eprintln("the player's learned code is from another ps-recomp commit: interpreting it")
 		return ""
