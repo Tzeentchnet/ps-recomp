@@ -696,7 +696,12 @@ sample_level :: #force_inline proc(t: ^Tex, n: u32, tu, tv: f32, bilinear: bool)
 // in 0..65535, so 16-bit lanes wrapping on the way hold it exactly. Equal
 // to the i32 form for all 2^24 inputs (checked exhaustively), at a 16-bit
 // multiply where i32 lanes take pmulld. Bilinear weights come from a
-// fraction in [0, 1), so lie in 0..255.
+// fraction in [0, 1), so lie in 0..255, except two edge cases. A fraction
+// that rounds up to 1.0 gives 256: the true value 256 c1 + 255 at most
+// still fits 16 bits, so the result is c1 exactly, as in the i32 form. A
+// non-finite coordinate (Q = 0 in STQ) gives a NaN fraction, which the
+// conversion turns into 0x80000000, whose low 16 bits are weight 0: the
+// result is c0, a valid channel, where the i32 form wraps out of 0..255.
 @(private)
 lerp8 :: #force_inline proc "contextless" (c0, c1, w: #simd[8]u16) -> #simd[8]u16 {
 	return simd.shr(simd.shl(c0, 8) + (c1 - c0) * w + (simd.lanes_lt(c1, c0) & 255), 8)

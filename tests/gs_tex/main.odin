@@ -328,7 +328,7 @@ ref_sample_level :: proc(t: ^Cfg, n: u32, tu, tv: f32, bilinear: bool) -> [4]i32
 	u, v = u - 0.5 + UV_EPS, v - 0.5 + UV_EPS
 	fu, fv := math.floor(u), math.floor(v)
 	iu, iv := i32(fu), i32(fv)
-	au, av := i32((u - fu) * 256), i32((v - fv) * 256)
+	au, av := ref_weight(u - fu), ref_weight(v - fv)
 	x0 := ref_wrap(iu, t.wms, w, minu, maxu)
 	x1 := ref_wrap(iu + 1, t.wms, w, minu, maxu)
 	y0 := ref_wrap(iv, t.wmt, h, minv, maxv)
@@ -339,6 +339,15 @@ ref_sample_level :: proc(t: ^Cfg, n: u32, tu, tv: f32, bilinear: bool) -> [4]i32
 	bot := c01 + ((c11 - c01) * au) / 256
 	return top + ((bot - top) * av) / 256
 }
+
+// A bilinear weight, 256 times the fraction f in [0, 1). A non-finite
+// coordinate (STQ with Q = 0) leaves f NaN, which a plain i32 cast turns
+// into INT_MIN, and (c1 - c0) * INT_MIN / 256 wraps to channel values near
+// -2^23: an artefact of the i32 arithmetic, not a texel. A GS channel is
+// 0..255, so the reference weighs NaN 0, as the sampler's 16-bit lanes do
+// (the low 16 bits of 0x80000000), and takes the tap at the floor.
+@(private = "file")
+ref_weight :: proc(f: f32) -> i32 {return f == f ? i32(f * 256) : 0}
 
 // Whether a bilinear sample's four taps, wrapped, lie in one 16 x 16 tile
 // of level n.
