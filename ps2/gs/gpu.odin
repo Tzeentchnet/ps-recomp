@@ -124,7 +124,6 @@ Dec_Entry :: struct {
 	off, stride: u32,
 	seq:         u64, // hw.seq when decoded
 }
-
 @(private)
 hw: struct {
 	scale:               u32,
@@ -501,6 +500,63 @@ page_span :: proc(psm, bp, bw, y0, y1: u32) -> [2]u32 {
 	return {first, min(n, PAGES)}
 }
 
+// Pages holding texels (0, 0)..(x1, y1). Unlike page_span, this accounts for
+// the blocks actually reached inside the last page: a tiny texture at the end
+// of local memory need not wrap merely because its base is not page-aligned.
+@(private)
+tex_level_span :: proc(psm, bp, bw, x1, y1: u32) -> [2]u32 {
+	pw, ph := page_dims(psm)
+	per_row := bw
+	if psm == PSMT8 || psm == PSMT4 {per_row >>= 1}
+	page := y1 / ph * per_row + x1 / pw
+	bmax: u32
+	switch psm {
+	case PSMCT16, PSMZ16:
+		for y in 0 ..= (y1 % ph) / 8 {
+			for x in 0 ..= (x1 % pw) / 16 {
+				b := block16[y][x]
+				if is_z(psm) {b ~= 24}
+				bmax = max(bmax, b)
+			}
+		}
+	case PSMCT16S, PSMZ16S:
+		for y in 0 ..= (y1 % ph) / 8 {
+			for x in 0 ..= (x1 % pw) / 16 {
+				b := block16s[y][x]
+				if is_z(psm) {b ~= 24}
+				bmax = max(bmax, b)
+			}
+		}
+	case PSMT8:
+		for y in 0 ..= (y1 % ph) / 16 {
+			for x in 0 ..= (x1 % pw) / 16 {
+				bmax = max(bmax, block32[y][x])
+			}
+		}
+	case PSMT4:
+		for y in 0 ..= (y1 % ph) / 16 {
+			for x in 0 ..= (x1 % pw) / 32 {
+				bmax = max(bmax, block16[y][x])
+			}
+		}
+	case:
+		for y in 0 ..= (y1 % ph) / 8 {
+			for x in 0 ..= (x1 % pw) / 8 {
+				b := block32[y][x]
+				if is_z(psm) {b ~= 24}
+				bmax = max(bmax, b)
+			}
+		}
+	}
+	first, last_block := bp / 32, bp + page * 32 + bmax
+	return {first, min(last_block / 32 - first + 1, PAGES)}
+}
+
+// Test hook for tests/gs_hw.
+probe_hw_tex_span :: proc(psm, bp, bw, x1, y1: u32) -> [2]u32 {
+	return tex_level_span(psm, bp, bw, x1, y1)
+}
+
 // Pages of every level the texture can sample, as one span. Region wrap
 // samples texels outside w x h, and a texel past the buffer's width lies in
 // the pages of a later row.
@@ -515,14 +571,12 @@ tex_span :: proc(t: ^Tex) -> [2]u32 {
 		}
 		return l
 	}
-	pw, ph := page_dims(t.psm)
 	lo, hi := u32(max(u32)), u32(0)
 	for n in 0 ..= (t.mmin < 2 ? 0 : t.mxl) {
 		bp, bw := t.tbp, t.tbw
 		if n > 0 {bp, bw = t.mtbp[n], t.mtbw[n]}
 		x1, y1 := last(t.wms, t.w, t.minu, t.maxu, n), last(t.wmt, t.h, t.minv, t.maxv, n)
-		l := page_span(t.psm, bp, bw, 0, y1)
-		l[1] = max(l[1], y1 / ph * (bw * 64 / pw) + x1 / pw + 1 + (bp % 32 != 0 ? 1 : 0))
+		l := tex_level_span(t.psm, bp, bw, x1, y1)
 		lo, hi = min(lo, l[0]), max(hi, l[0] + l[1])
 	}
 	return {lo, min(hi - lo, PAGES)}
