@@ -340,7 +340,7 @@ main :: proc() {
 	for &v in gs.vram {v = u32(rnd())}
 
 	FAST :: len(gs.PX_FAST)
-	TRIALS :: 4800 // over 100 for each PX_FAST row
+	TRIALS :: FAST * 150 // over 100 for each PX_FAST row
 	// Per PX_FAST index, then random contexts. A trial's pixels are the
 	// words its fast run changed; all of local memory is compared.
 	trials, pixels: [FAST + 1]int
