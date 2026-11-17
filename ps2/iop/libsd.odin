@@ -396,8 +396,11 @@ sd_intr_run :: proc(now: u64) {
 	for c in u32(0) ..< 2 {
 		for _ in 0 ..< SD_INTR_MAX {
 			h := s.trans[c]
-			if h.func == 0 || !sd_block_cross(c, now) {break}
+			if h.func == 0 {break}
+			crossed, generation := sd_block_cross(c, now)
+			if !crossed {break}
 			sd_intr(h, c)
+			sd_block_refilled(c, generation)
 		}
 	}
 	sd_in_cross(now)
