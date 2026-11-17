@@ -207,7 +207,8 @@ draw_tri_ref :: proc(c: ^Ctx, v0, v1, v2: ^Vertex) -> (cls: Tri_Classes) {
 					sa * f0 + sb * f1 + sd * f2,
 					a.q * f0 + b.q * f1 + d.q * f2)
 			}
-			fog := a.fog * f0 + b.fog * f1 + d.fog * f2
+			fog: f32
+			if c.fge {fog = a.fog * f0 + b.fog * f1 + d.fog * f2}
 			c.px(c, x, y, z, col, u, v, lod, fog)
 		}
 		if inside {cls += {.Drawn}} else {cls += {.Empty_Row}}

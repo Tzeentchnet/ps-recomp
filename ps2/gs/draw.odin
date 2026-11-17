@@ -468,7 +468,7 @@ draw_tri :: proc(c: ^Ctx, v0, v1, v2: ^Vertex) {
 	ac, bc, dc := a.c, b.c, d.c
 	aq, bq, dq := a.q, b.q, d.q
 	af, bf, df := a.fog, b.fog, d.fog
-	iip, tme := c.iip, c.tme
+	iip, tme, fge := c.iip, c.tme, c.fge
 	tm := tex_map(c)
 	// Every step of an edge is exact. A vertex's x and y are sixteenths
 	// below 4096 in magnitude (vertex; lerp_vertex's output goes to draw_line
@@ -526,7 +526,9 @@ draw_tri :: proc(c: ^Ctx, v0, v1, v2: ^Vertex) {
 					sa * f0 + sb * f1 + sd * f2,
 					aq * f0 + bq * f1 + dq * f2)
 			}
-			fog := af * f0 + bf * f1 + df * f2
+			// Pixel procs read fogf only under FGE (pixel, pixel_fast).
+			fog: f32
+			if fge {fog = af * f0 + bf * f1 + df * f2}
 			c.px(c, x, y, z, col, u, v, lod, fog)
 		}
 	}
