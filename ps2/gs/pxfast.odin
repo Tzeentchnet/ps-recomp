@@ -10,6 +10,8 @@
 // itself.
 package ps2_gs
 
+import "core:simd"
+
 @(private)
 Pixel_Proc :: #type proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32)
 
@@ -273,11 +275,16 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 			if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
 		}
 	}
+	// The color steps run on all four channels at once, each lane with the
+	// integer operations `pixel` does on that channel: RGB selects lanes
+	// 0..2, alpha is lane 3.
+	RGB :: #simd[4]bool{true, true, true, false}
+	B255 :: #simd[4]i32{255, 255, 255, 255}
 	src := col_int(col)
 	when TFX == 0 { // MODULATE
-		t := transmute([4]i32)sample(&c.tex, u, v, lod)
-		for k in 0 ..< 3 {src[k] = min((t[k] * src[k]) >> 7, 255)}
-		when TCC {src.a = min((t.a * src.a) >> 7, 255)}
+		sm := transmute(#simd[4]i32)src
+		m := simd.min(simd.shr(sample(&c.tex, u, v, lod) * sm, 7), B255)
+		src = transmute([4]i32)simd.select(#simd[4]bool{true, true, true, TCC}, m, sm)
 	} else when TFX == 1 { // DECAL
 		t := transmute([4]i32)sample(&c.tex, u, v, lod)
 		src.rgb = t.rgb
@@ -330,30 +337,35 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	}
 
 	when UNPACK {
-		dst := unpack(dst_raw)
-		when FPSM == PSMCT24 {dst.a = 0x80}
+		dst := expand(dst_raw)
+		when FPSM == PSMCT24 {dst = simd.replace(dst, 3, 0x80)}
 	} else when BLEND {
-		dst: [4]i32 // not read
+		dst: #simd[4]i32 // not read
 	}
+	s := transmute(#simd[4]i32)src
 	when BLEND {
-		sel :: #force_inline proc($N: u32, s, d: [4]i32) -> [3]i32 {
-			when N == 0 {return s.rgb} else when N == 1 {return d.rgb} else {return {}}
+		sel :: #force_inline proc($N: u32, s, d: #simd[4]i32) -> #simd[4]i32 {
+			when N == 0 {return s} else when N == 1 {return d} else {return {}}
 		}
-		ca, cb, cd := sel(A, src, dst), sel(B, src, dst), sel(D, src, dst)
 		alpha: i32
 		when C == 0 {
 			alpha = src.a
 		} else when C == 1 {
-			alpha = dst.a
+			alpha = simd.extract(dst, 3)
 		} else {
 			alpha = i32(c.fix)
 		}
-		for k in 0 ..< 3 {src[k] = (((ca[k] - cb[k]) * alpha) >> 7) + cd[k]}
+		ca, cb, cd := sel(A, s, dst), sel(B, s, dst), sel(D, s, dst)
+		rgb := simd.shr((ca - cb) * #simd[4]i32{alpha, alpha, alpha, alpha}, 7) + cd
+	} else {
+		rgb := s
 	}
-	for k in 0 ..< 3 {src[k] = clamp(src[k], 0, 255)}
-	when FAIL_A {if !pass {src.a = dst.a}}
-
-	out := u32(src.r) | u32(src.g) << 8 | u32(src.b) << 16 | u32(src.a & 0xff) << 24
+	a := s
+	when FAIL_A {if !pass {a = dst}}
+	// RGB clamped to 0..255, alpha its low byte: each lane one byte of
+	// the stored word.
+	o := simd.select(RGB, simd.clamp(rgb, #simd[4]i32{}, B255), a & B255)
+	out := transmute(u32)simd.swizzle(transmute(#simd[16]u8)o, 0, 4, 8, 12)
 	when FBMSK {out = (out &~ c.fbmsk) | (dst_raw & c.fbmsk)}
 	row_write_w(&c.frow, fa, out, true)
 }
