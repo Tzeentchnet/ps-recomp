@@ -262,6 +262,17 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	#assert(ATST != 1 || AFAIL == 0)
 	#assert(DATE <= 2)
 	px := u32(x)
+	when ZMSK && ZTST >= 2 {
+		ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
+		ZMAX :: 0xffffffff when ZPSM == PSMZ32 else 0xffffff when ZPSM == PSMZ24 else 0xffff
+		z := min(u32(min(zf, 4294967295.0)), u32(ZMAX))
+		za := row_addr_w(&c.zrow, px, ZWIDE)
+		when ZTST == 2 {
+			if z < row_read_w(&c.zrow, za, ZWIDE) {return}
+		} else {
+			if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
+		}
+	}
 	src := col_int(col)
 	when TFX == 0 { // MODULATE
 		t := transmute([4]i32)sample(&c.tex, u, v, lod)
@@ -301,7 +312,7 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	when DST {dst_raw := row_read_w(&c.frow, fa, true)} // `when` opens no scope
 	when DATE != 0 {if (dst_raw & 0x80000000 != 0) != (DATE == 2) {return}}
 
-	when ZTST >= 2 || ZWRITE {
+	when !(ZMSK && ZTST >= 2) && (ZTST >= 2 || ZWRITE) {
 		ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
 		ZMAX :: 0xffffffff when ZPSM == PSMZ32 else 0xffffff when ZPSM == PSMZ24 else 0xffff
 		z := min(u32(min(zf, 4294967295.0)), u32(ZMAX))
