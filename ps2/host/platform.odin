@@ -30,6 +30,14 @@ hw: bool // the Vulkan GS draws and presents
 @(private)
 last: time.Tick
 @(private)
+audio_tick: time.Tick
+@(private)
+audio_speed := core.Audio_Speed{value = 1}
+@(private)
+audio_speed_total: f64
+@(private)
+audio_speed_samples: int
+@(private)
 pace := 60 // frames a second, at NTSC's 1000 / 1001 (59.94 Hz); 0 for unpaced
 // Presented frames: vblanks whose GS read circuit showed a picture, so a
 // game's boot vblanks with the display off do not count. PRESS, SNAPTEST,
@@ -166,6 +174,7 @@ platform_init :: proc(title: cstring) -> bool {
 	probe_init()
 	audio_init(core.headless)
 	last = time.tick_now()
+	audio_tick = last
 	if v, ok := core.env_lookup("SHOT"); ok {
 		for item in strings.split(v, ",", context.temp_allocator) {
 			if f, ok2 := strconv.parse_int(item); ok2 && f > 0 {append(&shots, f)}
@@ -174,6 +183,23 @@ platform_init :: proc(title: cstring) -> bool {
 	}
 	if !core.input_script_load(PRESS_FRAMES, mem.RAM_SIZE) {return false}
 	return true
+}
+
+@(private)
+audio_host_speed :: proc() -> f64 {
+	if core.headless || pace <= 0 {return 1}
+	now := time.tick_now()
+	expected := time.Second * 1001 / time.Duration(pace * 1000)
+	elapsed := time.tick_diff(audio_tick, now)
+	audio_tick = now
+	speed := core.audio_speed_update(
+		&audio_speed,
+		time.duration_seconds(expected),
+		time.duration_seconds(elapsed),
+	)
+	audio_speed_total += speed
+	audio_speed_samples += 1
+	return speed
 }
 
 // Called by quit before the counters are printed; nil none.
@@ -226,7 +252,7 @@ vblank_frame :: proc() {
 	if core.net_hash_due() {
 		core.net_hash(xxhash.XXH3_64_with_seed(iop.iop_hle, xxhash.XXH3_64_with_seed(iop.iop_ram, xxhash.XXH3_64_default(mem.ram))))
 	}
-	audio_frame(vblank, !rerun)
+	audio_frame(vblank, !rerun, audio_host_speed())
 	gs.skip_present = rerun
 	gs.skip_readout = core.headless && !readout_due()
 	gs.skip_wanted = core.headless && !draw_due()
@@ -347,6 +373,8 @@ print_stats :: proc() {
 	@(static) cyc0, idle0, spin0, tsc0, top0: u64
 	@(static) prof0: [cpu.Prof]u64
 	@(static) pace0, rb0: time.Duration
+	@(static) audio_total0: f64
+	@(static) audio_samples0: int
 	now := time.tick_now()
 	tsc := cpu.prof_now()
 	rb := core.rb_stats().total
@@ -360,7 +388,9 @@ print_stats :: proc() {
 			fmt.eprintf("  %v %.0f%%", p, 100 * f64(cpu.prof[p] - prof0[p]) / f64(max(tsc - tsc0, 1)))
 		}
 		a := core.audio_take_stats()
-		fmt.eprintfln("  audio dry %d dropped %d low %.0f ms", a.dry, a.dropped, a.low_ms)
+		audio_samples := audio_speed_samples - audio_samples0
+		avg_audio_speed := (audio_speed_total - audio_total0) / f64(max(audio_samples, 1))
+		fmt.eprintfln("  audio dry %d dropped %d low %.0f ms speed %.0f%%", a.dry, a.dropped, a.low_ms, avg_audio_speed * 100)
 		// The sections' clock (cpu.prof_now) spans the same wall as secs.
 		wall := 1000 * secs / f64(STATS_FRAMES)
 		share := wall / f64(max(tsc - tsc0, 1))
@@ -381,6 +411,7 @@ print_stats :: proc() {
 	}
 	t0, cyc0, idle0, spin0, tsc0, prof0 = now, cpu.state.cycles, kernel.idle_cycles, cpu.spin_cycles, tsc, cpu.prof
 	top0, pace0, rb0 = cpu.prof_top, stats_pace, rb
+	audio_total0, audio_samples0 = audio_speed_total, audio_speed_samples
 }
 
 // SNAPTEST=<save>,<load>: save state at presented frame <save>, load it

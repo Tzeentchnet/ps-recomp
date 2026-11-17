@@ -51,6 +51,60 @@ audio_fail :: proc(format: string, args: ..any) {
 }
 
 test_audio_step :: proc() {
+	speed := core.Audio_Speed{value = 1}
+	for _ in 0 ..< 8 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 50)
+	}
+	if abs(speed.value - 5.0 / 6) > 0.001 {
+		audio_fail("host speed %.5f after sustained 50 fps, want %.5f", speed.value, 5.0 / 6)
+	}
+	before_stall := speed.value
+	stalled := core.audio_speed_update(&speed, 1.0 / 60, 0.25)
+	if stalled != before_stall {
+		audio_fail("host speed %.5f after a pause, want %.5f held", stalled, before_stall)
+	}
+
+	speed = core.Audio_Speed{value = 1}
+	for _ in 0 ..< 4 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 60)
+	}
+	for _ in 0 ..< 3 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 60)
+	}
+	core.audio_speed_update(&speed, 1.0 / 60, 0.026)
+	if speed.value != 1 {
+		audio_fail("host speed %.5f after one late field, want 1", speed.value)
+	}
+	for _ in 0 ..< 4 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 60)
+	}
+	if speed.value != 1 {
+		audio_fail("host speed %.5f after transient recovery, want 1", speed.value)
+	}
+
+	speed = core.Audio_Speed{value = 1}
+	for _ in 0 ..< 4 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 45)
+	}
+	if abs(speed.value - 0.75) > 0.001 {
+		audio_fail("host speed %.5f after sustained 45 fps, want 0.75", speed.value)
+	}
+
+	speed = core.Audio_Speed{value = 1}
+	for _ in 0 ..< 4 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 75)
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 37.5)
+	}
+	if abs(speed.value - 5.0 / 6) > 0.001 {
+		audio_fail("host speed %.5f for alternating fields, want %.5f", speed.value, 5.0 / 6)
+	}
+	for _ in 0 ..< 4 {
+		core.audio_speed_update(&speed, 1.0 / 60, 1.0 / 60)
+	}
+	if speed.value != 1 {
+		audio_fail("host speed %.5f after recovery, want 1", speed.value)
+	}
+
 	// 59.817 Hz fields shown at 60 Hz: each real 1/60 s mixes a field.
 	mixed := f64(RATE) / 59.817
 	played := f64(RATE) / 60
