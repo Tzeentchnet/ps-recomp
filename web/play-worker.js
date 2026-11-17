@@ -99,9 +99,9 @@ onmessage = async ({ data }) => {
 	const written = () => {
 		if (out && wasi !== null) return [...wasi.files(wasi.data)].map(([name, bytes]) => [name, bytes.slice()]);
 		if (!test || wasi === null) return undefined;
-		const out = [...wasi.files()].map(([name, bytes]) => [name, bytes.slice()]);
-		out.push(["ring.pcm", concat(ring)]);
-		return out;
+		const list = [...wasi.files()].map(([name, bytes]) => [name, bytes.slice()]);
+		list.push(["ring.pcm", concat(ring)]);
+		return list;
 	};
 	try {
 		const t0 = performance.now();
