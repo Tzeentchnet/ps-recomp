@@ -125,6 +125,9 @@ platform_init :: proc(title: cstring) -> bool {
 	// SDL's renderer; otherwise the Vulkan GS at SCALE times the native
 	// resolution (default 1 headless, 3 in a window).
 	hw = gs.HW && core.env("SW") != "1"
+	// BANDS=n: the software GS draws with n worker threads (default 1: on
+	// the GS write path).
+	if v, ok := strconv.parse_int(core.env("BANDS")); ok && !hw {gs.band_set(v)}
 	scale := core.headless ? 1 : 3
 	if v, ok := strconv.parse_int(core.env("SCALE")); ok && v >= 1 && v <= 8 {scale = v}
 	flags := sdl.WindowFlags{.RESIZABLE}

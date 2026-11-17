@@ -54,6 +54,16 @@ snap_target: ^Snapshot
 // loaded.
 snap_hooks: [dynamic]Snap_Hook
 
+// Procs run before a snapshot or rollback reads emulated memory and before
+// a load or rewind writes it: a subsystem whose threads touch emulated
+// memory (the software GS's band workers) brings them to rest.
+snap_quiesce: [dynamic]proc()
+
+@(private)
+snap_quiet :: proc() {
+	for q in snap_quiesce {q()}
+}
+
 Snap_Hook :: struct {
 	save, load: proc(id: int),
 }
@@ -207,6 +217,7 @@ SNAP_FLAT :: u8(1) when FLAT else u8(0)
 
 @(private = "file")
 snap_save :: proc(s: ^Snapshot) {
+	snap_quiet()
 	clear(&s.data)
 	append(&s.data, SNAP_FLAT)
 	put_regions(&s.data)
@@ -223,6 +234,7 @@ snap_save :: proc(s: ^Snapshot) {
 
 @(private = "file")
 snap_load :: proc(s: ^Snapshot) {
+	snap_quiet()
 	if len(s.data) == 0 || s.data[0] != SNAP_FLAT {
 		model :: proc(flat: bool) -> string {return flat ? "a FLAT (wasm)" : "a native (coroutine)"}
 		fatal("snapshot: saved by %s build, loaded by %s one; save states do not cross between them", model(!FLAT), model(FLAT))

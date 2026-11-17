@@ -70,51 +70,56 @@ Tc_Owner :: struct {
 	e, b: u16, // entry and tile index; e TC_ENTRIES when the slot is free
 }
 
+// One texture cache: the draw path's (tc_main), and one per band worker
+// (band.odin), each reached from the Tex it samples (Tex.tc).
 @(private)
-tc_e: [TC_ENTRIES]Tc_Entry
-@(private)
-tc_pool: [TC_TILES][256]u32
-@(private)
-tc_owner: [TC_TILES]Tc_Owner
-// Slots never used yet are tc_top.., dropped ones are on tc_free; with
-// neither left every slot is owned and tc_hand picks the one to reuse.
-@(private)
-tc_top, tc_hand, tc_nfree: u32
-@(private)
-tc_free: [TC_TILES]u16
+Tc :: struct {
+	e:     [TC_ENTRIES]Tc_Entry,
+	pool:  [TC_TILES][256]u32,
+	owner: [TC_TILES]Tc_Owner,
+	// Slots never used yet are top.., dropped ones are on free; with
+	// neither left every slot is owned and hand picks the one to reuse.
+	top, hand, nfree: u32,
+	free:  [TC_TILES]u16,
+	// Page write stamps: a page written after an entry's validation at gen g
+	// has page_gen > g. Draws and transfers collect their pages in pending;
+	// the next resolve stamps them, so a primitive costs its bounding box only.
+	page_gen: [PAGES]u64,
+	gen:      u64,
+	pending:  Page_Set,
+	use:      u64,
+	// The CLUT sampled and its generation: the global clut and clut_gen
+	// for tc_main, a worker's copy of them otherwise.
+	clut:     ^[512]u32,
+	clut_gen: ^u64,
+	// The current context's entry per mip level, or TC_UNRESOLVED/TC_BYPASS,
+	// the context (tc_ctx), and the pages it writes (wpages, computed when
+	// first needed).
+	lvl:      [7]i32,
+	ctx:      ^Ctx,
+	wpages:   Page_Set,
+	wready:   bool,
+	// The tile tile_at returned last, keyed by level and tile coordinates
+	// (tc_tile_key), when the whole tile lies inside its entry; TC_NO_TILE when
+	// none. Reset wherever a level's entry or a pool slot can change: a new
+	// context (tc_ctx), a write (tc_write_rect), a dropped entry (tc_drop) and
+	// a slot taken from its tile (tc_alloc).
+	last_key: u64,
+	last:     ^[256]u32,
+}
 
-// Page write stamps: a page written after an entry's validation at gen g
-// has page_gen > g. Draws and transfers collect their pages in tc_pending;
-// the next resolve stamps them, so a primitive costs its bounding box only.
+// The cache of the GS write path, sampling the CLUT itself.
 @(private)
-page_gen: [PAGES]u64
-@(private)
-tc_gen: u64 = 1
-@(private)
-tc_pending: Page_Set
-@(private)
-tc_use: u64
+tc_main: Tc
+
+@(init, private)
+tc_main_init :: proc "contextless" () {
+	tc_main.gen, tc_main.clut, tc_main.clut_gen, tc_main.last_key = 1, &clut, &clut_gen, TC_NO_TILE
+}
+
 // Bumped by a software CLUT load that changes a word of the buffer.
 @(private)
 clut_gen: u64 = 1
-
-// The current context's entry per mip level, or TC_UNRESOLVED/TC_BYPASS,
-// and the pages it writes (tc_wpages, computed when first needed).
-@(private)
-tc_lvl: [7]i32
-@(private)
-tc_wpages: Page_Set
-@(private)
-tc_wready: bool
-// The tile tile_at returned last, keyed by level and tile coordinates
-// (tc_tile_key), when the whole tile lies inside its entry; TC_NO_TILE when
-// none. Reset wherever a level's entry or a pool slot can change: a new
-// context (tc_ctx), a write (tc_write_rect), a dropped entry (tc_drop) and
-// a slot taken from its tile (tc_alloc).
-@(private)
-tc_last_key: u64 = TC_NO_TILE
-@(private)
-tc_last: ^[256]u32
 @(private)
 TC_NO_TILE :: ~u64(0)
 
@@ -127,28 +132,29 @@ tc_tile_key :: #force_inline proc "contextless" (n, x, y: u32) -> u64 {
 // texel comes from fetch: an unresolved or bypassed level, or (xe, ye)
 // outside the entry (a caller using the tile for several texels passes
 // their largest coordinates, which lie in the tile of (x, y)). Unchecked:
-// n <= 6 (mxl is clamped), a resolved tc_lvl is an entry index, x < cw and
+// n <= 6 (mxl is clamped), a resolved tc.lvl is an entry index, x < cw and
 // y < ch keep the tile index under tw * 64 <= TC_MAP, and a nonzero tile
 // is a slot + 1.
 @(private)
 tile_at :: #force_inline proc(t: ^Tex, n, x, y, xe, ye: u32) -> ^[256]u32 #no_bounds_check {
+	tc := t.tc
 	key := tc_tile_key(n, x, y)
-	if key == tc_last_key {return tc_last}
-	l := tc_lvl[n]
+	if key == tc.last_key {return tc.last}
+	l := tc.lvl[n]
 	if l < 0 {
 		if l == TC_UNRESOLVED {
 			l = tc_resolve(t, n)
-			tc_lvl[n] = l
+			tc.lvl[n] = l
 		}
 		if l < 0 {return nil}
 	}
-	e := &tc_e[l]
+	e := &tc.e[l]
 	if xe >= e.key.cw || ye >= e.key.ch {return nil}
 	s := u32(e.tile[(y >> 4) * e.tw + (x >> 4)])
-	if s == 0 {s = tc_decode(e, u32(l), t, n, x >> 4, y >> 4)}
-	p := &tc_pool[s - 1]
+	if s == 0 {s = tc_decode(tc, e, u32(l), t, n, x >> 4, y >> 4)}
+	p := &tc.pool[s - 1]
 	// A tile wholly inside the level: any (xe, ye) in it passes the test above.
-	if x | 15 < e.key.cw && y | 15 < e.key.ch {tc_last_key, tc_last = key, p}
+	if x | 15 < e.key.cw && y | 15 < e.key.ch {tc.last_key, tc.last = key, p}
 	return p
 }
 
@@ -162,10 +168,11 @@ texel :: #force_inline proc(t: ^Tex, n, x, y: u32) -> u32 #no_bounds_check {
 
 // A new context: every level resolves again on its first sample.
 @(private)
-tc_ctx :: proc() {
-	for &l in tc_lvl {l = TC_UNRESOLVED}
-	tc_wready = false
-	tc_last_key = TC_NO_TILE
+tc_ctx :: proc(tc: ^Tc, c: ^Ctx) {
+	tc.ctx = c
+	for &l in tc.lvl {l = TC_UNRESOLVED}
+	tc.wready = false
+	tc.last_key = TC_NO_TILE
 }
 
 // A host-to-local chunk or local-to-local copy writing w x h pixels from
@@ -173,39 +180,57 @@ tc_ctx :: proc() {
 // validate again before their next sample.
 @(private)
 tc_write_rect :: proc(bp, bw, psm, x0, y0, w, h: u32) {
-	page_rect(psm, bp, bw, x0, y0, x0 + w, y0 + h, &tc_pending)
-	for &l in tc_lvl {if l >= 0 {l = TC_UNRESOLVED}}
-	tc_last_key = TC_NO_TILE
+	tc := &tc_main
+	p: Page_Set
+	page_rect(psm, bp, bw, x0, y0, x0 + w, y0 + h, &p)
+	for v, i in p {tc.pending[i] |= v}
+	if band.n > 0 {band_write(&p)}
+	for &l in tc.lvl {if l >= 0 {l = TC_UNRESOLVED}}
+	tc.last_key = TC_NO_TILE
 }
 
 // A primitive about to be drawn: the pages its bounding box, clipped to the
 // scissor, reaches in the frame buffer and, when written, the Z buffer.
 @(private)
-tc_draw :: proc(c: ^Ctx, kind: u64) #no_bounds_check {
+tc_draw :: proc(tc: ^Tc, c: ^Ctx, kind: u64, queue: ^[3]Vertex) {
+	x0, y0, x1, y1, ok := prim_rect(c, kind, queue)
+	if !ok {return}
+	page_rect(c.fpsm, c.fbp, c.fbw, x0, y0, x1, y1, &tc.pending)
+	if c.zte && !c.zmsk {page_rect(c.zpsm, c.zbp, c.fbw, x0, y0, x1, y1, &tc.pending)}
+}
+
+// The pixels [x0, x1) x [y0, y1) primitive `kind` of queue may write: its
+// bounding box clipped to the scissor; false when empty.
+@(private)
+prim_rect :: proc(c: ^Ctx, kind: u64, queue: ^[3]Vertex) -> (x0, y0, x1, y1: u32, ok: bool) #no_bounds_check {
 	@(static, rodata) verts := [8]int{1, 2, 2, 3, 3, 3, 2, 1}
-	x0, y0, x1, y1 := queue[0].x, queue[0].y, queue[0].x, queue[0].y
+	fx0, fy0, fx1, fy1 := queue[0].x, queue[0].y, queue[0].x, queue[0].y
 	for i in 1 ..< verts[kind & 7] {
-		x0, x1 = min(x0, queue[i].x), max(x1, queue[i].x)
-		y0, y1 = min(y0, queue[i].y), max(y1, queue[i].y)
+		fx0, fx1 = min(fx0, queue[i].x), max(fx1, queue[i].x)
+		fy0, fy1 = min(fy0, queue[i].y), max(fy1, queue[i].y)
 	}
 	// Rasterisers write floor..ceil of the box at most.
-	ix0, iy0 := max(i32(x0), c.sx0, 0), max(i32(y0), c.sy0, 0)
-	ix1, iy1 := min(i32(x1) + 1, c.sx1), min(i32(y1) + 1, c.sy1)
+	ix0, iy0 := max(i32(fx0), c.sx0, 0), max(i32(fy0), c.sy0, 0)
+	ix1, iy1 := min(i32(fx1) + 1, c.sx1), min(i32(fy1) + 1, c.sy1)
 	if ix1 < ix0 || iy1 < iy0 {return}
-	page_rect(c.fpsm, c.fbp, c.fbw, u32(ix0), u32(iy0), u32(ix1) + 1, u32(iy1) + 1, &tc_pending)
-	if c.zte && !c.zmsk {
-		page_rect(c.zpsm, c.zbp, c.fbw, u32(ix0), u32(iy0), u32(ix1) + 1, u32(iy1) + 1, &tc_pending)
-	}
+	return u32(ix0), u32(iy0), u32(ix1) + 1, u32(iy1) + 1, true
 }
 
 // Drop every entry: local memory and the CLUT may be anything now.
 tc_flush :: proc() {
-	for &e in tc_e {
-		if e.used {tc_drop(&e)}
+	tc_drop_all(&tc_main)
+	band_flush()
+}
+
+// Drops every entry of tc.
+@(private)
+tc_drop_all :: proc(tc: ^Tc) {
+	for &e in tc.e {
+		if e.used {tc_drop(tc, &e)}
 		e.used = false
 	}
-	tc_pending = {}
-	tc_ctx()
+	tc.pending = {}
+	tc_ctx(tc, tc.ctx)
 }
 
 // Page size and pages per buffer row of a format at width bw.
@@ -251,10 +276,10 @@ pages_meet :: proc(a, b: ^Page_Set) -> bool {
 
 // Stamp the pending writes.
 @(private)
-tc_stamp :: proc() #no_bounds_check {
-	for &w, i in tc_pending {
+tc_stamp :: proc(tc: ^Tc) #no_bounds_check {
+	for &w, i in tc.pending {
 		for w != 0 {
-			page_gen[u32(i) * 64 + u32(bits.count_trailing_zeros(w))] = tc_gen
+			tc.page_gen[u32(i) * 64 + u32(bits.count_trailing_zeros(w))] = tc.gen
 			w &= w - 1
 		}
 	}
@@ -264,6 +289,7 @@ tc_stamp :: proc() #no_bounds_check {
 // TC_BYPASS when the context writes a page the level spans.
 @(private, cold)
 tc_resolve :: proc(t: ^Tex, n: u32) -> i32 #no_bounds_check {
+	tc := t.tc
 	k := Tc_Key {
 		psm = t.psm,
 		tbp = t.mtbp[n],
@@ -283,94 +309,94 @@ tc_resolve :: proc(t: ^Tex, n: u32) -> i32 #no_bounds_check {
 	}
 	if texa {k.ta0, k.ta1, k.aem = t.ta0, t.ta1, t.aem}
 
-	if !tc_wready {
-		c := &ctx_cur
-		tc_wpages = {}
+	if !tc.wready {
+		c := tc.ctx
+		tc.wpages = {}
 		sx0, sy0 := u32(max(c.sx0, 0)), u32(max(c.sy0, 0))
 		sx1, sy1 := u32(max(c.sx1, 0)) + 1, u32(max(c.sy1, 0)) + 1
-		page_rect(c.fpsm, c.fbp, c.fbw, sx0, sy0, sx1, sy1, &tc_wpages)
-		if c.zte && !c.zmsk {page_rect(c.zpsm, c.zbp, c.fbw, sx0, sy0, sx1, sy1, &tc_wpages)}
-		tc_wready = true
+		page_rect(c.fpsm, c.fbp, c.fbw, sx0, sy0, sx1, sy1, &tc.wpages)
+		if c.zte && !c.zmsk {page_rect(c.zpsm, c.zbp, c.fbw, sx0, sy0, sx1, sy1, &tc.wpages)}
+		tc.wready = true
 	}
 
-	tc_stamp()
-	tc_pending = {}
-	tc_use += 1
+	tc_stamp(tc)
+	tc.pending = {}
+	tc.use += 1
 	found := -1
-	for &e, i in tc_e {
-		if e.used && e.key == k && tc_clut_match(&e) {
+	for &e, i in tc.e {
+		if e.used && e.key == k && tc_clut_match(tc, &e) {
 			found = i
 			break
 		}
 	}
 	if found >= 0 {
-		e := &tc_e[found]
-		if pages_meet(&e.pages, &tc_wpages) {return TC_BYPASS}
+		e := &tc.e[found]
+		if pages_meet(&e.pages, &tc.wpages) {return TC_BYPASS}
 		for w, i in e.pages {
 			m := w
 			for m != 0 {
-				if page_gen[u32(i) * 64 + u32(bits.count_trailing_zeros(m))] > e.gen {
-					tc_drop(e)
+				if tc.page_gen[u32(i) * 64 + u32(bits.count_trailing_zeros(m))] > e.gen {
+					tc_drop(tc, e)
 					break
 				}
 				m &= m - 1
 			}
 		}
-		e.gen, e.last = tc_gen, tc_use
-		tc_gen += 1
+		e.gen, e.last = tc.gen, tc.use
+		tc.gen += 1
 		return i32(found)
 	}
 
 	pages: Page_Set
 	page_rect(k.psm, k.tbp, k.tbw, 0, 0, k.cw, k.ch, &pages)
-	if pages_meet(&pages, &tc_wpages) {return TC_BYPASS}
-	slot := tc_victim()
-	e := &tc_e[slot]
-	if e.used {tc_drop(e)}
+	if pages_meet(&pages, &tc.wpages) {return TC_BYPASS}
+	slot := tc_victim(tc)
+	e := &tc.e[slot]
+	if e.used {tc_drop(tc, e)}
 	e.used, e.key, e.pages = true, k, pages
 	e.tw = (k.cw + 15) >> 4
-	e.gen, e.last, e.clut_gen = tc_gen, tc_use, clut_gen
-	for i in 0 ..< k.nclut {e.clut[i] = clut[(k.csa * 16 + i) & 511]}
-	tc_gen += 1
+	e.gen, e.last, e.clut_gen = tc.gen, tc.use, tc.clut_gen^
+	for i in 0 ..< k.nclut {e.clut[i] = tc.clut[(k.csa * 16 + i) & 511]}
+	tc.gen += 1
 	return i32(slot)
 }
 
 // The entry's CLUT entries are the CLUT's now.
 @(private)
-tc_clut_match :: proc(e: ^Tc_Entry) -> bool #no_bounds_check {
-	if e.key.nclut == 0 || e.clut_gen == clut_gen {return true}
+tc_clut_match :: proc(tc: ^Tc, e: ^Tc_Entry) -> bool #no_bounds_check {
+	if e.key.nclut == 0 || e.clut_gen == tc.clut_gen^ {return true}
 	for i in 0 ..< e.key.nclut {
-		if e.clut[i] != clut[(e.key.csa * 16 + i) & 511] {return false}
+		if e.clut[i] != tc.clut[(e.key.csa * 16 + i) & 511] {return false}
 	}
-	e.clut_gen = clut_gen
+	e.clut_gen = tc.clut_gen^
 	return true
 }
 
 // An unused entry, else the least recently resolved one no level of the
 // current context holds.
 @(private)
-tc_victim :: proc() -> int {
+tc_victim :: proc(tc: ^Tc) -> int {
 	best := -1
-	outer: for &e, i in tc_e {
+	outer: for &e, i in tc.e {
 		if !e.used {return i}
-		for l in tc_lvl {if l == i32(i) {continue outer}}
-		if best < 0 || e.last < tc_e[best].last {best = i}
+		for l in tc.lvl {if l == i32(i) {continue outer}}
+		if best < 0 || e.last < tc.e[best].last {best = i}
 	}
-	assert(best >= 0) // TC_ENTRIES > len(tc_lvl)
+	assert(best >= 0) // TC_ENTRIES > len(tc.lvl)
 	return best
 }
 
 // Return the entry's tiles to the pool.
 @(private)
-tc_drop :: proc(e: ^Tc_Entry) #no_bounds_check {
+tc_drop :: proc(tc: ^Tc, e: ^Tc_Entry) #no_bounds_check {
 	if e.live == 0 {return}
-	tc_last_key = TC_NO_TILE
+	tc.last_key = TC_NO_TILE
 	th := (e.key.ch + 15) >> 4
 	for &s in e.tile[:e.tw * th] {
 		if s == 0 {continue}
-		tc_owner[s - 1].e = TC_ENTRIES
-		tc_free[tc_nfree] = s - 1
-		tc_nfree += 1
+		tc.owner[s - 1].e = TC_ENTRIES
+		tc.free[tc.nfree] = s - 1
+		tc.nfree += 1
 		s = 0
 	}
 	e.live = 0
@@ -379,35 +405,35 @@ tc_drop :: proc(e: ^Tc_Entry) #no_bounds_check {
 // A pool slot: never used, dropped, or else the next one round the pool,
 // taken from the tile that holds it.
 @(private)
-tc_alloc :: proc() -> u32 #no_bounds_check {
-	if tc_nfree > 0 {
-		tc_nfree -= 1
-		return u32(tc_free[tc_nfree])
+tc_alloc :: proc(tc: ^Tc) -> u32 #no_bounds_check {
+	if tc.nfree > 0 {
+		tc.nfree -= 1
+		return u32(tc.free[tc.nfree])
 	}
-	if tc_top < TC_TILES {
-		tc_top += 1
-		return tc_top - 1
+	if tc.top < TC_TILES {
+		tc.top += 1
+		return tc.top - 1
 	}
-	s := tc_hand
-	tc_hand = (tc_hand + 1) % TC_TILES
-	tc_last_key = TC_NO_TILE
-	o := tc_owner[s]
+	s := tc.hand
+	tc.hand = (tc.hand + 1) % TC_TILES
+	tc.last_key = TC_NO_TILE
+	o := tc.owner[s]
 	assert(o.e < TC_ENTRIES) // with no free slot every slot is owned
-	tc_e[o.e].tile[o.b] = 0
-	tc_e[o.e].live -= 1
+	tc.e[o.e].tile[o.b] = 0
+	tc.e[o.e].live -= 1
 	return s
 }
 
 // Decode tile (tx, ty) of entry ei (level n of t) and return its slot + 1.
 @(private, cold)
-tc_decode :: proc(e: ^Tc_Entry, ei: u32, t: ^Tex, n, tx, ty: u32) -> u32 #no_bounds_check {
-	s := tc_alloc()
+tc_decode :: proc(tc: ^Tc, e: ^Tc_Entry, ei: u32, t: ^Tex, n, tx, ty: u32) -> u32 #no_bounds_check {
+	s := tc_alloc(tc)
 	b := ty * e.tw + tx
 	x0, y0 := tx * 16, ty * 16
-	tc_fill(&tc_pool[s], t, n, x0, y0, min(16, e.key.cw - x0), min(16, e.key.ch - y0))
+	tc_fill(&tc.pool[s], t, n, x0, y0, min(16, e.key.cw - x0), min(16, e.key.ch - y0))
 	e.tile[b] = u16(s + 1)
 	e.live += 1
-	tc_owner[s] = {u16(ei), u16(b)}
+	tc.owner[s] = {u16(ei), u16(b)}
 	return s + 1
 }
 
@@ -464,8 +490,8 @@ tc_x16 :: #force_inline proc(c: u32, ta: Tc_Texa) -> u32 {
 // CLUT entry i from `base`, fetch's colour for an indexed texel: as it is
 // for a 32-bit CLUT, expanded for a 16-bit one.
 @(private = "file")
-tc_pal :: #force_inline proc(base, i: u32, ta: Tc_Texa, $C16: bool) -> u32 #no_bounds_check {
-	c := clut[(base + i) & 511]
+tc_pal :: #force_inline proc(cl: ^[512]u32, base, i: u32, ta: Tc_Texa, $C16: bool) -> u32 #no_bounds_check {
+	c := cl[(base + i) & 511]
 	when C16 {return tc_x16(c & 0xffff, ta)} else {return c}
 }
 
@@ -496,11 +522,11 @@ tc_fill_w :: #force_inline proc(out: ^[256]u32, t: ^Tex, n, x0, y0, w, h: u32, t
 			} else when K == .CT24 {
 				o[x] = v & 0xffffff | (ta.aem && v & 0xffffff == 0 ? 0 : ta.a0)
 			} else when K == .T8H {
-				o[x] = tc_pal(pal, v >> 24, ta, C16)
+				o[x] = tc_pal(t.tc.clut, pal, v >> 24, ta, C16)
 			} else when K == .T4HL {
-				o[x] = tc_pal(pal, (v >> 24) & 15, ta, C16)
+				o[x] = tc_pal(t.tc.clut, pal, (v >> 24) & 15, ta, C16)
 			} else {
-				o[x] = tc_pal(pal, v >> 28, ta, C16)
+				o[x] = tc_pal(t.tc.clut, pal, v >> 28, ta, C16)
 			}
 		}
 	}
@@ -530,7 +556,7 @@ tc_fill_8 :: #force_inline proc(out: ^[256]u32, t: ^Tex, n, x0, y0, w, h: u32, t
 		col := &col8[y]
 		o := ([^]u32)(out)[y << 4:]
 		for x in 0 ..< w {
-			o[x] = tc_pal(pal, u32(vram8()[(base + col[x]) & (4 * VRAM_WORDS - 1)]), ta, C16)
+			o[x] = tc_pal(t.tc.clut, pal, u32(vram8()[(base + col[x]) & (4 * VRAM_WORDS - 1)]), ta, C16)
 		}
 	}
 }
@@ -544,7 +570,7 @@ tc_fill_4 :: #force_inline proc(out: ^[256]u32, t: ^Tex, n, x0, y0, w, h: u32, t
 		o := ([^]u32)(out)[y << 4:]
 		for x in 0 ..< w {
 			a := (base + col[x]) & (8 * VRAM_WORDS - 1)
-			o[x] = tc_pal(pal, u32(vram8()[a >> 1] >> ((a & 1) * 4)) & 15, ta, C16)
+			o[x] = tc_pal(t.tc.clut, pal, u32(vram8()[a >> 1] >> ((a & 1) * 4)) & 15, ta, C16)
 		}
 	}
 }

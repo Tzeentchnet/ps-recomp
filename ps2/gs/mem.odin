@@ -360,6 +360,7 @@ xfer_start :: proc(dir: u32) {
 			hw_copy(sbp, sbw, spsm, dbp, dbw, dpsm, sx, sy, dx, dy, w, h)
 			return
 		}
+		band_read(spsm, sbp, sbw, sx, sy, w, h)
 		tc_write_rect(dbp, dbw, dpsm, dx, dy, w, h)
 		for y in 0 ..< h {
 			for x in 0 ..< w {
@@ -428,6 +429,7 @@ transfer :: proc(data: []u8) {
 // or with none active, read 0.
 readback :: proc(dst: []u8) {
 	t := &xfer
+	if t.active && t.out {band_join()}
 	bpp := psm_bits(t.psm)
 	for &b in dst {
 		for t.nbits < 8 && t.active && t.out {
@@ -647,6 +649,7 @@ clut_load :: proc(tex0: u64) #no_bounds_check {
 	cbw, cou, cov := u32(tc) & 0x3f, u32(tc >> 6) & 0x3f, u32(tc >> 12) & 0x3ff
 	// CSM2 reads one row of a cbw-wide buffer; CSM1 at most 4 blocks.
 	if csm2 {shown_read(cbp, cbw, cpsm, cov, 1)} else {shown_read_blocks(cbp, cbp + 4)}
+	if csm2 {band_read(cpsm, cbp, cbw, cou * 16, cov, n, 1)} else {band_read_blocks(cbp, cbp + 4)}
 	if hw_on {
 		hw_clut(cpsm, cbp, cbw, cou, cov, csm2, n, base)
 		return

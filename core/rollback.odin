@@ -84,6 +84,7 @@ rb_frames :: proc() -> int {
 // Record the state at this vblank as the newest frame.
 @(private)
 rb_commit :: proc() {
+	snap_quiet()
 	if !rb.on && !rb_start() {panic(RB_NEED)}
 	t := time.tick_now()
 	rb.head = (rb.head + 1) % RB_FRAMES
@@ -119,6 +120,7 @@ rb_commit :: proc() {
 // Go back to the state `back` commits ago (1 = the last one).
 @(private)
 rb_rewind :: proc(back: int) {
+	snap_quiet()
 	assert(back >= 1 && back <= rb.count, "rollback: frame not held")
 	for a in rb.areas {
 		rb_scan(a, proc(a: Rb_Area, off: int, _: rawptr) {

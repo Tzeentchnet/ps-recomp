@@ -12,7 +12,7 @@ import "core:math"
 probe_ctx :: proc(prim: u64) {
 	ctx_cur = decode_ctx(prim | 1 << 4)
 	ctx_key = {~u64(0), ~u64(0)}
-	tc_ctx()
+	tc_ctx(&tc_main, &ctx_cur)
 }
 
 // sample_level on the probed context's texture.
@@ -54,7 +54,7 @@ probe_flat :: proc() -> bool {
 // Whether level n of the current context's texture is read from local
 // memory, not the texture cache: the context writes a page of it.
 probe_bypass :: proc(n: u32) -> bool {
-	return tc_lvl[n] == TC_BYPASS
+	return tc_main.lvl[n] == TC_BYPASS
 }
 
 // Pixel calls since probe_tally(true), by their LOD: <= 0, > 0.
@@ -232,13 +232,13 @@ probe_clut_gen :: proc() -> u64 {
 // The cache entry of level n of the probed context's texture, once a
 // sample has resolved it.
 probe_entry :: proc(n: u32) -> i32 {
-	return tc_lvl[n]
+	return tc_main.lvl[n]
 }
 
 // Whether cache entry e's CLUT entries are known to be the buffer's, so
 // that validating it compares none.
 probe_clut_known :: proc(e: i32) -> bool {
-	return tc_e[e].clut_gen == clut_gen
+	return tc_main.e[e].clut_gen == clut_gen
 }
 
 // Level n's texel (x, y) of the probed context's texture, from local memory
@@ -294,7 +294,7 @@ clut_load_ref :: proc(tex0: u64) {
 // (tests/gs_decode).
 probe_tiles_fill :: proc(v: u32) {
 	tc_flush()
-	for &tile in tc_pool {tile = v}
+	for &tile in tc_main.pool {tile = v}
 }
 
 // The cached tile holding level n's texel (x, y) of the probed context's

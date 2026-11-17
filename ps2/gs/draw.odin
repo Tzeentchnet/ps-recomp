@@ -54,6 +54,7 @@ Tex :: struct {
 	mtbp, mtbw:         [7]u32,
 	// Level n's wrap, set for levels 0..mxl (tex_wrap).
 	wrap:               [7]Tex_Wrap,
+	tc:                 ^Tc, // the texture cache sampled: tc_main, or a band worker's
 }
 
 // One level's wrap of the bilinear taps' coordinates (x0, x1, y0, y1),
@@ -87,6 +88,9 @@ Ctx :: struct {
 	px:                      Pixel_Proc, // pixel or a fast proc (px_pick)
 	fogcol:                  [3]i32,
 	tex:                     Tex,
+	// A band worker draws the rows y of its band alone: (y >> 3) % nband
+	// == band (band.odin). nband 0 or 1 draws every row.
+	band, nband:             u32,
 }
 
 // Every GS register write lands here after gs_write stores it.
@@ -249,6 +253,7 @@ decode_ctx :: proc(prim: u64) -> (c: Ctx) #no_bounds_check {
 		tex_wrap(&c.tex)
 	}
 	c.px = px_pick(&c)
+	c.tex.tc = &tc_main
 	return
 }
 
@@ -272,7 +277,8 @@ draw :: proc(kind, prim: u64) {
 	key := [2]u64{ctx_gen, prim & CTX_PRIM}
 	if key != ctx_key {
 		ctx_cur, ctx_key = decode_ctx(prim), key
-		tc_ctx()
+		tc_ctx(&tc_main, &ctx_cur)
+		band_ctx_new()
 	}
 	c := &ctx_cur
 	if skip_on && c.on_display {return} // headless: a shown buffer, redrawn before it is read
@@ -281,13 +287,29 @@ draw :: proc(kind, prim: u64) {
 		hw_draw(c, kind)
 		return
 	}
-	tc_draw(c, kind)
-	switch kind {
-	case 0: draw_point(c, &queue[0])
-	case 1, 2: draw_line(c, &queue[0], &queue[1])
-	case 3, 4, 5: draw_tri(c, &queue[0], &queue[1], &queue[2])
-	case 6: draw_sprite(c, &queue[0], &queue[1])
+	if band.n > 0 {
+		band_draw(c, kind)
+		return
 	}
+	tc_draw(&tc_main, c, kind, &queue)
+	raster(c, kind, &queue)
+}
+
+// Rasterises primitive `kind` of vertices q in context c.
+@(private)
+raster :: proc(c: ^Ctx, kind: u64, q: ^[3]Vertex) {
+	switch kind {
+	case 0: draw_point(c, &q[0])
+	case 1, 2: draw_line(c, &q[0], &q[1])
+	case 3, 4, 5: draw_tri(c, &q[0], &q[1], &q[2])
+	case 6: draw_sprite(c, &q[0], &q[1])
+	}
+}
+
+// Whether row y belongs to another band than c's (Ctx.band).
+@(private)
+band_skip :: #force_inline proc "contextless" (c: ^Ctx, y: i32) -> bool {
+	return c.nband > 1 && (u32(y) >> 3) % c.nband != c.band
 }
 
 // ------------------------------------------------------------ rasteriser
@@ -295,7 +317,7 @@ draw :: proc(kind, prim: u64) {
 @(private)
 draw_point :: proc(c: ^Ctx, v: ^Vertex) {
 	x, y := i32(math.floor(v.x)), i32(math.floor(v.y))
-	if x < c.sx0 || x > c.sx1 || y < c.sy0 || y > c.sy1 {return}
+	if x < c.sx0 || x > c.sx1 || y < c.sy0 || y > c.sy1 || band_skip(c, y) {return}
 	u, tv, lod := tex_coord(c, {v.s, v.t, v.u, v.v}, v.q)
 	ctx_seek(c, y)
 	c.px(c, x, y, v.z, v.c, u, tv, lod, v.fog)
@@ -310,7 +332,7 @@ draw_line :: proc(c: ^Ctx, a, b: ^Vertex) {
 		v := lerp_vertex(a, b, f)
 		if !c.iip {v.c = b.c}
 		x, y := i32(math.floor(v.x)), i32(math.floor(v.y))
-		if x < c.sx0 || x > c.sx1 || y < c.sy0 || y > c.sy1 {continue}
+		if x < c.sx0 || x > c.sx1 || y < c.sy0 || y > c.sy1 || band_skip(c, y) {continue}
 		u, tv, lod := tex_coord(c, {v.s, v.t, v.u, v.v}, v.q)
 		ctx_seek(c, y)
 		c.px(c, x, y, v.z, v.c, u, tv, lod, v.fog)
@@ -414,6 +436,7 @@ draw_sprite :: proc(c: ^Ctx, a, b: ^Vertex) {
 	py0 := max(i32(math.ceil(y0)), c.sy0)
 	py1 := min(i32(math.ceil(y1)) - 1, c.sy1)
 	for y in py0 ..= py1 {
+		if band_skip(c, y) {continue}
 		fy := (f32(y) - y0) / (y1 - y0)
 		vv := va + (vb - va) * fy
 		tt := ta + (tb - ta) * fy
@@ -506,7 +529,7 @@ draw_tri :: proc(c: ^Ctx, v0, v1, v2: ^Vertex) {
 			}
 			r.w += r.dx
 		}
-		if ks > ke {continue}
+		if ks > ke || band_skip(c, y) {continue}
 		// The weights at ks, exact, then stepped pixel by pixel as a walk
 		// from minx would have stepped them.
 		k := f64(ks)
@@ -583,7 +606,7 @@ fetch :: proc(t: ^Tex, n, x, y: u32) -> u32 #no_bounds_check {
 		return raw | a << 24
 	case PSMCT16, PSMCT16S: return expand16(t, raw)
 	}
-	e := clut[(t.csa * 16 + raw) & 511]
+	e := t.tc.clut[(t.csa * 16 + raw) & 511]
 	if t.cpsm == PSMCT32 {return e}
 	return expand16(t, e & 0xffff)
 }
@@ -596,7 +619,7 @@ fetch_direct :: #force_inline proc(t: ^Tex, n, x, y: u32) -> u32 #no_bounds_chec
 	switch t.psm {
 	case PSMCT32: return vram[addr32(PSMCT32, t.mtbp[n], t.mtbw[n], x, y)]
 	case PSMT8:
-		e := clut[(t.csa * 16 + u32(vram8()[addr8(t.mtbp[n], t.mtbw[n], x, y)])) & 511]
+		e := t.tc.clut[(t.csa * 16 + u32(vram8()[addr8(t.mtbp[n], t.mtbw[n], x, y)])) & 511]
 		if t.cpsm == PSMCT32 {return e}
 		return expand16(t, e & 0xffff)
 	}

@@ -184,6 +184,7 @@ shown_read_blocks :: proc(lo, hi: u32) {
 
 // Copy the active read circuit into `screen`; returns the visible size.
 scanout :: proc() -> (w, h: int) {
+	band_join()
 	pmode := gs_priv(0x00)
 	track_display(pmode)
 	circ: u32 = pmode & 1 != 0 ? 0 : 1
@@ -262,6 +263,7 @@ scanout_rows :: proc(r: ^Row, fbp, fbw, dbx, dby: u32, w, h: int, $WIDE: bool) #
 // Debug: write the texture TEX0_1 currently names, as raw indices (8/4-bit)
 // or colours, to a PPM.
 dump_tex :: proc(path: string) -> []u8 {
+	band_join()
 	t0 := state.regs[0x06]
 	tbp, tbw, psm := u32(t0) & 0x3fff, u32(t0 >> 14) & 0x3f, u32(t0 >> 20) & 0x3f
 	w, h := u32(1) << (u32(t0 >> 26) & 0xf), u32(1) << (u32(t0 >> 30) & 0xf)
