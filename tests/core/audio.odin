@@ -51,6 +51,16 @@ audio_fail :: proc(format: string, args: ..any) {
 }
 
 test_audio_step :: proc() {
+	if !core.audio_queue_can_accept(.Paced, TARGET + RATE / 30, TARGET, RATE) {
+		audio_fail("paced queue rejected a transient two-field burst")
+	}
+	if core.audio_queue_can_accept(.Fast, TARGET + 1, TARGET, RATE) {
+		audio_fail("fast queue accepted sound above its target")
+	}
+	if core.audio_queue_can_accept(.Paced, RATE * core.AUDIO_LATENCY_MAX / 1000 + 1, TARGET, RATE) {
+		audio_fail("paced queue accepted sound above its hard limit")
+	}
+
 	// 59.817 Hz fields shown at 60 Hz: each real 1/60 s mixes a field.
 	mixed := f64(RATE) / 59.817
 	played := f64(RATE) / 60
