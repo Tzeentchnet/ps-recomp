@@ -15,9 +15,10 @@
 //   proportional part to make up the difference;
 // - below speed 1 the sound is stretched to fill real time, playing lower
 //   and slower in step with the picture;
-// - a queue past the target plus two frames of slack drops the batch, and
-//   one that ran dry is refilled with silence to the target at once, or the
-//   rate correction would take seconds and every frame would click.
+// - one that ran dry is refilled with silence to the target at once, or the
+//   rate correction would take seconds and every frame would click. Paced
+//   audio may grow to the maximum supported latency rather than delete a
+//   batch after a transient stall; fast-forward still drops above the target.
 package core
 
 import "core:fmt"
@@ -224,12 +225,7 @@ audio_push :: proc(frames: [][2]i16, speed: f64 = 1, pace: Audio_Pace = .Paced) 
 	}
 	queued := int(sdl.GetQueuedAudioSize(audio.dev)) / size_of([2]i16)
 	audio.low = min(audio.low, queued)
-	// Queue beyond the target before batches are dropped: two frames of
-	// sound at 60 Hz. Paced emulation makes a frame's sound in one burst, so
-	// the queue swings by one frame; it outgrows this only while emulation
-	// runs ahead.
-	slack := pace == .Fast ? 0 : audio.rate * 2 / 60
-	if queued > audio.target + slack {
+	if !audio_queue_can_accept(pace, queued, audio.target, audio.rate) {
 		if pace != .Fast {
 			audio.stats.dropped += 1
 		}
@@ -248,6 +244,16 @@ audio_push :: proc(frames: [][2]i16, speed: f64 = 1, pace: Audio_Pace = .Paced) 
 	for i := 0; i < len(frames); i += AUDIO_CHUNK {
 		audio_queue(audio_resample(frames[i:][:min(AUDIO_CHUNK, len(frames) - i)], step))
 	}
+}
+
+// Fast-forward keeps no excess queued sound. Paced playback instead keeps
+// transient catch-up audio intact unless the queue is already past the
+// largest supported latency, where dropping bounds memory and device delay.
+audio_queue_can_accept :: proc(pace: Audio_Pace, queued, target, rate: int) -> bool {
+	if pace == .Fast {
+		return queued <= target
+	}
+	return queued <= rate * AUDIO_LATENCY_MAX / 1000
 }
 
 // The rate correction's state, carried from batch to batch.
