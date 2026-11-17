@@ -132,6 +132,9 @@ hw: struct {
 	cur:                 int,
 	vram:                core.Vk_Buf,
 	down:                core.Vk_Buf, // host copy of vram's first layer, for hw_download
+	read:                core.Vk_Buf, // host copy of scanout, made only when hw_screen reads it
+	read_cmd:            vk.CommandBuffer,
+	read_fence:          vk.Fence,
 	draw_layout:         vk.PipelineLayout,
 	comp_layout:         vk.PipelineLayout,
 	prim, upload, copy:  vk.Pipeline,
@@ -215,14 +218,13 @@ hw_init :: proc(win: ^sdl.Window, scale: u32) -> bool {
 	hw.dec = core.vk_buf_create(DEC_WORDS * 4, {.STORAGE_BUFFER}, {.DEVICE_LOCAL})
 	hw.dec_top = DEC_FIRST
 	RING :: vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}
-	READBACK :: vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT, .HOST_CACHED}
 	scan_size := DISP_W * DISP_H * layers * 4
 	for &s in hw.slots {
 		s.verts = core.vk_buf_create(VERT_CAP * size_of(Hw_Vert), {.STORAGE_BUFFER}, RING)
 		s.states = core.vk_buf_create(STATE_CAP * size_of(Hw_State), {.STORAGE_BUFFER}, RING)
 		s.cluts = core.vk_buf_create(CLUT_CAP * 512 * 4, {.STORAGE_BUFFER}, RING)
 		s.up = core.vk_buf_create(UP_CAP * 4, {.STORAGE_BUFFER}, RING)
-		s.scan = core.vk_buf_create(scan_size, {.STORAGE_BUFFER, .TRANSFER_SRC}, READBACK)
+		s.scan = core.vk_buf_create(scan_size, {.STORAGE_BUFFER, .TRANSFER_SRC}, {.DEVICE_LOCAL})
 		s.cmd, s.fence = core.vk_cmd_create()
 		sinfo := vk.SemaphoreCreateInfo {
 			sType = .SEMAPHORE_CREATE_INFO,
@@ -1112,12 +1114,22 @@ hw_present_record :: proc(s: ^Slot, dst: vk.Image) {
 	image_barrier(cmd, dst, .TRANSFER_DST_OPTIMAL, .PRESENT_SRC_KHR)
 }
 
-// The last frame's output, RGBA8888 at the output scale, once the GPU is
-// done with it.
+// The last frame's output, RGBA8888 at the output scale. Scanout stays in
+// device-local memory for presentation and is copied to the host only here.
 hw_screen :: proc() -> (px: []u32, w, h: int) {
 	s := &hw.slots[hw.cur ~ 1]
 	vk.WaitForFences(core.vkc.device, 1, &s.fence, true, max(u64))
-	return ([^]u32)(s.scan.ptr)[:s.scan_w * s.scan_h], s.scan_w, s.scan_h
+	if hw.read.buf == 0 {
+		hw.read = core.vk_buf_create(s.scan.size, {.TRANSFER_DST}, {.HOST_VISIBLE, .HOST_COHERENT, .HOST_CACHED})
+		hw.read_cmd, hw.read_fence = core.vk_cmd_create()
+	}
+	core.vk_begin(hw.read_cmd, hw.read_fence)
+	core.vk_barrier(hw.read_cmd)
+	r := vk.BufferCopy{0, 0, vk.DeviceSize(s.scan_w * s.scan_h * 4)}
+	vk.CmdCopyBuffer(hw.read_cmd, s.scan.buf, hw.read.buf, 1, &r)
+	core.vk_submit(hw.read_cmd, hw.read_fence, 0, 0)
+	vk.WaitForFences(core.vkc.device, 1, &hw.read_fence, true, max(u64))
+	return ([^]u32)(hw.read.ptr)[:s.scan_w * s.scan_h], s.scan_w, s.scan_h
 }
 
 // ---------------------------------------------------------- save states
