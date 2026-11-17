@@ -106,15 +106,34 @@ tc_lvl: [7]i32
 tc_wpages: Page_Set
 @(private)
 tc_wready: bool
+// The tile tile_at returned last, keyed by level and tile coordinates
+// (tc_tile_key), when the whole tile lies inside its entry; TC_NO_TILE when
+// none. Reset wherever a level's entry or a pool slot can change: a new
+// context (tc_ctx), a write (tc_write_rect), a dropped entry (tc_drop) and
+// a slot taken from its tile (tc_alloc).
+@(private)
+tc_last_key: u64 = TC_NO_TILE
+@(private)
+tc_last: ^[256]u32
+@(private)
+TC_NO_TILE :: ~u64(0)
+
+@(private)
+tc_tile_key :: #force_inline proc "contextless" (n, x, y: u32) -> u64 {
+	return u64(n) << 32 | u64(y >> 4) << 16 | u64(x >> 4)
+}
 
 // Level n's decoded 16x16 tile holding texel (x, y), or nil where the
 // texel comes from fetch: an unresolved or bypassed level, or (xe, ye)
 // outside the entry (a caller using the tile for several texels passes
-// their largest coordinates). Unchecked: n <= 6 (mxl is clamped), a
-// resolved tc_lvl is an entry index, x < cw and y < ch keep the tile index
-// under tw * 64 <= TC_MAP, and a nonzero tile is a slot + 1.
+// their largest coordinates, which lie in the tile of (x, y)). Unchecked:
+// n <= 6 (mxl is clamped), a resolved tc_lvl is an entry index, x < cw and
+// y < ch keep the tile index under tw * 64 <= TC_MAP, and a nonzero tile
+// is a slot + 1.
 @(private)
 tile_at :: #force_inline proc(t: ^Tex, n, x, y, xe, ye: u32) -> ^[256]u32 #no_bounds_check {
+	key := tc_tile_key(n, x, y)
+	if key == tc_last_key {return tc_last}
 	l := tc_lvl[n]
 	if l < 0 {
 		if l == TC_UNRESOLVED {
@@ -127,7 +146,10 @@ tile_at :: #force_inline proc(t: ^Tex, n, x, y, xe, ye: u32) -> ^[256]u32 #no_bo
 	if xe >= e.key.cw || ye >= e.key.ch {return nil}
 	s := u32(e.tile[(y >> 4) * e.tw + (x >> 4)])
 	if s == 0 {s = tc_decode(e, u32(l), t, n, x >> 4, y >> 4)}
-	return &tc_pool[s - 1]
+	p := &tc_pool[s - 1]
+	// A tile wholly inside the level: any (xe, ye) in it passes the test above.
+	if x | 15 < e.key.cw && y | 15 < e.key.ch {tc_last_key, tc_last = key, p}
+	return p
 }
 
 // Level n's texel (x, y), as fetch returns it.
@@ -143,6 +165,7 @@ texel :: #force_inline proc(t: ^Tex, n, x, y: u32) -> u32 #no_bounds_check {
 tc_ctx :: proc() {
 	for &l in tc_lvl {l = TC_UNRESOLVED}
 	tc_wready = false
+	tc_last_key = TC_NO_TILE
 }
 
 // A host-to-local chunk or local-to-local copy writing w x h pixels from
@@ -152,6 +175,7 @@ tc_ctx :: proc() {
 tc_write_rect :: proc(bp, bw, psm, x0, y0, w, h: u32) {
 	page_rect(psm, bp, bw, x0, y0, x0 + w, y0 + h, &tc_pending)
 	for &l in tc_lvl {if l >= 0 {l = TC_UNRESOLVED}}
+	tc_last_key = TC_NO_TILE
 }
 
 // A primitive about to be drawn: the pages its bounding box, clipped to the
@@ -340,6 +364,7 @@ tc_victim :: proc() -> int {
 @(private)
 tc_drop :: proc(e: ^Tc_Entry) #no_bounds_check {
 	if e.live == 0 {return}
+	tc_last_key = TC_NO_TILE
 	th := (e.key.ch + 15) >> 4
 	for &s in e.tile[:e.tw * th] {
 		if s == 0 {continue}
@@ -365,6 +390,7 @@ tc_alloc :: proc() -> u32 #no_bounds_check {
 	}
 	s := tc_hand
 	tc_hand = (tc_hand + 1) % TC_TILES
+	tc_last_key = TC_NO_TILE
 	o := tc_owner[s]
 	assert(o.e < TC_ENTRIES) // with no free slot every slot is owned
 	tc_e[o.e].tile[o.b] = 0

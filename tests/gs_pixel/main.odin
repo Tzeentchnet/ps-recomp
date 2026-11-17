@@ -8,6 +8,11 @@
 // rows the rasteriser seeks once per span are checked against the per-pixel
 // seek too.
 //
+// Then a sprite whose spans cross 16x16 texture tiles mid-span, drawn
+// again after its texture is uploaded anew and after TEX0 moves to another
+// texture: each pixel is the texel fetch reads now, so no tile the texture
+// cache kept for an earlier span, upload or texture is sampled.
+//
 // Then the fold of a flat texture's LOD (gs.probe_fold): contexts of five
 // TEX1 classes, three flat and two not, drawn with the fold on and off, the
 // same memory after both. Each class counts its pixels by LOD, those the
@@ -333,6 +338,92 @@ fold_trials :: proc() {
 	}
 }
 
+// Start a host-to-local transfer of w x h PSMCT32 pixels to (0, 0) of the
+// buffer at block bp, width bw; gs.transfer then takes its data.
+@(private = "file")
+upload_start :: proc(bp, bw, w, h: u64) {
+	gs.gs_write(0x50, bp << 32 | bw << 48) // BITBLTBUF: DBP, DBW, DPSM CT32
+	gs.gs_write(0x51, 0) // TRXPOS
+	gs.gs_write(0x52, w | h << 32) // TRXREG
+	gs.gs_write(0x53, 0) // TRXDIR: host to local
+}
+
+@(private = "file")
+TILE_FBP :: 100 // the tile trials' frame page
+
+// A 64x8 DECAL sprite over a CT32 frame of the bound 64x64 PSMCT32
+// texture, nearest, repeat: pixel (x, y) reads texel ((u0 + x) mod 64,
+// v0 + y), its spans crossing a tile every 16 pixels. PRIM and vertices
+// only, so the context stays decoded.
+@(private = "file")
+tile_draw :: proc(u0, v0: u64) {
+	gs.gs_write(0x00, 6 | 1 << 4 | 1 << 8) // PRIM: sprite, TME, FST
+	gs.gs_write(0x03, u0 << 4 | v0 << 20) // UV
+	gs.gs_write(0x05, 0) // XYZ2
+	gs.gs_write(0x03, (u0 + 64) << 4 | (v0 + 8) << 20)
+	gs.gs_write(0x05, (64 << 4) | (8 << 4) << 16)
+}
+
+@(private = "file")
+tile_check :: proc(step: string, tex: ^[64 * 64]u32, u0, v0: u32) {
+	for y in u32(0) ..< 8 {
+		for x in u32(0) ..< 64 {
+			got, want := gs.read_raw(0, TILE_FBP * 32, 1, x, y), tex[(v0 + y) * 64 + (u0 + x) % 64]
+			if got != want {
+				fail("tile trial %s: pixel (%d, %d) %08x, texel %08x", step, x, y, got, want)
+				return
+			}
+		}
+	}
+}
+
+// Sprites whose texels the texture cache keeps tile by tile, each drawn
+// to start in the tile the one before ended in (tile_draw), after what
+// changes that tile: a chunk of a transfer already under way, which writes
+// no register (tc_write_rect alone), and TEX0 moved to texture B at the
+// same texel coordinates (a new context, tc_ctx alone). Each pixel is the
+// texel fetch reads now.
+@(private = "file")
+tile_trials :: proc() {
+	TA, TB :: 0, 64 * 32 // texture blocks: pages 0 and 64
+	for h in core.snap_hooks {h.load(0)}
+	a, b: [64 * 64]u32
+	for &w in a {w = u32(rnd())}
+	for &w in b {w = u32(rnd())}
+	words :: proc(t: ^[64 * 64]u32, y0, y1: int) -> []u8 {
+		return ([^]u8)(&t[y0 * 64])[:(y1 - y0) * 64 * 4]
+	}
+	upload_start(TB, 1, 64, 64)
+	gs.transfer(words(&b, 0, 64))
+	upload_start(TA, 1, 64, 64)
+	gs.transfer(words(&a, 0, 64))
+	setup :: proc(tbp: u64) {
+		gs.gs_write(0x4c, TILE_FBP | 1 << 16) // FRAME: width 64, CT32
+		gs.gs_write(0x4e, 1 << 32) // ZBUF: masked
+		gs.gs_write(0x40, 63 << 16 | 63 << 48) // SCISSOR 0..63
+		gs.gs_write(0x47, 1 << 16 | 1 << 17) // TEST: Z ALWAYS
+		gs.gs_write(0x18, 0) // XYZOFFSET
+		gs.gs_write(0x08, 0) // CLAMP: repeat
+		gs.gs_write(0x14, 0) // TEX1: nearest
+		gs.gs_write(0x06, tbp | 1 << 14 | 6 << 26 | 6 << 30 | 1 << 34 | 1 << 35) // TEX0: 64x64 CT32, TCC, DECAL
+	}
+	setup(TA)
+	tile_draw(0, 0) // ends in tile (3, 0)
+	tile_check("texture A", &a, 0, 0)
+	// Rows 0..15 of A anew, in two chunks, a draw after each.
+	for &w in a[:16 * 64] {w = u32(rnd())}
+	upload_start(TA, 1, 64, 16)
+	gs.transfer(words(&a, 0, 8))
+	tile_draw(48, 0) // ends in tile (2, 0)
+	tile_check("A rows 0..7 anew", &a, 48, 0)
+	gs.transfer(words(&a, 8, 16))
+	tile_draw(32, 8) // ends in tile (1, 0)
+	tile_check("A rows 8..15 anew, mid-transfer", &a, 32, 8)
+	setup(TB)
+	tile_draw(16, 0)
+	tile_check("texture B", &b, 16, 0)
+}
+
 main :: proc() {
 	gs.state.write = gs.write
 	gs.state.transfer = gs.transfer
@@ -377,6 +468,7 @@ main :: proc() {
 		if failed > 8 {break}
 	}
 	gs.probe_generic(false)
+	tile_trials()
 	fold_trials()
 
 	total := 0

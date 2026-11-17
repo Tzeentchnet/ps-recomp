@@ -681,10 +681,29 @@ sample_level :: #force_inline proc(t: ^Tex, n: u32, tu, tv: f32, bilinear: bool)
 		c00, c10 = texel(t, n, x0, y0), texel(t, n, x1, y0)
 		c01, c11 = texel(t, n, x0, y1), texel(t, n, x1, y1)
 	}
-	au, av := simd.swizzle(a, 0, 0, 0, 0), simd.swizzle(a, 2, 2, 2, 2)
-	top := expand(c00) + div256((expand(c10) - expand(c00)) * au)
-	bot := expand(c01) + div256((expand(c11) - expand(c01)) * au)
-	return top + div256((bot - top) * av)
+	// Rows y0 and y1 in one vector of eight channels, then the two rows.
+	w := cast(#simd[4]u16)a
+	tb := lerp8(expand2(c00, c01), expand2(c10, c11), simd.swizzle(w, 0, 0, 0, 0, 0, 0, 0, 0))
+	c := lerp8(simd.swizzle(tb, 0, 1, 2, 3, 0, 1, 2, 3), simd.swizzle(tb, 4, 5, 6, 7, 4, 5, 6, 7), simd.swizzle(w, 2, 2, 2, 2, 2, 2, 2, 2))
+	return cast(#simd[4]i32)simd.swizzle(c, 0, 1, 2, 3)
+}
+
+// c0 + (c1 - c0) * w / 256 lane by lane, the quotient rounded toward 0 as
+// div256 rounds it, for channels c0, c1 and weights w in 0..255: as
+// (256 c0 + (c1 - c0) w + (c1 < c0 ? 255 : 0)) >> 8, whose true value lies
+// in 0..65535, so 16-bit lanes wrapping on the way hold it exactly. Equal
+// to the i32 form for all 2^24 inputs (checked exhaustively), at a 16-bit
+// multiply where i32 lanes take pmulld. Bilinear weights come from a
+// fraction in [0, 1), so lie in 0..255.
+@(private)
+lerp8 :: #force_inline proc "contextless" (c0, c1, w: #simd[8]u16) -> #simd[8]u16 {
+	return simd.shr(simd.shl(c0, 8) + (c1 - c0) * w + (simd.lanes_lt(c1, c0) & 255), 8)
+}
+
+// Two RGBA8888 texels as eight 16-bit channels, a's in lanes 0..3.
+@(private)
+expand2 :: #force_inline proc "contextless" (a, b: u32) -> #simd[8]u16 {
+	return cast(#simd[8]u16)transmute(#simd[8]u8)(u64(a) | u64(b) << 32)
 }
 
 // x / 256 lane by lane, rounded toward 0 as i32 division is: a negative x
