@@ -46,6 +46,7 @@ odin build tests/psx_access_cycles -collection:ps=. -target:wasi_wasm32 -target-
 node tests/psx_access_cycles/run.mjs psx_access_cycles.wasm
 odin run tests/psx_gpu_upload -collection:ps=.
 odin run tests/ps2_kernel -collection:ps=.
+odin run tests/ee_flush -collection:ps=.
 odin run tests/ps2_iop -collection:ps=.
 odin run tests/iop_thread_grow -collection:ps=.
 odin run tests/iop_thread_grow -collection:ps=. -define:PS_FLAT=true
@@ -126,6 +127,7 @@ here.
 | `vu_text` | `.vutext`'s programs as the conversion finds them: a bundle of MPGs that cannot be placed from micro address 0 is left out and the scan goes on; a conversion whose VU half fails (a bad capture, a bad `.vutext`) still writes the EE blob, and the VU programs alone fail |
 | `spu` | SPU2 voices through the port API, sound RAM in snapshots |
 | `ps2_kernel` | EE kernel threads, ExecPS2, SetVSyncFlag, EnableCache and DisableCache, FlushCache's text check |
+| `ee_flush` | The call table as RAM has it (wasm32's FlushCache check), on a synthetic table: a changed first word of any of a function's entries clears all of that function's entries and no other's, the word back brings them back, the result depends on RAM alone, and the held table is written while dispatch is off |
 | `blob_arch` | A native code header is valid only with this build's arch: arch 0 and wasm32's (4) are refused on a native build, every machine-code arch on a wasm build, and native_load refuses another arch before it maps anything |
 | `ps2_iop` | The IOP CPU and the IOP modules run on it, and the raw memory card image behind the HLE card driver |
 | `rollback` | Under FLAT (the build only runs that way): a rewind to a commit gives the save state taken at it, byte for byte, after the emulated heap's top block is freed and its bytes written over, and with a block made in heap pages no scan had read, over a freed one's bytes |

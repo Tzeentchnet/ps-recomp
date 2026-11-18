@@ -139,22 +139,44 @@ dispatch_set :: proc(on: bool) {
 @(private)
 entry_addr, entry_word: []u32
 
-// Keep the first word of every function in the table, on or off, as ram
-// holds it now. The range has to be in ram.
+// The table entry kept at each entry_addr, and which of entry_fns
+// functions it belongs to: entries with the same proc are one function's
+// (wasm32 code registers every block of a function, all with the
+// function's proc). For entries_apply.
+@(private)
+entry_fn: []Func_Proc
+@(private)
+entry_fid: []u32
+@(private)
+entry_fns: int
+
+// Keep the first word of every entry in the table, on or off, as ram holds
+// it now, and the entry itself. The range has to be in ram.
 entries_keep :: proc(ram: []u8) {
 	t := fn_held != nil ? fn_held : fn_table
 	n := 0
 	for fn in t {n += int(fn != nil)}
 	delete(entry_addr)
 	delete(entry_word)
+	delete(entry_fn)
+	delete(entry_fid)
 	entry_addr, entry_word = make([]u32, n), make([]u32, n)
+	entry_fn, entry_fid = make([]Func_Proc, n), make([]u32, n)
+	fid := make(map[Func_Proc]u32, context.temp_allocator)
 	n = 0
 	for fn, i in t {
 		if fn == nil {continue}
 		a := text_lo + u32(i) << 2
 		entry_addr[n], entry_word[n] = a, intrinsics.unaligned_load((^u32)(&ram[a]))
+		id, ok := fid[fn]
+		if !ok {
+			id = u32(len(fid))
+			fid[fn] = id
+		}
+		entry_fn[n], entry_fid[n] = fn, id
 		n += 1
 	}
+	entry_fns = len(fid)
 }
 
 // How many of the kept words ram no longer holds, of how many.
@@ -163,6 +185,33 @@ entries_changed :: proc(ram: []u8) -> (changed, of: int) {
 		changed += int(intrinsics.unaligned_load((^u32)(&ram[a])) != entry_word[i])
 	}
 	return changed, len(entry_addr)
+}
+
+// The table, on or off, as entries_keep kept it less every function one
+// of whose kept words ram no longer holds: all of that function's entries
+// are cleared, the others hold their function again. A function of the
+// state of ram alone, not of what was applied before. changed: the kept
+// words ram no longer holds, of `of`; fns: the functions cleared; slots:
+// the entries cleared.
+entries_apply :: proc(ram: []u8) -> (changed, of, fns, slots: int) {
+	t := fn_held != nil ? fn_held : fn_table
+	gone := make([]bool, entry_fns, context.temp_allocator)
+	for a, i in entry_addr {
+		if intrinsics.unaligned_load((^u32)(&ram[a])) == entry_word[i] {continue}
+		changed += 1
+		f := entry_fid[i]
+		fns += int(!gone[f])
+		gone[f] = true
+	}
+	for a, i in entry_addr {
+		fn := entry_fn[i]
+		if gone[entry_fid[i]] {
+			fn = nil
+			slots += 1
+		}
+		t[(a - text_lo) >> 2] = fn
+	}
+	return changed, len(entry_addr), fns, slots
 }
 
 // Unchecked: the slot is tested against len(fn_table) first.

@@ -1199,5 +1199,9 @@ kernel_snap :: proc() {
 	core.snap_add(&idle_cycles)
 	flat_snap()
 	// The table follows the state an exec left (exec.odin).
-	append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {cpu.dispatch_set(!k.exec.text_off)}})
+	append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {
+		cpu.dispatch_set(!k.exec.text_off)
+		// wasm32: and the functions ram holds as booted (exec.odin).
+		when ODIN_ARCH == .wasm32 {if !k.exec.text_off && k.exec.text_ok {text_apply("snapshot load")}}
+	}})
 }

@@ -101,6 +101,8 @@ exec_boot_args :: proc(argv0: string) {
 text_check :: proc(entry: u32) -> (same: bool) {
 	e := &k.exec
 	same = e.text_ok && text_hash() == e.text_hash
+	// wasm32: the boot program back has every function back.
+	when ODIN_ARCH == .wasm32 {if same {text_apply("exec")}}
 	if same != e.text_off {return}
 	e.text_off = !same
 	cpu.dispatch_set(same)
@@ -122,14 +124,40 @@ text_check :: proc(entry: u32) -> (same: bool) {
 // function that leaves every first word alone is not seen, nor is a load
 // with no flush or with only a data-cache flush, and a native function on
 // the host stack when its words change runs the old code until it returns.
+// wasm32 has no such frame (a SYSCALL leaves native code, and every call
+// native code makes reads the table then), so there only the functions
+// whose first words changed go, and come back once ram holds those words
+// again (text_apply), at every flush.
 flush_text_check :: proc() {
 	e := &k.exec
 	if e.text_off || !e.text_ok {return}
+	when ODIN_ARCH == .wasm32 {
+		text_apply("FlushCache")
+		return
+	}
 	changed, of := cpu.entries_changed(mem.ram)
 	if changed == 0 {return}
 	e.text_off = true
 	cpu.dispatch_set(false)
 	fmt.eprintfln("ee: FlushCache at frame %d: text %08x-%08x differs from the recompiled program (%d of %d function entry words); interpreting", k.frame, cpu.text_lo, cpu.text_hi, changed, of)
+}
+
+// wasm32: the table as ram has it now (cpu.entries_apply), said when the
+// functions it drops change: at a FlushCache, an exec back to the boot
+// program, a snapshot's load.
+@(private = "file")
+text_dropped: int
+
+@(private)
+text_apply :: proc(at: string) {
+	changed, of, fns, slots := cpu.entries_apply(mem.ram)
+	if fns == text_dropped {return}
+	text_dropped = fns
+	if fns == 0 {
+		fmt.eprintfln("ee: %s at frame %d: text %08x-%08x is the recompiled program again; native", at, k.frame, cpu.text_lo, cpu.text_hi)
+	} else {
+		fmt.eprintfln("ee: %s at frame %d: text %08x-%08x differs from the recompiled program (%d of %d function entry words); %d functions (%d entries) interpreting", at, k.frame, cpu.text_lo, cpu.text_hi, changed, of, fns, slots)
+	}
 }
 
 // Start the argument list over.
