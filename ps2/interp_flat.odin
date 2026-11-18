@@ -80,7 +80,7 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 		when N {delay_slot(pc, lf)} else {delay_slot(pc, nil)}
 	}
 	for {
-		i := r5900.decode(pc, mem.rd32(pc))
+		i := decode_cached(pc, mem.rd32(pc))
 		when N {learn_note(lf, i)}
 		c.cycles += cpu.CYCLES_PER_INSN
 		when mem.MOD_PROBE {if mem.mod_ram_has(pc) {mem.mod_probe.interp += 1}}
@@ -307,7 +307,7 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 				if !flat_return(x, L, true, e.pc) {return}
 			case .Sys:
 				x.pc = e.pc
-				flat_sys(r5900.decode(e.pc - 4, mem.rd32(e.pc - 4)))
+				flat_sys(decode_cached(e.pc - 4, mem.rd32(e.pc - 4)))
 			case .Eret:
 				if !flat_return(x, L, false, 0) {return}
 			}

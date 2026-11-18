@@ -18,7 +18,29 @@ sat8 :: #force_inline proc(v: i32) -> u8 {return u8(i8(clamp(v, -0x80, 0x7f)))}
 sat32 :: #force_inline proc(v: i64) -> u32 {return u32(i32(clamp(v, i64(min(i32)), i64(max(i32)))))}
 
 exec :: proc(pc, w: u32) {
-	exec_insn(r5900.decode(pc, w))
+	exec_insn(decode_cached(pc, w))
+}
+
+// The interpreter's decoded instructions, direct-mapped by pc. An entry
+// hits only when both its pc and its word match, so code that is rewritten
+// or reloaded (a snapshot, an overlay) decodes again with no flush: decode
+// reads nothing but pc and w. 4K entries hit 99.7% of sc's interpreted
+// instructions (PLAN DECODE-CACHE); each is 24 bytes.
+DECODE_CACHE_N :: 1 << 12
+@(private)
+decode_cache: [DECODE_CACHE_N]r5900.Insn
+
+// No aligned pc is odd, so a cleared entry never hits.
+@(init, private)
+decode_cache_init :: proc "contextless" () {
+	for &e in decode_cache {e.pc = 1}
+}
+
+@(private)
+decode_cached :: #force_inline proc(pc, w: u32) -> r5900.Insn #no_bounds_check {
+	e := &decode_cache[(pc >> 2) & (DECODE_CACHE_N - 1)]
+	if e.pc != pc || e.w != w {e^ = r5900.decode(pc, w)}
+	return e^
 }
 
 // Generated code passes the instruction already decoded.

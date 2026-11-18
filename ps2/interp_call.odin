@@ -83,7 +83,7 @@ branch_taken :: proc(i: r5900.Insn) -> bool {
 @(private)
 delay_slot :: proc(pc: u32, lf: ^core.Learn_Frame) {
 	cpu.state.cycles += cpu.CYCLES_PER_INSN
-	i := r5900.decode(pc, mem.rd32(pc))
+	i := decode_cached(pc, mem.rd32(pc))
 	if lf != nil {learn_note(lf, i)}
 	if i.kind == .Bad {cpu.bad_insn(pc, i.w)}
 	exec_insn(i)
@@ -253,7 +253,7 @@ interp_body :: proc(entry: u32, lf_in: ^core.Learn_Frame, run: cpu.Interp_Run, s
 	pc := start
 	ra, sp, direct, gaps := run.ra, run.sp, run.direct, run.gaps
 	for {
-		i := r5900.decode(pc, mem.rd32(pc))
+		i := decode_cached(pc, mem.rd32(pc))
 		if lf != nil {learn_note(lf, i)}
 		c.cycles += cpu.CYCLES_PER_INSN
 		ret := pc + 8
