@@ -39,11 +39,28 @@ Learned_Fn :: struct {
 @(private = "file")
 learned_fns: map[u32][dynamic]Learned_Fn
 
+// learned_fns by entry, direct mapped, for learned_find: a hit skips the
+// map's hash and probe. tag is entry | 1 (entries are word aligned), 0
+// empty; fns is empty for an entry with none. Registration, the only
+// change to learned_fns, clears it, so fns never outlives its array.
+@(private = "file")
+LEARNED_CACHE :: 4096
+@(private = "file")
+Learned_Hit :: struct {
+	tag: u32,
+	fns: []Learned_Fn,
+}
+@(private = "file")
+learned_cache: [LEARNED_CACHE]Learned_Hit
+
 // The learned function at entry whose words RAM holds now, else nil.
 learned_find :: proc(entry: u32) -> cpu.Func_Proc #no_bounds_check {
-	fns, ok := learned_fns[entry]
-	if !ok {return nil}
-	for &l in fns {
+	hit := &learned_cache[(entry >> 2) & (LEARNED_CACHE - 1)]
+	if hit.tag != entry | 1 {
+		hit^ = {entry | 1, learned_fns[entry][:]}
+	}
+	if len(hit.fns) == 0 {return nil}
+	for &l in hit.fns {
 		n := len(l.words)
 		cpu.learned_words += u64(n)
 		if string(mem.ram[l.lo:][:4 * n]) == string(([^]u8)(raw_data(l.words))[:4 * n]) {
@@ -108,6 +125,7 @@ load_learned_blob :: proc(blob: []u8, name: string) -> bool {
 			append(&fns, Learned_Fn{r.pc, code.pool[r.at:][:r.n_words], cast(cpu.Func_Proc)rawptr(code.base + uintptr(s.off))})
 			learned_fns[s.entry] = fns
 		}
+		learned_cache = {}
 	}
 	cpu.learned_loaded += len(code.spans)
 	fmt.eprintfln("learned: %d EE functions from %s", len(code.spans), name)
