@@ -15,8 +15,8 @@
 // midload_learned_native.odin). Nothing is stored: the next run compiles its
 // own set, by its own key (learned_blob), as it would have.
 //
-// A compile takes at most MIDLEARN_RECORDS records, so a load costs this
-// thread no more than the largest measured; the rest go in another, after
+// A compile takes at most MIDLEARN_RECORDS records (MIDLEARN_EE_RECORDS for
+// the EE), so a load costs this thread no more than the largest measured; the rest go in another, after
 // MIDLOAD_FRAMES more vblanks. A blob over the host's size is not compiled
 // again until the records grow. Each load's code stays loaded (in a wasm32
 // build with the wasm instance and table range it was linked into:
@@ -54,6 +54,10 @@ import "ps:ps2"
 // had (480 records, 14.5 ms on the play thread; bof4's 28 took 3.7 ms,
 // ff7's 23 took 3.5 ms).
 MIDLEARN_RECORDS :: 480
+// The EE's: okami's 480 loaded in 1.2 ms on the EE thread, so 2048 stay
+// near 5 ms, under a 16.7 ms frame, and take a cold run's first records in
+// one load instead of a round each MIDLOAD_FRAMES vblanks.
+MIDLEARN_EE_RECORDS :: 2048
 
 @(private)
 Midload_Learned :: struct {
@@ -164,7 +168,7 @@ midlearn_report :: proc(fails: int) {
 }
 
 // Start compiling the records no loaded blob covers, the first
-// MIDLEARN_RECORDS of them.
+// MIDLEARN_RECORDS (MIDLEARN_EE_RECORDS for the EE) of them.
 @(private = "file")
 midlearn_start :: proc() -> Midload_Start {
 	count := core.learn_count(mlrn.cpu)
@@ -179,10 +183,11 @@ midlearn_start :: proc() -> Midload_Start {
 	defer delete(compact)
 	recs, _ := core.learn_read(compact, context.temp_allocator)
 	kept := make([dynamic]core.Learn_Record, context.temp_allocator)
+	most := MIDLEARN_RECORDS if mlrn.cpu == .Psx else MIDLEARN_EE_RECORDS
 	more := false
 	for r in recs {
 		if r.cpu != mlrn.cpu || core.learn_key(r) in mlrn.covered {continue}
-		if len(kept) == MIDLEARN_RECORDS {
+		if len(kept) == most {
 			more = true
 			break
 		}
