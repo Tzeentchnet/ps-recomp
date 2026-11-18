@@ -747,6 +747,16 @@ sample_level :: #force_inline proc(t: ^Tex, n: u32, tu, tv: f32, bilinear: bool)
 		r0, r1 := (y0 & 15) << 4, (y1 & 15) << 4
 		c00, c10 = p[r0 | (x0 & 15)], p[r0 | (x1 & 15)]
 		c01, c11 = p[r1 | (x0 & 15)], p[r1 | (x1 & 15)]
+	} else if t.psm == PSMCT32 && t.tc.lvl[n] == TC_BYPASS && x0 >> 3 == x1 >> 3 && y0 >> 3 == y1 >> 3 {
+		// A bypassed CT32 level (render-to-texture feedback) with the four
+		// taps in one 8x8 block: one block address, four column offsets,
+		// as addr32 computes each.
+		blk := t.mtbp[n] + ((y0 >> 5) * t.mtbw[n] + (x0 >> 6)) * 32 + block32[(y0 >> 3) & 3][(x0 >> 3) & 7]
+		base := blk << 6
+		M :: VRAM_WORDS - 1
+		r0, r1 := &col32[y0 & 7], &col32[y1 & 7]
+		c00, c10 = vram[(base + r0[x0 & 7]) & M], vram[(base + r0[x1 & 7]) & M]
+		c01, c11 = vram[(base + r1[x0 & 7]) & M], vram[(base + r1[x1 & 7]) & M]
 	} else {
 		c00, c10 = texel(t, n, x0, y0), texel(t, n, x1, y0)
 		c01, c11 = texel(t, n, x0, y1), texel(t, n, x1, y1)
