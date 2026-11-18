@@ -440,22 +440,27 @@ play :: proc(image: string) -> int {
 	// unless NATIVE=0 or LEARN=0; found before LEARN opens the records,
 	// which compacting rewrites. A compat child's parent compiled it already
 	// (compat_disc): one that failed there is not tried again here. A wasm32
-	// build runs a PS1 game's only, from records another build made, and
-	// only with the stored blob, whose interp list the compile leaves out
-	// as it does (learned_store).
+	// build runs a PS1 game's, and a PS2 game's EE's, only with the stored
+	// blob, from records another build made; a PS1 game's interp list the
+	// compile leaves out as it does (learned_store). It runs none for a PS2
+	// game's IOP, whose learned code keeps cycles less exactly than its
+	// interpreter (learned_compile), which FLAT's results are held to.
 	learn_cpu := core.Learn_Cpu.Iop if cnf.ps2 else .Psx
 	learn_env := "0" if core.FLAT else core.env("LEARN")
 	learned_on := !native_off && learn_env != "0"
 	when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {
-		learned_on = !cnf.ps2 && native != "" && core.env("LEARN") != "0"
+		learned_on = native != "" && core.env("LEARN") != "0"
 		// It records a PS1 game's runs where it runs learned code: with no
 		// blob every function is interpreted, and its records would be
-		// the whole game's, not the code a default build interprets.
-		learn_env = core.env("LEARN") if learned_on else "0"
+		// the whole game's, not the code a default build interprets. A PS2
+		// game's EE it does not record yet.
+		learn_env = core.env("LEARN") if learned_on && !cnf.ps2 else "0"
 	}
 	learned, learned_ee: string
 	if learned_on {
-		learned = learned_blob(dir, learn_cpu, !compat_child(), 0)
+		if core.NATIVE_ARCH != core.NATIVE_ARCH_WASM32 || !cnf.ps2 {
+			learned = learned_blob(dir, learn_cpu, !compat_child(), 0)
+		}
 		if cnf.ps2 {learned_ee = learned_blob(dir, .Ee, !compat_child(), 0)}
 	}
 	learned_key = core.disc_path(dir, learned_files(learn_cpu).key)

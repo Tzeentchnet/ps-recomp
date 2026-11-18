@@ -117,15 +117,15 @@ boot :: proc(b: Boot) -> bool {
 	host.quit_hook = b.quit
 	// FLAT runs interpreted only (core/flat.odin): a thread switch inside
 	// native code would leave its host frames running on. A wasm32 blob,
-	// the game's or the mods' (MODS_NATIVE), is the exception: its
-	// functions are steps of the FLAT runner, which leave to it for every
-	// call, return and thread switch.
+	// the game's, the EE's learned code or the mods' (MODS_NATIVE), is the
+	// exception: its functions are steps of the FLAT runner, which leave to
+	// it for every call, return and thread switch.
 	when core.FLAT {
 		what := ""
 		switch {
 		case b.native != "" && core.NATIVE_ARCH != core.NATIVE_ARCH_WASM32: what = "native code (Boot.native)"
 		case b.learned != "": what = "the IOP's learned code (Boot.learned)"
-		case b.learned_ee != "": what = "the EE's learned code (Boot.learned_ee)"
+		case b.learned_ee != "" && core.NATIVE_ARCH != core.NATIVE_ARCH_WASM32: what = "the EE's learned code (Boot.learned_ee)"
 		case b.mods_native != "" && !MODS_NATIVE: what = "the mods' native code (Boot.mods_native)"
 		}
 		if what != "" {cpu.fatal("FLAT runs interpreted only: %s not installed", what)}
@@ -146,6 +146,10 @@ boot :: proc(b: Boot) -> bool {
 		if b.learned != "" && !psx_native.load_learned(b.learned) && b.learned_failed != nil {
 			b.learned_failed()
 		}
+	}
+	// The EE's learned code also on wasm32, where it runs as steps of the
+	// FLAT runner (learned.odin).
+	when !core.FLAT || core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {
 		if b.learned_ee != "" && !load_learned(b.learned_ee) && b.learned_ee_failed != nil {
 			b.learned_ee_failed()
 		}

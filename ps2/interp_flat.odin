@@ -188,6 +188,7 @@ flat_resume :: proc() -> (x: ^kernel.Flat_Ctx, pc: u32, ok: bool) {
 	when ODIN_ARCH == .wasm32 {
 		for flat_native_on {
 			f := flat_lookup(pc)
+			learned_ran()
 			if f == nil {break}
 			e := &cpu.native_exit
 			when mem.MOD_PROBE {mem.mod_probe.enters[int(mem.mod_ram_has(pc))] += 1}
@@ -253,11 +254,12 @@ flat_native_at :: #force_inline proc(t: u32) -> bool {
 	}
 }
 
-// wasm32: the native code at pc, the game's (the call table) or a mod's
-// (load_mods), else nil.
+// wasm32: the native code at pc, the game's (the call table), learned
+// (learned_at) or a mod's (load_mods), else nil.
 @(private = "file")
 flat_lookup :: #force_inline proc(pc: u32) -> cpu.Func_Proc {
 	if f := cpu.lookup(pc); f != nil {return f}
+	if f := learned_at(pc); f != nil {return f}
 	if !mem.mod_func_near(pc) {return nil}
 	when mem.MOD_PROBE {mem.mod_probe.fallback[int(mem.mod_ram_has(pc))] += 1}
 	return mem.mod_func_at(pc)
