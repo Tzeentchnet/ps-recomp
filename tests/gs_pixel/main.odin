@@ -159,7 +159,10 @@ build :: proc(fi: int, fold: Maybe(Fold_Class) = nil) {
 	}
 	put(0x4c + u8(n), fbp | fbw << 16 | fpsm << 24 | fbmsk << 32) // FRAME
 	zbp := rndn(8) == 0 ? fbp : rndn(512)
-	zpsm := fast ? u64(f.zpsm & 0xf) : Z_PSM[rndn(len(Z_PSM))]
+	// A row that neither reads nor writes Z takes any Z format, and half
+	// its trials the depth test off with any ZTST.
+	z_off := fast && f.ztst == 1 && f.zmsk
+	zpsm := fast && !z_off ? u64(f.zpsm & 0xf) : Z_PSM[rndn(len(Z_PSM))]
 	zmsk := fast ? f.zmsk : rndn(2) == 0
 	put(0x4e + u8(n), zbp | zpsm << 24 | u64(zmsk) << 32) // ZBUF
 	w := fbw * 64
@@ -176,7 +179,7 @@ build :: proc(fi: int, fold: Maybe(Fold_Class) = nil) {
 			test = rndn(8) << 1 | rndn(256) << 4 | rndn(4) << 12 // no ATE
 		}
 		test |= u64(f.date != 0) << 14 | u64(f.date == 2) << 15 // DATE, DATM
-		test |= 1 << 16 | u64(f.ztst) << 17
+		test |= z_off && rndn(2) == 0 ? rndn(4) << 17 : 1 << 16 | u64(f.ztst) << 17
 	} else {
 		test = rnd() & 0x7ffff
 	}

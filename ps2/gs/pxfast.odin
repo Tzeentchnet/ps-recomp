@@ -3,8 +3,9 @@
 // that draw most pixels. decode_ctx picks one per Ctx (px_pick); every
 // other context takes the generic `pixel`.
 //
-// A fast proc covers a context with the depth test on, no PABE, no FBA,
-// COLCLAMP on, and frame and Z formats with rows (row_init). It takes the rows already at y: the
+// A fast proc covers a context with no PABE, no FBA, COLCLAMP on, and a
+// frame format with rows (row_init), and a Z format with rows where it
+// reads or writes Z. It takes the rows already at y: the
 // rasteriser seeks them once per row (ctx_seek), where `pixel` seeks them
 // itself.
 package ps2_gs
@@ -19,7 +20,9 @@ Pixel_Proc :: #type proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lo
 // atst is TEST's ATST, tested against the context's AREF, and afail its
 // AFAIL (0 KEEP, 1 FB_ONLY, 2 ZB_ONLY, 3 RGB_ONLY); no alpha test, or ATST ALWAYS, is
 // atst 1 with afail 0. fge is PRIM's FGE; date is 0 for no destination
-// alpha test, 1 for DATM 0, 2 for DATM 1.
+// alpha test, 1 for DATM 0, 2 for DATM 1. A context that neither reads nor
+// writes Z (the depth test off, or ZTST ALWAYS with ZMSK) is ztst 1 with
+// zmsk, and its zpsm is not compared (px_pick).
 Px_Fast :: struct {
 	tfx:   i32,
 	tcc:   bool,
@@ -44,7 +47,8 @@ Px_Fast :: struct {
 // menu layers and star field. The last four are another title's scene
 // passes, 99.3 % of its generic pixels (SWGS-PX-2): a Z-only pass (ATST
 // NEVER to ZB_ONLY), two frame-only passes (ATST NEVER to FB_ONLY) and a
-// CT24 textured layer.
+// CT24 textured layer. The rest are the generic contexts drawing most
+// pixels over 30 s of each of seven more titles (SWGS-PX-3).
 PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x68, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
@@ -91,6 +95,27 @@ PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = true, ztst = 1, zmsk = false, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 1, fge = false, date = 0},
 	{tfx = -1, tcc = false, ztst = 1, zmsk = false, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 1, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 5, afail = 1, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 5, afail = 1, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0x00, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = true, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x48, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 3, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 5, afail = 3, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 1, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 3, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = false, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 6, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 7, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 7, afail = 0, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ24, bl = 0x00, fpsm = PSMCT32, fbmsk = false, atst = 5, afail = 0, fge = true, date = 0},
+	{tfx = -1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = false, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 6, afail = 0, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x49, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x62, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
 }
 
 // PX_FAST's procs, in its order.
@@ -99,6 +124,7 @@ px_procs := [len(PX_FAST)]Pixel_Proc {
 	px_0, px_1, px_2, px_3, px_4, px_5, px_6, px_7, px_8, px_9, px_10, px_11, px_12, px_13, px_14, px_15, px_16,
 	px_17, px_18, px_19, px_20, px_21, px_22, px_23, px_24, px_25, px_26, px_27, px_28, px_29, px_30, px_31,
 	px_32, px_33, px_34, px_35, px_36, px_37, px_38, px_39, px_40, px_41, px_42, px_43, px_44,
+	px_45, px_46, px_47, px_48, px_49, px_50, px_51, px_52, px_53, px_54, px_55, px_56, px_57, px_58, px_59, px_60, px_61, px_62, px_63, px_64, px_65,
 }
 
 @(private)
@@ -195,6 +221,49 @@ px_43 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fog
 px_44 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 44)}
 
 @(private)
+px_45 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 45)}
+@(private)
+px_46 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 46)}
+@(private)
+px_47 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 47)}
+@(private)
+px_48 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 48)}
+@(private)
+px_49 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 49)}
+@(private)
+px_50 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 50)}
+@(private)
+px_51 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 51)}
+@(private)
+px_52 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 52)}
+@(private)
+px_53 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 53)}
+@(private)
+px_54 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 54)}
+@(private)
+px_55 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 55)}
+@(private)
+px_56 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 56)}
+@(private)
+px_57 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 57)}
+@(private)
+px_58 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 58)}
+@(private)
+px_59 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 59)}
+@(private)
+px_60 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 60)}
+@(private)
+px_61 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 61)}
+@(private)
+px_62 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 62)}
+@(private)
+px_63 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 63)}
+@(private)
+px_64 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 64)}
+@(private)
+px_65 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 65)}
+
+@(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
 	F :: PX_FAST
 	pixel_fast(c, x, zf, col, u, v, lod, fogf,
@@ -211,8 +280,11 @@ px_force: Pixel_Proc
 @(private)
 px_pick :: proc(c: ^Ctx) -> Pixel_Proc {
 	if px_force != nil {return px_force}
-	if !c.zte || c.pabe || c.fba || !c.colclamp {return pixel}
-	if !c.frow.ok || !c.zrow.ok {return pixel}
+	if c.pabe || c.fba || !c.colclamp {return pixel}
+	// No Z read or write: `pixel` skips Z with the depth test off, as a
+	// fast proc does for ZTST ALWAYS with ZMSK.
+	z_off := !c.zte || (c.ztst == 1 && c.zmsk)
+	if !c.frow.ok || (!z_off && !c.zrow.ok) {return pixel}
 	atst, afail: u32 = 1, 0
 	if c.ate && c.atst != 1 {
 		atst, afail = c.atst, c.afail
@@ -220,9 +292,9 @@ px_pick :: proc(c: ^Ctx) -> Pixel_Proc {
 	k := Px_Fast {
 		tfx   = c.tme ? i32(c.tex.tfx) : -1,
 		tcc   = c.tme && c.tex.tcc,
-		ztst  = c.ztst,
-		zmsk  = c.zmsk,
-		zpsm  = c.zpsm,
+		ztst  = z_off ? 1 : c.ztst,
+		zmsk  = z_off || c.zmsk,
+		zpsm  = z_off ? 0 : c.zpsm,
 		bl    = c.abe ? c.a | c.b << 2 | c.c << 4 | c.d << 6 : 0xff,
 		fpsm  = c.fpsm,
 		fbmsk = c.fbmsk != 0,
@@ -232,7 +304,9 @@ px_pick :: proc(c: ^Ctx) -> Pixel_Proc {
 		date  = c.date ? (c.datm ? 2 : 1) : 0,
 	}
 	for f, i in PX_FAST {
-		if f == k {return px_procs[i]}
+		g := f
+		if g.ztst == 1 && g.zmsk {g.zpsm = 0}
+		if g == k {return px_procs[i]}
 	}
 	return pixel
 }
