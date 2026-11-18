@@ -403,16 +403,17 @@ learned_interp :: proc(dir: string, cpu: core.Learn_Cpu) -> ([]native.Blob_Inter
 
 // learned_compile in this process. The EE's compile frees the temp
 // allocator once per function, so it runs under one of its own, as
-// convert_here. The PS1's and the IOP's free only the temp memory each
-// function takes (r3000.native_func) and keep the caller's, so they run
-// under the caller's, which then frees as they go.
+// convert_here: the caller's temp data, the key's set among it, outlive it.
+// The PS1's and the IOP's free only the temp memory each function takes
+// (r3000.native_func) and keep the caller's, so they run under the
+// caller's, which then frees as they go. (A context set inside a block
+// lasts only to its end, so the EE's is set here, not in a branch.)
 learned_compile_here :: proc(cpu: core.Learn_Cpu, data: []u8, interp: []native.Blob_Interp) -> ([]u8, bool) {
+	if cpu != .Ee {return learned_compile(cpu, data, interp)}
 	scratch: mem.Dynamic_Arena
-	if cpu == .Ee {
-		mem.dynamic_arena_init(&scratch)
-		context.temp_allocator = mem.dynamic_arena_allocator(&scratch)
-	}
-	defer if cpu == .Ee {mem.dynamic_arena_destroy(&scratch)}
+	mem.dynamic_arena_init(&scratch)
+	defer mem.dynamic_arena_destroy(&scratch)
+	context.temp_allocator = mem.dynamic_arena_allocator(&scratch)
 	return learned_compile(cpu, data, interp)
 }
 
