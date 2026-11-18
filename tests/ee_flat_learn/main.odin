@@ -37,11 +37,19 @@
 //     first word stored over leaves G's words as learned, so G is still
 //     called in place.
 //   - The report finds no run left open.
+//   - A loop that stores more often than the store log holds is checked
+//     all through, and compiled when clean (S1); storing into its own code
+//     it is left to the interpreter (S2).
+//   - A stale record an earlier build wrote (.Smc_Unknown, S3's) is
+//     compacted away: its entry is not left to the interpreter, so its run
+//     is recorded again, clean, and compiled, a stale record beside it or
+//     not. A .Smc one (S2's) stays left to the interpreter.
 //
 // Its files are in the WASI shim's in-memory directory, gone at the exit.
 package main
 
 import "core:fmt"
+import "core:hash/xxhash"
 import "core:os"
 import "core:slice"
 import "ps:core"
@@ -162,6 +170,11 @@ S2 :: u32(0x001f0000) // its stores go down from here, clear of the rest
 A11 :: u32(0x00100a00)
 @(private = "file")
 A12 :: u32(0x00100b00)
+// S3: S1's loop at another entry, storing from 0x180000 up; A13 calls it.
+@(private = "file")
+S3 :: u32(0x00121000)
+@(private = "file")
+A13 :: u32(0x00100c00)
 @(private = "file")
 LOOPS :: u32(70000)
 #assert(LOOPS > core.LEARN_STORES_MAX)
@@ -259,6 +272,16 @@ check_file :: proc(want: []Want, what: string) {
 		}
 		check(ok, fmt.tprintf("%s: record %d is %08x lo %08x %v n %d, want %08x n %d", what, i, r.entry, r.lo, r.flags, len(r.words), w.entry, w.n))
 	}
+}
+
+// Append a record of words at entry, as a LEARN file holds it.
+@(private = "file")
+record :: proc(b: ^[dynamic]u8, flags: core.Learn_Flags, entry: u32, words: []u32) {
+	bytes := slice.to_bytes(words)
+	h: [core.LEARN_HEADER]u8
+	core.learn_header(h[:], .Ee, flags, entry, entry, u32(len(words)), xxhash.XXH3_64_default(bytes))
+	append(b, ..h[:])
+	append(b, ..bytes)
 }
 
 main :: proc() {
@@ -452,7 +475,65 @@ main :: proc() {
 		check(v0 == LOOPS && ran, fmt.tprintf("S1 learned: v0 %d, learned code ran %v; want %d, ran", v0, ran, LOOPS))
 		v0, ran = call(A12)
 		check(v0 == LOOPS && !ran, fmt.tprintf("S2 left out: v0 %d, learned code ran %v; want %d, none", v0, ran, LOOPS))
+
+		// Records an earlier build wrote: S3's .Smc_Unknown (its store log
+		// overflowed), stale; S2's .Smc, a real store. Compacted, the stale
+		// record is gone and S2's kept, so S3 is no entry left to the
+		// interpreter (learned_refuse, as play makes it from the records):
+		// its run is recorded again, clean, and compiled, a stale record
+		// beside it or not. S2 stays left out, and opens no run.
+		s3 := loop(0x0018_0000, 4)
+		put(S3, s3[:])
+		put(A13, {PUSH_1, PUSH_2, jal(S3), NOP, LOAD_RA, JR_RA, POP})
+		put(S2, s2[:]) // the last call's stores zeroed its first words
+		stale := make([dynamic]u8, context.allocator)
+		record(&stale, {.Smc_Unknown, .Open}, S3, s3[:])
+		record(&stale, {.Smc}, S2, s2[:])
+		compact, n := core.learn_compact(stale[:])
+		crecs, _ := core.learn_read(compact, context.allocator)
+		check(n == 1 && crecs[0].entry == S2 && crecs[0].flags == {.Smc}, fmt.tprintf("stale: compacted to %d records %v; want S2's .Smc alone", n, crecs[:]))
+		entries := make([dynamic]u32, context.allocator)
+		for r in crecs {append(&entries, r.entry)}
+		ps2.learned_refuse(entries[:])
+		check(!ps2.learned_refused_at(S3) && ps2.learned_refused_at(S2), "stale: S2 alone left to the interpreter")
+		relearn_path :: "relearn.bin"
+		check(os.write_entire_file(relearn_path, compact) == nil, "write the compacted records")
+		check(core.learn_open_path(relearn_path, {.Ee}), "open for the relearn")
+		v0, ran = call(A13)
+		check(v0 == LOOPS && !ran, fmt.tprintf("S3 relearned: v0 %d, learned code ran %v; want %d, none", v0, ran, LOOPS))
+		v0, ran = call(A12)
+		check(v0 == LOOPS && !ran, fmt.tprintf("S2 refused: v0 %d, learned code ran %v; want %d, none", v0, ran, LOOPS))
+		put(S2, s2[:])
+		core.learn_report()
+		again, aerr := os.read_entire_file(relearn_path, context.allocator)
+		check(aerr == nil, fmt.tprintf("read %s: %v", relearn_path, aerr))
+		append(&stale, ..again) // the stale record beside the new clean one
+		compact, n = core.learn_compact(stale[:])
+		all, _ := core.learn_read(compact, context.allocator)
+		clear(&crecs)
+		for r in all {
+			if r.entry == S2 || r.entry == S3 {append(&crecs, r)} // not A13's
+		}
+		Want_Flags :: struct {
+			entry: u32,
+			flags: core.Learn_Flags,
+		}
+		want := [?]Want_Flags{{S2, {.Smc}}, {S3, {}}}
+		slice.sort_by(crecs[:], proc(a, b: core.Learn_Record) -> bool {return a.entry > b.entry})
+		ok := len(crecs) == 2
+		for r, i in crecs {ok &&= i < 2 && r.entry == want[i].entry && r.flags == want[i].flags}
+		check(ok, fmt.tprintf("relearned: %d records %v; want S3 clean, S2 .Smc", len(crecs), crecs[:]))
+		out, _, _ = core.learn_compilable(crecs[:], .Ee, context.allocator)
+		clear(&runs)
+		for r in out {
+			if r.entry == S2 || r.entry == S3 {append(&runs, r5900.Learned{r.entry, r.lo, r.words})}
+		}
+		check(len(runs) == 1 && runs[0].entry == S3, fmt.tprintf("relearned: %d compiled; want S3 alone", len(runs)))
+		relearned, rskipped := r5900.learned_blob(runs[:], .Wasm32)
+		check(rskipped == 0 && os.write_entire_file("relearned.bin", relearned) == nil && ps2.load_learned("relearned.bin"), "load the relearned blob")
+		v0, ran = call(A13)
+		check(v0 == LOOPS && ran, fmt.tprintf("S3 relearned, learned: v0 %d, learned code ran %v; want %d, ran", v0, ran, LOOPS))
 	}
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter")
 }

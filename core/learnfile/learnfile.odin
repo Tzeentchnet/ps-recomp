@@ -106,16 +106,25 @@ learn_read :: proc(data: []u8, allocator := context.allocator) -> (recs: [dynami
 	return recs, bad
 }
 
-// The records in data each once, without bad ones, sorted by cpu, entry,
-// lo, words, hash and flags: a LEARN file's bytes compacted, which a
-// rewrite of the file bounds growth across runs with. In context.allocator;
-// n is the records it holds.
+// The records in data each once, without bad ones or stale ones, sorted by
+// cpu, entry, lo, words, hash and flags: a LEARN file's bytes compacted,
+// which a rewrite of the file bounds growth across runs with. In
+// context.allocator; n is the records it holds.
+//
+// An EE record marked .Smc_Unknown is stale: the EE's runs are checked all
+// through now (core/learn.odin's learn_fold), and only an earlier build,
+// whose store log a long run overflowed, wrote one. Kept, it would leave
+// out a clean record of the same words (learn_compilable), and its entry,
+// left to the interpreter, would never be recorded again (ps2
+// learned_refuse); dropped, the entry is recorded once more and the new
+// record decides.
 learn_compact :: proc(data: []u8) -> (out: []u8, n: int) {
 	recs, _ := learn_read(data, context.temp_allocator)
 	seen := make(map[Learn_Key]bool, context.temp_allocator)
 	keep := make([dynamic]Learn_Record, context.temp_allocator)
 	size := 0
 	for r in recs {
+		if r.cpu == .Ee && .Smc_Unknown in r.flags {continue}
 		key := learn_key(r)
 		if key in seen {continue}
 		seen[key] = true
