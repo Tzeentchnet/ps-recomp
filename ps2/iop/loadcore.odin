@@ -45,6 +45,11 @@ import r3000 "ps:psx/cpu"
 // Instructions a load's start and threads may run before they are taken
 // to spin. Fixed, so a spinning start fails at the same point every run.
 IOP_START_BUDGET :: 1 << 23
+// Rounds of a start's loop, each a slice or an idle step to the next wake
+// or interrupt due: a bound past any budget's slices, for a callback that
+// stays due without the clock moving.
+IOP_START_ROUNDS :: 1 << 16
+#assert(IOP_START_ROUNDS > IOP_START_BUDGET * r3000.CYCLES_PER_INSN / IOP_SLICE * 4)
 IOP_START_STACK :: 0x2000
 
 KE_OK :: 0
@@ -339,19 +344,27 @@ iop_load :: proc(data: []u8, path: string, args: []u8) -> (id: i32, result: u32)
 	if f.thid == 0 {return fail(key, x.name, "no memory")}
 	s.start_done = false
 	iop_sync(cpu.state.cycles)
-	// In slices, so libsd's interrupt handlers due meanwhile run between
-	// them, by the IOP's clock, the EE's standing still over the load: a
-	// start can spin on what a voice transfer's handler sets. Only libsd's:
-	// no timer, CD, SIF DMA or vblank handler runs before the start ends.
-	// Each slice end schedules as iop_tick's does, so a thread whose wake
-	// passed takes over there, not at the start's end.
+	// In slices, so the interrupt handlers due meanwhile run between them as
+	// iop_tick runs them, by the IOP's clock, the EE's standing still over
+	// the load: a start can spin on what a voice transfer's handler sets, or
+	// sleep on a thread that waits for cdvdman's read callback. With no
+	// thread ready, the clock moves to the next wake or interrupt due, as it
+	// does between iop_ticks; the start is blocked only when none is due
+	// before the budget's end. Each slice end schedules as iop_tick's does,
+	// so a thread whose wake passed takes over there, not at the start's end.
 	end := r3000.state.cycles + IOP_START_BUDGET * r3000.CYCLES_PER_INSN
 	slices := 0
-	for {
-		th_schedule(min(end, r3000.state.cycles + IOP_SLICE))
+	for _ in 0 ..< IOP_START_ROUNDS {
+		th_schedule(min(end, r3000.state.cycles + IOP_SLICE), idle = true)
 		slices += 1
-		if !s.budget || r3000.state.cycles >= end || (s.start_done && load_ee_failed()) {break}
-		sd_intr_run(r3000.state.cycles * IOP_EE_RATIO)
+		if r3000.state.cycles >= end || (s.start_done && load_ee_failed()) {break}
+		if !s.budget {
+			if s.start_done {break}
+			next := iop_next_ee()
+			if next >= end * IOP_EE_RATIO {break}
+			iop_sync(next + IOP_EE_RATIO - 1) // up to the IOP cycle it falls in
+		}
+		iop_intr_run(r3000.state.cycles * IOP_EE_RATIO)
 	}
 	if slices > 1 {fmt.eprintfln("iop: start of \"%s\" ran %d slices", x.name, slices)}
 	if !s.start_done && s.budget {

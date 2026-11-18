@@ -3844,6 +3844,36 @@ test_start_intr :: proc() {
 	check(id > 0, "start: a start spinning on its transfer handler's flag returns")
 	check(id > 0 && iop.iop_u32(module_base(id) + flag)^ == 1, "start: the handler set the flag")
 	test_start_block_cross()
+	test_start_delay()
+}
+
+// A start that delays then finishes, as Jak II's OVERLORD polls a mailbox
+// with DelayThread: no thread is ready while it waits, so the clock moves
+// to its wake, and the start returns.
+test_start_delay :: proc() {
+	fresh()
+	a: Asm
+	tb := imports(&a, "thbase", 33)
+	n := at(&a)
+	put(&a, 0)
+	entry := at(&a)
+	prologue(&a)
+	loop := at(&a)
+	li(&a, A0, 100)
+	jal(&a, tb) // DelayThread(100)
+	lw_at(&a, T2, n)
+	put(&a, 0x254a0001) // addiu t2, t2, 1
+	la(&a, T0, n)
+	put(&a, 0xad000000 | T2 << 16) // sw t2, 0(t0)
+	put(&a, 0x294b0003) // slti t3, t2, 3
+	put(&a, 0x15600000 | (loop - at(&a) - 4) / 4 & 0xffff, 0) // bnez t3, loop
+	li(&a, V0, 0)
+	epilogue(&a)
+	before := r3000.state.cycles
+	id, _ := iop.iop_load(build_mod("moddl", &a, entry), "moddl", nil)
+	check(id > 0, "start: a start that delays then finishes returns")
+	check(id > 0 && iop.iop_u32(module_base(id) + n)^ == 3, "start: each of its three delays woke")
+	check(r3000.state.cycles - before >= 300, "start: the clock moved past the three delays")
 }
 
 // A start that spins on what its block transfer's handler sets at the first

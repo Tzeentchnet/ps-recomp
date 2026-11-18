@@ -462,10 +462,28 @@ iop_sync :: proc(now: u64) {
 // edge (vbl_next_ee). The EE's next event moves up to it, unless the EE is
 // handling events, which ends with update_next_event.
 iop_wake_set :: proc() {
+	iop_wake_ee = iop_next_ee()
+	if !cpu.in_interrupt {cpu.next_event = min(cpu.next_event, iop_wake_ee)}
+}
+
+// The EE cycle the IOP next has work at, as iop_wake_set takes it: at once
+// while a thread is ready, else the first of the threads' wakes and the
+// interrupts due; max(u64) when none is.
+iop_next_ee :: proc() -> u64 {
 	w := th_next_wake()
 	if th_pick() != nil {w = r3000.state.cycles}
-	iop_wake_ee = min(w if w == max(u64) else w * IOP_EE_RATIO, sd_next_ee(), tim_next_ee(), cd_next_ee(), sif_dma_next_ee(), vbl_next_ee())
-	if !cpu.in_interrupt {cpu.next_event = min(cpu.next_event, iop_wake_ee)}
+	return min(w if w == max(u64) else w * IOP_EE_RATIO, sd_next_ee(), tim_next_ee(), cd_next_ee(), sif_dma_next_ee(), vbl_next_ee())
+}
+
+// Runs the interrupt handlers due by EE cycle `now`: libsd's, then the
+// timers' compares, then cdvdman's pending read callback, then sifman's DMA
+// completion callbacks, then the vblank handlers.
+iop_intr_run :: proc(now: u64) {
+	sd_intr_run(now)
+	tim_intr_run()
+	cd_intr_run()
+	sif_dma_intr_run(now)
+	vbl_intr_run()
 }
 
 // The EE's events at EE cycle `now`, the IOP's wake due: runs libsd's due
@@ -476,11 +494,7 @@ iop_tick :: proc(now: u64) {
 	t := cpu.prof_start()
 	defer cpu.prof_end(.IOP, t)
 	iop_sync(now)
-	sd_intr_run(now)
-	tim_intr_run()
-	cd_intr_run()
-	sif_dma_intr_run(now)
-	vbl_intr_run()
+	iop_intr_run(now)
 	iop_sched.start_done = false
 	th_schedule(r3000.state.cycles + IOP_SLICE, idle = true)
 	iop_wake_set()
