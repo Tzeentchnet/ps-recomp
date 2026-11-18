@@ -43,15 +43,45 @@ flat_call :: proc(entry: u32) {
 //
 // With L (LEARN on for the EE), each interpreted run is noted as
 // interp_call's is: lf is the frame of the function the run is in
-// (kernel.flat_learn_top), nil when none is noted.
+// (kernel.flat_learn_top), nil when none is noted. The instructions run
+// with none open are no run's, and checked for none: flat_steps notes
+// each instruction only as its N variant, which runs while lf is not nil.
 @(private = "file")
 flat_loop :: proc($L: bool) {
-	c := &cpu.state
 	x, pc, lf, ok := flat_resume(L)
-	if !ok {return}
+	for ok {
+		when L {
+			if lf != nil {
+				x, pc, lf, ok = flat_steps(true, true, x, pc, lf)
+			} else {
+				x, pc, lf, ok = flat_steps(true, false, x, pc, lf)
+			}
+		} else {
+			x, pc, lf, ok = flat_steps(false, false, x, pc, lf)
+		}
+	}
+}
+
+// Whether flat_steps with N leaves to flat_loop for the other variant:
+// with L, when a run is open (lf) and N is not, or none is and N is.
+@(private = "file")
+flat_switch :: #force_inline proc($L, $N: bool, lf: ^core.Learn_Frame) -> bool {
+	when L {return (lf != nil) != N} else {return false}
+}
+
+// flat_loop's interpreter, from pc in the run x, until the run ends (ok
+// false) or, with N (a run open), lf changes to or from nil: N notes each
+// instruction in lf, and without N none is noted.
+@(private = "file")
+flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Learn_Frame) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_Frame, ok: bool) {
+	c := &cpu.state
+	x, pc, lf = x_, pc_, lf_
+	slot :: #force_inline proc($N: bool, pc: u32, lf: ^core.Learn_Frame) {
+		when N {delay_slot(pc, lf)} else {delay_slot(pc, nil)}
+	}
 	for {
 		i := r5900.decode(pc, mem.rd32(pc))
-		when L {if lf != nil {learn_note(lf, i)}}
+		when N {learn_note(lf, i)}
 		c.cycles += cpu.CYCLES_PER_INSN
 		when mem.MOD_PROBE {if mem.mod_ram_has(pc) {mem.mod_probe.interp += 1}}
 		ret := pc + 8
@@ -63,76 +93,76 @@ flat_loop :: proc($L: bool) {
 			x.pc = pc + 4
 			if i.op == .ERET {
 				exec_insn(i)
-				if !flat_return(x, L, false, 0) {return}
-				if x, pc, lf, ok = flat_resume(L); !ok {return}
+				if !flat_return(x, L, false, 0) {return x, pc, lf, false}
+				if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				continue
 			}
 			flat_sys(i)
-			if x, pc, lf, ok = flat_resume(L); !ok {return}
+			if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 		case .Bad:
 			cpu.bad_insn(pc, i.w)
 		case .Branch:
 			taken := branch_taken(i)
 			if i.link {c.r[31].d[0] = u64(ret)}
-			if !i.likely || taken {delay_slot(pc + 4, lf)}
+			if !i.likely || taken {slot(N, pc + 4, lf)}
 			if !taken {
 				pc = ret
 			} else if i.link && i.target != ret {
 				flat_enter(x, ret, i.target)
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else if i.link {
 				pc = ret
 			} else if flat_mod_tail(x, L, i.target) {
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else if flat_goto(x, pc, i.target) {
-				if x, pc, lf, ok = flat_resume(L); !ok {return}
+				if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
 				pc = i.target
 				if flat_native_at(pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				}
 			}
 		case .Jump:
-			delay_slot(pc + 4, lf)
+			slot(N, pc + 4, lf)
 			if flat_mod_tail(x, L, i.target) {
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else if flat_goto(x, pc, i.target) {
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
 				pc = i.target
 				if flat_native_at(pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				}
 			}
 		case .Call:
 			c.r[31].d[0] = u64(ret)
-			delay_slot(pc + 4, lf)
+			slot(N, pc + 4, lf)
 			if i.target == ret {
 				pc = ret
 				continue
 			}
 			flat_enter(x, ret, i.target)
-			if x, pc, lf, ok = flat_resume(L); !ok {return}
+			if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 		case .Jalr:
 			t := u32(c.r[i.rs].d[0])
 			if i.rd != 0 {c.r[i.rd].d[0] = u64(ret)}
-			delay_slot(pc + 4, lf)
+			slot(N, pc + 4, lf)
 			if t == ret {
 				pc = ret
 				continue
 			}
 			flat_enter(x, ret, t)
-			if x, pc, lf, ok = flat_resume(L); !ok {return}
+			if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 		case .Jr:
 			t := u32(c.r[i.rs].d[0])
-			delay_slot(pc + 4, lf)
+			slot(N, pc + 4, lf)
 			if i.rs == 31 && !flat_unwind(x, L, t) {
-				if !flat_return(x, L, true, t) {return}
-				if x, pc, lf, ok = flat_resume(L); !ok {return}
+				if !flat_return(x, L, true, t) {return x, pc, lf, false}
+				if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				continue
 			}
 			if i.rs == 31 {
@@ -144,17 +174,18 @@ flat_loop :: proc($L: bool) {
 					lf = nil
 				}
 				if flat_mod_tail(x, L, t) {
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				} else if flat_goto(x, pc, t) {
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				} else {
 					pc = t
 					if flat_native_at(pc) {
 						x.pc = pc
 						when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
-						if x, pc, lf, ok = flat_resume(L); !ok {return}
+						if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 					}
 				}
+				when N {return x, pc, lf, true} // lf is nil: the steps without one go on at pc
 				continue
 			}
 			// interp_body's two checks: the events check of every such
@@ -168,15 +199,15 @@ flat_loop :: proc($L: bool) {
 				kernel.flat_sync()
 				kernel.run_events()
 				kernel.flat_commit()
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else if tail {
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
 				pc = t
 				if flat_native_at(pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
-					if x, pc, lf, ok = flat_resume(L); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 				}
 			}
 		}
@@ -203,17 +234,22 @@ Wasm_Func :: #type proc(pc: u32)
 // With L, also the LEARN frame of the run's function (flat_loop). Native
 // code entered where a run is noted cuts it: the function goes on in code
 // the record cannot hold (a return to an entry of its own). Interpreting
-// from where native code jumped out (.None) begins a run there, as
-// learned_goto does.
+// where native code jumped out to (.None) and no native code is found
+// begins a run there, as learned_goto does after learned_find misses: not
+// at an entry native code has no block for, nor in learned code, which runs
+// here.
 @(private = "file")
 flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_Frame, ok: bool) {
 	x, pc = flat_reload(L)
 	when ODIN_ARCH == .wasm32 {
-		left := false
+		left, miss := false, false
 		native: for flat_native_on {
 			f := flat_lookup(pc)
 			learned_ran()
-			if f == nil {break}
+			if f == nil {
+				miss = left
+				break
+			}
 			when L {kernel.flat_learn_end(x, x.depth, true)}
 			e := &cpu.native_exit
 			when mem.MOD_PROBE {mem.mod_probe.enters[int(mem.mod_ram_has(pc))] += 1}
@@ -266,7 +302,7 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 			x, pc = flat_reload(L)
 		}
 		when L {
-			if left && kernel.flat_learn_top(x) == nil {kernel.flat_learn_begin(x, pc)}
+			if miss && kernel.flat_learn_top(x) == nil {kernel.flat_learn_begin(x, pc)}
 		}
 	}
 	when L {lf = kernel.flat_learn_top(x)}
