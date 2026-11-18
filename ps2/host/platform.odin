@@ -93,7 +93,7 @@ platform_init :: proc(title: cstring) -> bool {
 	// LEARN=<file>: record the code the interpreters run (core/learn.odin);
 	// the IOP names its counter in iop_cpu_init.
 	core.learn_open()
-	core.learn_cpu(.Ee, &cpu.state.cycles, cpu.CYCLES_PER_INSN, proc(a: u32) -> u32 {return mem.rd32(a)}, mem.RAM_SIZE, false)
+	core.learn_cpu(.Ee, &cpu.state.cycles, cpu.CYCLES_PER_INSN, proc(a: u32) -> u32 {return mem.rd32(a)}, mem.RAM_SIZE, false, mem.ram)
 	stats = core.env("STATS") == "1"
 	cpu.prof_on = stats
 	// PACE=<hz> paces a headless run too (netplay tests; a different
