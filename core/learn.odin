@@ -139,6 +139,27 @@ learn: struct {
 	free:    [LEARN_LIVE_MAX]u16,
 	n_free:  int,
 	pooled:  bool, // free is filled
+	// The record each entry's latest run matched, direct-mapped by entry
+	// (learn_memo_hit).
+	memo:    [LEARN_MEMO_N]Learn_Memo,
+}
+
+// Most runs end as a record already written: a hot function returns the
+// same words millions of times. learn_write first compares a run with the
+// record its entry's last run matched, word for word, and stops there on a
+// match, before the copy, the hash and the key lookup. The memo holds only
+// keys already in learn.keys, which only grows, so a match is a record the
+// full path would also find written.
+LEARN_MEMO_N :: 1 << 10
+
+@(private = "file")
+Learn_Memo :: struct {
+	cpu:   Learn_Cpu,
+	set:   bool,
+	flags: Learn_Flags,
+	entry: u32,
+	lo:    u32,
+	words: [dynamic]u32le,
 }
 
 // The frame handed from a run's start to its interpreter loop (learn_take).
@@ -543,6 +564,9 @@ learn_write :: proc(s: ^Learn_Space, f: ^Learn_Frame, flags: Learn_Flags) {
 		flags += {.Large}
 		n = 0
 	}
+	if learn_memo_hit(s, f, flags, n) {
+		return
+	}
 	context.allocator = long_allocator()
 	resize(&learn.buf, LEARN_HEADER + int(n) * 4)
 	words := ([^]u32le)(raw_data(learn.buf[LEARN_HEADER:]))[:n]
@@ -559,6 +583,7 @@ learn_write :: proc(s: ^Learn_Space, f: ^Learn_Frame, flags: Learn_Flags) {
 	hash := u64(xxhash.XXH3_64_default(learn.buf[LEARN_HEADER:]))
 	key := learnfile.Learn_Key{f.cpu, flags, f.entry, f.lo, n, hash}
 	if key in learn.keys {
+		learn_memo_set(f, flags, words)
 		return
 	}
 	if learn.written + len(learn.buf) > LEARN_BYTES_MAX || len(learn.keys) >= LEARN_RECORDS_MAX {
@@ -574,6 +599,7 @@ learn_write :: proc(s: ^Learn_Space, f: ^Learn_Frame, flags: Learn_Flags) {
 		return
 	}
 	learn.written += len(learn.buf)
+	learn_memo_set(f, flags, words)
 	s.records += 1
 	if flags & {.Smc, .Smc_Unknown} != {} {s.smc += 1}
 	if .Large in flags {s.large += 1}
@@ -581,6 +607,42 @@ learn_write :: proc(s: ^Learn_Space, f: ^Learn_Frame, flags: Learn_Flags) {
 	for w, i in words {
 		s.words[u64(f.lo + u32(i) * 4) << 32 | u64(w)] = true
 	}
+}
+
+// Whether f's run, with flags before the refetch check and n words, is the
+// record its entry's memo holds: same processor, entry, range and flags,
+// RAM holds the memo's words, and the run fetched no other words (the
+// refetch check would add .Smc, another key). Only for RAM a host gives.
+@(private = "file")
+learn_memo_hit :: proc(s: ^Learn_Space, f: ^Learn_Frame, flags: Learn_Flags, n: u32) -> bool #no_bounds_check {
+	m := &learn.memo[f.entry >> 2 & (LEARN_MEMO_N - 1)]
+	if !m.set || m.cpu != f.cpu || m.entry != f.entry || m.lo != f.lo || m.flags != flags || u32(len(m.words)) != n {
+		return false
+	}
+	lo, ok := ram_word(s, f.lo)
+	if !ok || s.ram == nil || int(lo) + int(n) > len(s.ram) / 4 {
+		return false
+	}
+	words := ([^]u32le)(raw_data(s.ram[lo * 4:]))[:n]
+	for w, i in words {
+		if w != m.words[i] {
+			return false
+		}
+	}
+	return n == 0 || !learn_refetched(s, f, words)
+}
+
+// Note that f's run, with flags, matched or wrote the record of words.
+@(private = "file")
+learn_memo_set :: proc(f: ^Learn_Frame, flags: Learn_Flags, words: []u32le) {
+	m := &learn.memo[f.entry >> 2 & (LEARN_MEMO_N - 1)]
+	m.set = true
+	m.cpu = f.cpu
+	m.entry = f.entry
+	m.lo = f.lo
+	m.flags = flags
+	resize(&m.words, len(words))
+	copy(m.words[:], words)
 }
 
 // Whether f's run fetched other words than words, its range's now: a fetch
