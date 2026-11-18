@@ -236,12 +236,14 @@ Wasm_Func :: #type proc(pc: u32)
 // the record cannot hold (a return to an entry of its own). Interpreting
 // where native code jumped out to (.None) and no native code is found
 // begins a run there, as learned_goto does after learned_find misses: not
-// at an entry native code has no block for, nor in learned code, which runs
-// here, nor at an entry the learned compiler left to the interpreter
-// (learned_refused_at).
+// at a pc jumped to that native code has no block for, nor in learned code,
+// which runs here, nor at an entry the learned compiler left to the
+// interpreter (learned_refused_at). A pc entered (a call, a thread's start)
+// that native code has no block for is an entry, and begins one.
 @(private = "file")
 flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_Frame, ok: bool) {
-	x, pc = flat_reload(L)
+	entered: bool
+	x, pc, entered = flat_reload(L)
 	when ODIN_ARCH == .wasm32 {
 		left, miss := false, false
 		native: for flat_native_on {
@@ -265,8 +267,12 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 			switch e.reason {
 			case .None:
 				// An entry its code has no block for: interpret, rather
-				// than enter it again.
+				// than enter it again. Entered there (a call, a thread's
+				// start), the pc is a function's entry, the larger
+				// function's code it lies in or not: its run is noted, so
+				// the next compile holds code that starts there.
 				if e.pc == pc {
+					when L {if entered && !learned_refused_at(pc) {kernel.flat_learn_begin(x, pc)}}
 					when mem.MOD_PROBE {
 						in_mod := mem.mod_ram_has(pc)
 						mem.mod_probe.left[int(in_mod)] += 1
@@ -300,7 +306,7 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 			case .Eret:
 				if !flat_return(x, L, false, 0) {return}
 			}
-			x, pc = flat_reload(L)
+			x, pc, entered = flat_reload(L)
 		}
 		when L {
 			if miss && kernel.flat_learn_top(x) == nil && !learned_refused_at(pc) {kernel.flat_learn_begin(x, pc)}
@@ -344,13 +350,16 @@ flat_sys :: proc(i: r5900.Insn) {
 // call's on entry (interp_call), or a backward jump's events check. Each
 // may switch to another run, which may owe its own. With L, an
 // interpreted call's run is noted from after its events check, as
-// interp_call's is.
+// interp_call's is. Also whether the pc is an entry (a call's, a thread's
+// start) that native code is at: flat_resume notes the run there if that
+// code holds no block for it.
 @(private = "file")
-flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32) {
+flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32, bool) {
 	for {
 		x := kernel.flat_ctx()
 		check := false
 		begin := false
+		entered := false
 		if x.enter {
 			x.enter = false
 			if x.depth == 0 {x.ra, x.ra_sp = u32(cpu.state.r[31].d[0]), u32(cpu.state.r[29].d[0])}
@@ -367,6 +376,8 @@ flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32) {
 			if !flat_native_at(x.pc) {
 				interp_enter(x.pc)
 				begin = L && !learned_refused_at(x.pc)
+			} else {
+				entered = true
 			}
 			check = true
 		} else if x.back {
@@ -381,7 +392,7 @@ flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32) {
 			continue
 		}
 		when L {if begin {kernel.flat_learn_begin(x, x.pc)}}
-		return x, x.pc
+		return x, x.pc, entered
 	}
 }
 

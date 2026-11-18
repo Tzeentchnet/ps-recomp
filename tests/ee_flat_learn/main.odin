@@ -44,6 +44,11 @@
 //     compacted away: its entry is not left to the interpreter, so its run
 //     is recorded again, clean, and compiled, a stale record beside it or
 //     not. A .Smc one (S2's) stays left to the interpreter.
+//   - An interpreted call into learned code where it has no block (A14's
+//     to L + 16) is an entry: its run is noted, so the next compile holds
+//     code that starts there. A4's jump there still notes none. Before
+//     the fix such an entry, a thread's loop inside a larger learned
+//     function, was interpreted for good.
 //
 // Its files are in the WASI shim's in-memory directory, gone at the exit.
 package main
@@ -175,6 +180,11 @@ A12 :: u32(0x00100b00)
 S3 :: u32(0x00121000)
 @(private = "file")
 A13 :: u32(0x00100c00)
+// A14: PUSH; jal L + 16; nop; lw ra, 0(sp); jr ra; POP. A call into L where
+// it has no block, as a thread's start or a call can enter a larger
+// learned function's code at an entry of its own.
+@(private = "file")
+A14 :: u32(0x00100d00)
 @(private = "file")
 LOOPS :: u32(70000)
 #assert(LOOPS > core.LEARN_STORES_MAX)
@@ -534,6 +544,28 @@ main :: proc() {
 		v0, ran = call(A13)
 		check(v0 == LOOPS && ran, fmt.tprintf("S3 relearned, learned: v0 %d, learned code ran %v; want %d, ran", v0, ran, LOOPS))
 	}
+	{
+		eblob, eskipped := r5900.learned_blob({{L, L, l[:]}}, .Wasm32)
+		check(eskipped == 0 && os.write_entire_file("entered.bin", eblob) == nil && ps2.load_learned("entered.bin"), "load L's blob")
+		ps2.learned_refuse({L})
+		put(A14, {PUSH_1, PUSH_2, jal(L + 16), NOP, LOAD_RA, JR_RA, POP})
+		entered_path :: "entered-learn.bin"
+		check(core.learn_open_path(entered_path, {.Ee}), "open for the entered call")
+		v0, _ = call(A4)
+		check(v0 == 4, fmt.tprintf("entered: A4: v0 %d, want 4", v0))
+		v0, _ = call(A14)
+		check(v0 == 4, fmt.tprintf("entered: A14: v0 %d, want 4", v0))
+		core.learn_report()
+		edata, eerr := os.read_entire_file(entered_path, context.allocator)
+		check(eerr == nil, fmt.tprintf("read %s: %v", entered_path, eerr))
+		erecs, _ := core.learn_read(edata, context.allocator)
+		slice.sort_by(erecs[:], proc(a, b: core.Learn_Record) -> bool {return a.entry < b.entry})
+		ewant := [?]Want{{A14, 7}, {L + 16, 3}} // A4's record is written already
+		eok := len(erecs) == len(ewant)
+		for r, i in erecs {eok &&= i < len(ewant) && r.entry == ewant[i].entry && r.lo == r.entry && r.flags == {} && len(r.words) == ewant[i].n}
+		check(eok, fmt.tprintf("entered: %d records; want A14 n 7, L + 16 n 3 (A4 first, noting none there)", len(erecs)))
+		if !eok {for r in erecs {fmt.eprintfln("  %08x lo %08x %v n %d", r.entry, r.lo, r.flags, len(r.words))}}
+	}
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter; a call into learned code where it has no block notes a run there, a jump there none")
 }
