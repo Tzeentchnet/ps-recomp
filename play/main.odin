@@ -493,6 +493,11 @@ play :: proc(image: string) -> int {
 			return 1
 		}
 	}
+	// Game data (core/gamedata.odin), a PS2 game's: on the web always,
+	// natively with PS_GAMEDATA=1; PS_GAMEDATA=0 turns it off.
+	if gd := core.env("GAMEDATA"); cnf.ps2 && (gd == "1" || gd == "" && core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32) {
+		core.gamedata_init(core.disc_path(dir, .Gamedata, context.temp_allocator), learn_records(dir, learned_files(.Ee).records), id, cnf.serial)
+	}
 	// The picture a run ends on (a quit, a COMPAT run's last vblank), for
 	// the launcher.
 	core.thumb_path = core.disc_path(dir, .Thumb)

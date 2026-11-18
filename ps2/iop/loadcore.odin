@@ -378,6 +378,7 @@ iop_load :: proc(data: []u8, path: string, args: []u8) -> (id: i32, result: u32)
 	} else {
 		append(&l.modules, m)
 	}
+	core.gamedata_irx(strings.truncate_to_byte(string(m.name[:]), 0), m.base, m.size, m.hash)
 	if cpu.debug >= 1 {fmt.eprintfln("iop: \"%s\" at %x id %d start %x", x.name, m.base, m.id, result)}
 	return i32(m.id), result
 }
@@ -721,6 +722,7 @@ module_buffer_load :: proc(buf: u32) -> u32 {
 	m.hash = hash
 	l.next_id += 1
 	append(&l.modules, m)
+	core.gamedata_irx(strings.truncate_to_byte(string(m.name[:]), 0), m.base, m.size, m.hash)
 	if cpu.debug >= 1 {fmt.eprintfln("iop: \"%s\" at %x id %d loaded", x.name, m.base, m.id)}
 	return m.id
 }

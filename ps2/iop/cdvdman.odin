@@ -103,6 +103,13 @@ cdvdman_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 			disc_sectors(a0 + k, sector[:])
 			copy(iop_ram_at(a2 + k * DISC_SECTOR, DISC_SECTOR), sector[:])
 		}
+		if core.gamedata.on {
+			n := min(a1, IOP_RAM_SIZE / DISC_SECTOR) * DISC_SECTOR
+			// A read-only view, so hashing runs no write invalidation; it stops at
+			// the end of RAM where the copy wraps, so the hash covers only the
+			// unwrapped part.
+			gd_sector_load(.Iop, a0, a2, iop_view(a2 & (IOP_RAM_SIZE - 1), n))
+		}
 		cd_done(CD_FUNC_READ)
 		return 1, true
 	case 8: // sceCdGetError: the error byte the last command stored; no command fails here, so 0, none
@@ -281,6 +288,7 @@ ioman_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 		f := fileio_file(a0)
 		if f == nil {return ke(-EBADF), true}
 		n := fileio_left(f, a2)
+		pos := f.pos
 		sector: [DISC_SECTOR]u8 // as sceCdRead's
 		done: i64
 		for done < n {
@@ -288,6 +296,10 @@ ioman_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 			copy(iop_ram_at(a1 + u32(done), u32(got)), sector[:got])
 			done += i64(got)
 			if got < DISC_SECTOR {break}
+		}
+		if core.gamedata.on {
+			// Read-only and unwrapped, as sceCdRead's above.
+			gd_file_load(.Iop, f.file, pos, a1, iop_view(a1 & (IOP_RAM_SIZE - 1), u32(done)))
 		}
 		return u32(done), true
 	case 8: // lseek(fd, offset, whence)

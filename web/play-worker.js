@@ -83,6 +83,9 @@ async function discFor({ files, urls, store: name, stored }) {
 // that is not cross-origin isolated cannot share memory with them, and
 // draws on this Worker.
 //
+// The run's game data (core/gamedata.odin) counts the CPUs (PS_CORES),
+// which it writes only rounded down to 1, 2, 4, 8 or 16.
+//
 // out: a tool run, as a mid-run learned compile's (web/learn.js): no disc,
 // no store and no window; /data holds only seed (path -> bytes), and done
 // carries what the module wrote there as files.
@@ -122,6 +125,9 @@ onmessage = async ({ data }) => {
 		const memory = limits && new WebAssembly.Memory(limits);
 		if (!out && env.PS_BANDS === undefined) {
 			env.PS_BANDS = self.crossOriginIsolated ? String(Math.max(1, Math.min(navigator.hardwareConcurrency - 1, 8))) : "1";
+		}
+		if (!out && env.PS_CORES === undefined && navigator.hardwareConcurrency) {
+			env.PS_CORES = String(navigator.hardwareConcurrency);
 		}
 		const nBands = out ? 1 : Number(env.PS_BANDS);
 		const bands = memory && nBands > 1 && self.crossOriginIsolated

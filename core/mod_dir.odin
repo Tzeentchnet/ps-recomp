@@ -166,6 +166,8 @@ mod_values_write :: proc(set: Mod_Set, ram: []u8, base: u32) {
 // replay_load checks it, and the compat line's build column and a netplay
 // HELLO carry it, so runs with different mods are never taken for the same.
 run_mods: u64
+// How many mods this run loads.
+run_mods_n: int
 
 // A setting of a mod this run loads, for a port's menu: value is what the
 // run uses, saved what settings.tsv now holds, which the next run uses.
@@ -185,10 +187,10 @@ run_settings_path: string
 // (run_settings) and, when it has any, say which set it is, as who ("psx",
 // "ps2").
 mods_note :: proc(set: Mod_Set, who: string) {
-	run_mods = 0
+	run_mods, run_mods_n = 0, 0
 	run_settings_free()
 	if len(set.mods) == 0 {return}
-	run_mods = mod_run_hash(set)
+	run_mods, run_mods_n = mod_run_hash(set), len(set.mods)
 	fmt.eprintfln("%s: mod set %016x (%d mods)", who, run_mods, len(set.mods))
 	list := make([dynamic]Run_Setting)
 	for k in set.order {

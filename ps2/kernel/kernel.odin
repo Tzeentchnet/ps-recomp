@@ -305,6 +305,7 @@ syscall :: proc(pc: u32) {
 		if a0 & 2 != 0 {
 			flush_text_check()
 			cpu.learned_epoch += 1
+			core.gamedata_flush(mem.ram)
 		}
 	case 0x6b: // SifStopDma: transfers complete instantly
 	case 0x70: ret = i64(mem.gs_imr) // GsGetIMR

@@ -325,7 +325,7 @@ run_learned :: proc(addr: u32) -> bool {
 @(private)
 interpret :: proc(addr: u32) {
 	when FALLBACK_COUNT {fallback_interp[addr] += 1}
-	when core.COMPAT_COUNT {core.compat_entry(addr)}
+	when core.COMPAT_COUNT {core.compat_entry(addr, learn_cpu)}
 	// Inside a flat run the run is noted on its own record (flat_nested). A
 	// mod region run is not noted: learned code is the game's only.
 	nested := false

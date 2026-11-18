@@ -385,7 +385,7 @@ when core.FLAT {
 		}
 		report_once(addr, "interpreting")
 		when FALLBACK_COUNT {fallback_interp[addr] += 1}
-		when core.COMPAT_COUNT {core.compat_entry(addr)}
+		when core.COMPAT_COUNT {core.compat_entry(addr, learn_cpu)}
 		x.pc, x.start = addr, addr
 		flat_learn_begin(f, addr)
 		events_due()

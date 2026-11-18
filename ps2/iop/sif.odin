@@ -621,8 +621,10 @@ fileio_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 		// Through a host buffer: on macOS, rollback keeps RAM write-protected
 		// and a kernel write into it fails (rollback_darwin.odin).
 		tmp := make([]u8, fileio_left(f, w[5]), context.temp_allocator)
+		pos := f.pos
 		got := fileio_read(f, tmp)
 		copy(mem.ram_slice(w[4], u32(got)), tmp[:got])
+		gd_file_load(.Ee, f.file, pos, w[4], tmp[:got])
 		result = i32(got)
 	case 3: // WRITE {hdr, fd, buffer, size, unaligned size, data...}: read-only disc
 		result = -EBADF
@@ -799,6 +801,7 @@ fileio_open :: proc(name: string, flags: u32) -> i32 {
 		return -ENOENT
 	}
 	if cpu.debug >= 1 {fmt.eprintfln("fileio: open \"%s\" -> %s lba %d (%d bytes)", name, path, file.lba, file.size)}
+	gd_note(file, file.lba, name)
 	for &e, i in fileio.files {
 		if e.f == nil {
 			e = {file, 0}
@@ -1092,6 +1095,7 @@ disc_read :: proc(lsn, sectors, dest: u32) {
 	tmp := make([]u8, sectors * DISC_SECTOR, context.temp_allocator)
 	disc_sectors(lsn, tmp)
 	copy(mem.ram_slice(dest, u32(len(tmp))), tmp)
+	gd_sector_load(.Ee, lsn, dest, tmp)
 }
 
 // Reads the sectors from `lsn` that fill buf, a whole number of them; what
@@ -1189,6 +1193,7 @@ cdvd_search :: proc(name: string, layer: u8 = 0) -> (file: [0x24]u8, ok: bool) {
 	size := found.size
 	fw := ([^]u32)(&file)
 	fw[0], fw[1] = image.volume != 0 ? found.lba : disc_place(path, size), u32(size)
+	gd_note(found, fw[0], name)
 	// The ISO9660 name of the last component, version included.
 	base := name[strings.last_index_any(name, "\\/") + 1:]
 	copy(file[8:0x17], base)

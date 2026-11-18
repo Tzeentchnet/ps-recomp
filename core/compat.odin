@@ -268,9 +268,10 @@ ENTRY_SLOTS :: 1024
 @(private = "file")
 ENTRY_PROBES :: 8
 
-@(private = "file")
+@(private)
 Entry_Slot :: struct {
 	pc1: u32, // pc + 1; 0 is a free slot
+	cpu: Learn_Cpu,
 	n:   u64,
 }
 
@@ -373,21 +374,21 @@ compat_probe_setting :: proc() -> (every: u64, ok: bool) {
 	return
 }
 
-// Count an interpreter entry at pc. One at a pc not seen before breaks the
-// quiet (one past the table's room does not).
-compat_entry :: proc(pc: u32) {
+// Count an interpreter entry at pc on cpu. One at a pc not seen before breaks
+// the quiet (one past the table's room does not).
+compat_entry :: proc(pc: u32, cpu := Learn_Cpu.Ee) {
 	when COMPAT_COUNT {
 		if compat.probing {
 			return
 		}
-		h := (pc >> 2) * 0x9e3779b1 >> 22
+		h := ((pc >> 2) ~ u32(cpu) << 30) * 0x9e3779b1 >> 22
 		for i in u32(0) ..< ENTRY_PROBES {
 			s := &compat.entries[(h + i) % ENTRY_SLOTS]
-			if s.pc1 == pc + 1 || s.pc1 == 0 {
+			if s.pc1 == pc + 1 && s.cpu == cpu || s.pc1 == 0 {
 				if s.pc1 == 0 {
 					compat.quiet_new += 1
 				}
-				s.pc1 = pc + 1
+				s.pc1, s.cpu = pc + 1, cpu
 				s.n += 1
 				return
 			}
@@ -448,6 +449,7 @@ compat_vblank :: proc(n: u64, shown: bool, ram: []u8) {
 			compat.shown += 1
 		}
 		compat.ram = ram
+		gamedata_vblank(n)
 		if compat.on && frames >= 2 && n == frames / 2 {
 			compat.ram_at, compat.ram_hash = n, xxhash.XXH3_64_default(ram)
 		}
@@ -853,7 +855,7 @@ compat_line :: proc(fatal := "") -> Compat_Line {
 		}
 	}
 	slice.sort_by(slots[:], proc(a, b: Entry_Slot) -> bool {
-		return a.n > b.n || a.n == b.n && a.pc1 < b.pc1
+		return a.n > b.n || a.n == b.n && (a.pc1 < b.pc1 || a.pc1 == b.pc1 && a.cpu < b.cpu)
 	})
 	top := make([]Compat_Pc, min(len(slots), COMPAT_TOP), context.temp_allocator)
 	for &t, i in top {
@@ -941,6 +943,7 @@ fatal :: proc(format: string, args: ..any) -> ! {
 // Under COMPAT, print the compat line once; fatal is the fatal error's
 // message, "" for an exit. Call where the run ends.
 compat_report :: proc(fatal := "") {
+	gamedata_write(fatal)
 	if !compat.on || compat.reported {
 		return
 	}
