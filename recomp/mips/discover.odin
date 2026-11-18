@@ -1050,7 +1050,7 @@ drop_data :: proc(r: Rules, funcs: [dynamic]^Func, split: int, hi: u32, dropped,
 	data: Set
 	defer delete(data)
 	for f in funcs[:split] {
-		if f.entry in guessed && data_func(r, f, hi) {
+		if bad_fields(f) || (f.entry in guessed && data_func(r, f, hi)) {
 			data[f.entry] = {}
 		}
 	}
@@ -1087,6 +1087,20 @@ drop_data :: proc(r: Rules, funcs: [dynamic]^Func, split: int, hi: u32, dropped,
 		}
 	}
 	return kept
+}
+
+// True when a word f walks sets a field its opcode keeps zero, which code
+// never does: f is a table or other data read as code. Checked on every
+// split function, guessed entry or not, computed walk or not, since a Duff
+// walk over a table runs to the module's end.
+@(private = "file")
+bad_fields :: proc(f: ^Func) -> bool {
+	for _, i in f.insns {
+		if !zero_fields(i.w) {
+			return true
+		}
+	}
+	return false
 }
 
 // True when f's code, in a module ending at hi, is data: a word that does

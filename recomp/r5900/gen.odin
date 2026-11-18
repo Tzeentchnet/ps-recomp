@@ -260,8 +260,8 @@ discover :: proc(o: mips.Options, img: mips.Image) -> (funcs: [dynamic]^Func, la
 		}
 	}
 	for t in ranges {
-		// Guessed entries stay entries, but build_module gets none of them:
-		// dropping data after a return is gated on r3000 games only so far.
+		// Guessed entries stay entries; build_module drops one whose code is
+		// data after a return.
 		entries, _, guessed := mips.module_entries(RULES, img, t[0], t[1], nil, refs, known)
 		tables: mips.Set
 		mips.table_labels(RULES, img, t[0], t[1], ptrs, pairs[:], entries, &tables)
@@ -275,8 +275,8 @@ discover :: proc(o: mips.Options, img: mips.Image) -> (funcs: [dynamic]^Func, la
 		if !explicit {
 			mips.drop_data_labels(RULES, img, t[0], t[1], entries, guessed, tables, &labels)
 		}
+		append(&funcs, ..mips.build_module(RULES, img, t[0], t[1], entries, labels, calls, {}, guessed))
 		delete(guessed)
-		append(&funcs, ..mips.build_module(RULES, img, t[0], t[1], entries, labels, calls, {}, {}))
 	}
 	return
 }
