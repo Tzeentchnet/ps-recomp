@@ -232,8 +232,11 @@ Wasm_Func :: #type proc(pc: u32)
 // interpret).
 //
 // With L, also the LEARN frame of the run's function (flat_loop). Native
-// code entered where a run is noted cuts it: the function goes on in code
-// the record cannot hold (a return to an entry of its own). Interpreting
+// code that runs where a run is noted cuts it: the function goes on in code
+// the record cannot hold (a return to an entry of its own). Code with no
+// block at the pc runs nothing, and cuts nothing: a return into a larger
+// function's code, which holds the caller's words but no block after its
+// call, goes on interpreted, and its run with it. Interpreting
 // where native code jumped out to (.None) and no native code is found
 // begins a run there, as learned_goto does after learned_find misses: not
 // at a pc jumped to that native code has no block for, nor in learned code,
@@ -253,11 +256,13 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 				miss = left
 				break
 			}
-			when L {kernel.flat_learn_end(x, x.depth, true)}
 			e := &cpu.native_exit
 			when mem.MOD_PROBE {mem.mod_probe.enters[int(mem.mod_ram_has(pc))] += 1}
 			(cast(Wasm_Func)rawptr(f))(pc)
 			left = e.reason == .None
+			// Cut after the code ran, not before: code with no block at pc
+			// (.None there) ran nothing, and the run goes on interpreted.
+			when L {if !left || e.pc != pc {kernel.flat_learn_end(x, x.depth, true)}}
 			// The frames of calls made in-line whose callee left (cpu.wasm_pend).
 			for cpu.wasm_npending > 0 {
 				cpu.wasm_npending -= 1
