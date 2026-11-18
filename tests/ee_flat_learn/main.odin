@@ -31,6 +31,11 @@
 //     runner, which interprets E and records it; E's words put back run
 //     it in place again. A lookup that skipped the compare would run the
 //     old E, and give v0 129 for 257.
+//   - A callee whose entry a larger learned function holds in-line (G in
+//     H) is called in place by learned code at its own entry, and H at
+//     its: learned_entry's cache gives what learned_search would. H's
+//     first word stored over leaves G's words as learned, so G is still
+//     called in place.
 //   - The report finds no run left open.
 //
 // Its files are in the WASI shim's in-memory directory, gone at the exit.
@@ -90,6 +95,11 @@ SP :: u32(0x001ff000)
 //       jr ra; nop. Learned.
 //   S:  addiu v1, zero, 0x2f; beql a0, zero, S + 12; syscall (GetThreadId);
 //       addiu v0, v0, 64; jr ra; nop. Learned.
+//   A9: PUSH; jal C2; nop; lw ra, 0(sp); jr ra; POP. A10 the same with C3.
+//   C2: PUSH; jal G; nop; lw ra, 0(sp); addiu v0, v0, 1; jr ra; POP.
+//       C3 the same with H. Learned.
+//   H:  addiu v0, v0, 512, then G: addiu v0, v0, 1024; jr ra; nop. H and
+//       G learned, H's words holding G's.
 @(private = "file")
 A1 :: u32(0x00100000)
 @(private = "file")
@@ -129,6 +139,18 @@ A8 :: u32(0x00100700)
 C :: u32(0x00118000)
 @(private = "file")
 E :: u32(0x00119000)
+@(private = "file")
+A9 :: u32(0x00100800)
+@(private = "file")
+A10 :: u32(0x00100900)
+@(private = "file")
+C2 :: u32(0x0011a000)
+@(private = "file")
+C3 :: u32(0x0011b000)
+@(private = "file")
+H :: u32(0x0011c000)
+@(private = "file")
+G :: H + 4
 
 @(private = "file")
 NOP :: u32(0)
@@ -259,6 +281,14 @@ main :: proc() {
 	ee := [?]u32{addiu_v0(2, 128), JR_RA, NOP}
 	put(C, cc[:])
 	put(E, ee[:])
+	put(A9, {PUSH_1, PUSH_2, jal(C2), NOP, LOAD_RA, JR_RA, POP})
+	put(A10, {PUSH_1, PUSH_2, jal(C3), NOP, LOAD_RA, JR_RA, POP})
+	c2 := [?]u32{PUSH_1, PUSH_2, jal(G), NOP, LOAD_RA, addiu_v0(2, 1), JR_RA, POP}
+	c3 := [?]u32{PUSH_1, PUSH_2, jal(H), NOP, LOAD_RA, addiu_v0(2, 1), JR_RA, POP}
+	hh := [?]u32{addiu_v0(2, 512), addiu_v0(2, 1024), JR_RA, NOP}
+	put(C2, c2[:])
+	put(C3, c3[:])
+	put(H, hh[:])
 	cpu.trap_hook = proc(pc: u32) {broke = pc}
 	// The slot cases interpreted, before learning is on: no records.
 	want_slot: [len(SLOT_CASES)]Slot_Run
@@ -272,7 +302,7 @@ main :: proc() {
 	check(v0 == 6 && !ran, fmt.tprintf("A1: v0 %d, learned code ran %v; want 6, none", v0, ran))
 	check_file({{A1, 8}, {B, 3}}, "an interpreted call")
 
-	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}, {D, D, dz[:]}, {S, S, sc[:]}, {C, C, cc[:]}, {E, E, ee[:]}}, .Wasm32)
+	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}, {D, D, dz[:]}, {S, S, sc[:]}, {C, C, cc[:]}, {E, E, ee[:]}, {C2, C2, c2[:]}, {C3, C3, c3[:]}, {H, H, hh[:]}, {G, G, hh[1:]}}, .Wasm32)
 	check(skipped == 0, fmt.tprintf("%d runs not lowered", skipped))
 	check(os.write_entire_file(BLOB, blob) == nil, "write the blob")
 	check(ps2.load_learned(BLOB), "load the blob")
@@ -325,15 +355,29 @@ main :: proc() {
 	}
 	put(E, e2[:]) // the words E's record holds, for the checks below
 
+	// G in H: each called in place at its own entry, twice (the second a
+	// cache hit), and G still in place with H's first word stored over.
+	for pass in 0 ..< 3 {
+		if pass == 2 {mem.wr32(H, NOP)}
+		fast, nils := cpu.wasm_fast_calls, cpu.wasm_fall_nil
+		v0, ran = call(A9)
+		check(v0 == 1025 && ran && cpu.wasm_fast_calls - fast == 1 && cpu.wasm_fall_nil == nils, fmt.tprintf("A9 pass %d: v0 %d, ran %v, %d in place, %d fell for no code; want 1025, ran, 1, 0", pass, v0, ran, cpu.wasm_fast_calls - fast, cpu.wasm_fall_nil - nils))
+		if pass == 2 {break}
+		fast, nils = cpu.wasm_fast_calls, cpu.wasm_fall_nil
+		v0, ran = call(A10)
+		check(v0 == 1537 && ran && cpu.wasm_fast_calls - fast == 1 && cpu.wasm_fall_nil == nils, fmt.tprintf("A10 pass %d: v0 %d, ran %v, %d in place, %d fell for no code; want 1537, ran, 1, 0", pass, v0, ran, cpu.wasm_fast_calls - fast, cpu.wasm_fall_nil - nils))
+	}
+	put(H, hh[:])
+
 	for c, i in SLOT_CASES {
 		got, native_ran := slot_run(c[0], c[1], c[2])
 		w := want_slot[i]
 		check(native_ran && got == w, fmt.tprintf("learned %08x(%d, %d): v0 %d, BREAK at %08x, %d cycles, learned code ran %v; want v0 %d, BREAK at %08x, %d cycles, ran", c[0], c[1], c[2], got.v0, got.broke, got.cycles, native_ran, w.v0, w.broke, w.cycles))
 	}
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {B, 3}, {M, 3}, {E, 3}}, "a leave to the interpreter at a delay slot's transfer")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {E, 3}}, "a leave to the interpreter at a delay slot's transfer")
 
 	core.learn_report()
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {B, 3}, {M, 3}, {E, 3}}, "the report")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {E, 3}}, "the report")
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words; the report finds none open")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open")
 }
