@@ -295,10 +295,20 @@ learned_first :: proc(pc: u32) -> (int, bool) #no_bounds_check {
 }
 
 // Game data's learned rows (core/gamedata.odin): each loaded function, by
-// entry and lo.
+// entry and lo. One map of the open records per write keeps it linear in
+// functions and records, so the write frame does not stall.
 @(private)
 gamedata_learned_rows :: proc(rows: ^[dynamic]string) {
+	Code :: struct {
+		entry, lo: u32,
+		n:         int,
+		hash:      u64,
+	}
 	recs := core.gamedata_learn()
+	open_at := make(map[Code]struct{}, context.temp_allocator)
+	for r in recs {
+		if r.cpu == .Ee && .Open in r.flags {open_at[{r.entry, r.lo, len(r.words), r.hash}] = {}}
+	}
 	Fn :: struct {
 		entry: u32,
 		f:     ^Learned_Fn,
@@ -318,10 +328,7 @@ gamedata_learned_rows :: proc(rows: ^[dynamic]string) {
 		l := x.f
 		n := len(l.words)
 		h := xxhash.XXH3_64_default(slice.to_bytes(l.words))
-		open := false
-		for r in recs {
-			if r.cpu == .Ee && r.entry == x.entry && r.lo == l.lo && len(r.words) == n && r.hash == h && .Open in r.flags {open = true; break}
-		}
+		open := Code{x.entry, l.lo, n, h} in open_at
 		append(rows, fmt.tprintf("learned\tee\t%08x\t%08x\t%d\t%016x\t%s", x.entry, l.lo, n, core.gamedata_hash(h, n), open ? "open" : "-"))
 	}
 }
@@ -330,16 +337,25 @@ gamedata_learned_rows :: proc(rows: ^[dynamic]string) {
 // reasons its records give, by entry.
 @(private)
 gamedata_refused_rows :: proc(rows: ^[dynamic]string) {
-	recs := core.gamedata_learn()
+	Why :: bit_set[enum {
+		Smc,
+		Smc_Unknown,
+		Large,
+		Not_Lowered,
+	}]
+	// Each EE entry's reasons over its records, one pass.
+	whys := make(map[u32]Why, context.temp_allocator)
+	for r in core.gamedata_learn() {
+		if r.cpu != .Ee {continue}
+		// map_entry inserts a zero set at a new key: &whys[k] does not.
+		_, why, _, _ := map_entry(&whys, r.entry)
+		if .Smc in r.flags {why^ += {.Smc}}
+		if .Smc_Unknown in r.flags {why^ += {.Smc_Unknown}}
+		if .Large in r.flags {why^ += {.Large}}
+		if r.flags & {.Smc, .Smc_Unknown, .Large} == {} {why^ += {.Not_Lowered}}
+	}
 	for e in learned_refused {
-		why: bit_set[enum {Smc, Smc_Unknown, Large, Not_Lowered}]
-		for r in recs {
-			if r.cpu != .Ee || r.entry != e {continue}
-			if .Smc in r.flags {why += {.Smc}}
-			if .Smc_Unknown in r.flags {why += {.Smc_Unknown}}
-			if .Large in r.flags {why += {.Large}}
-			if r.flags & {.Smc, .Smc_Unknown, .Large} == {} {why += {.Not_Lowered}}
-		}
+		why := whys[e]
 		names := [?]string{"smc", "smc_unknown", "large", "not_lowered"}
 		for w in why {append(rows, fmt.tprintf("refused\tee\t%08x\t%s", e, names[int(w)]))}
 	}
