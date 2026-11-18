@@ -162,6 +162,37 @@ learned_at :: #force_inline proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 	return learned_search(pc)
 }
 
+// wasm32: the entries of the loaded blob's records that it holds no
+// function for: the compiler left them to the interpreter (code stored
+// into, too large, not lowered). Sorted; host state. The FLAT runner opens
+// no LEARN run at one (interp_flat.odin): recording it again every run
+// would be all cost, since the next compile refuses it again. Made only at
+// load, so code loaded there later, which the compiler might take, is not
+// recorded either until a load finds no record of it.
+@(private = "file")
+learned_refused: []u32
+
+// wasm32: keep entries (a blob's records', in any order, repeats too) that
+// no loaded learned function starts at, as learned_refused.
+learned_refuse :: proc(entries: []u32) {
+	has := make(map[u32]struct{}, len(learned_steps), context.temp_allocator)
+	for &l in learned_steps {has[l.entry] = {}}
+	out := make([dynamic]u32, core.long_allocator())
+	for e in entries {
+		if e not_in has {append(&out, e)}
+	}
+	slice.sort(out[:])
+	delete(learned_refused, core.long_allocator())
+	learned_refused = slice.unique(out[:])
+	fmt.eprintfln("learned: %d EE entries left to the interpreter open no LEARN run", len(learned_refused))
+}
+
+// wasm32: whether pc is an entry of learned_refused.
+learned_refused_at :: proc(pc: u32) -> bool {
+	_, found := slice.binary_search(learned_refused, pc)
+	return found
+}
+
 // wasm32: the runner runs the native code it looked up last; the next
 // lookup of an entry compares its words again.
 learned_ran :: #force_inline proc() {learned_checked.pc = ~u32(0)}

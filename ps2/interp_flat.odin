@@ -237,7 +237,8 @@ Wasm_Func :: #type proc(pc: u32)
 // where native code jumped out to (.None) and no native code is found
 // begins a run there, as learned_goto does after learned_find misses: not
 // at an entry native code has no block for, nor in learned code, which runs
-// here.
+// here, nor at an entry the learned compiler left to the interpreter
+// (learned_refused_at).
 @(private = "file")
 flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_Frame, ok: bool) {
 	x, pc = flat_reload(L)
@@ -302,7 +303,7 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 			x, pc = flat_reload(L)
 		}
 		when L {
-			if miss && kernel.flat_learn_top(x) == nil {kernel.flat_learn_begin(x, pc)}
+			if miss && kernel.flat_learn_top(x) == nil && !learned_refused_at(pc) {kernel.flat_learn_begin(x, pc)}
 		}
 	}
 	when L {lf = kernel.flat_learn_top(x)}
@@ -365,7 +366,7 @@ flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32) {
 			// own entry (flat_resume runs it next).
 			if !flat_native_at(x.pc) {
 				interp_enter(x.pc)
-				begin = L
+				begin = L && !learned_refused_at(x.pc)
 			}
 			check = true
 		} else if x.back {
