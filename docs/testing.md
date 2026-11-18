@@ -9,6 +9,7 @@ odin run tests/blob_arch -collection:ps=.
 odin run tests/ee_native -collection:ps=.
 odin run tests/wasm_sigs -collection:ps=.
 odin run tests/ee_spin -collection:ps=.
+odin run tests/ee_spin_flat -collection:ps=. -define:PS_FLAT=true
 odin run tests/fpu -collection:ps=.
 odin run tests/lower -collection:ps=.
 odin run tests/discover -collection:ps=.
@@ -115,6 +116,7 @@ here.
 | `ee_native` | EE instructions through the native backend against the interpreter |
 | `wasm_sigs` | Every runtime procedure native code imports (`ps2.native_imports`, `psx_native.imports`) has a signature in `r5900.EE_SIGS` or `r3000.R3000_SIGS`, the signatures wasm32 code calls them with, each agrees with its procedure (Odin convention, argument count, a result or none, every argument and result fits one i32), and no signature lacks an import |
 | `ee_spin` | The EE spin skip on synthetic loops: on and off end the same, cycles included; a pure spin, a same-value store, an INTC_STAT poll and two threads at one priority handing the EE back and forth with RotateThreadReadyQueue are skipped, and end the same when the other thread rotates at two sites in turn; a counter, a GIF_STAT poll and a timer poll are not |
+| `ee_spin_flat` | The spin skip under FLAT (build with `-define:PS_FLAT=true`), where a call is no side effect and the probe compares the shadow stacks: a loop calling a function that only returns is skipped; one whose function counts in memory is not, nor one whose passes match in cpu.state but leave the innermost return address on the shadow stack other each pass (more than cpu.UNWIND_MAX calls open). Each runs with the skip on and off and both must end the same |
 | `fpu` | EE FPU vectors |
 | `lower` | r5900 and r3000 branch lowering |
 | `discover` | Functions with no prologue that tables of methods in a writable code section point at: thunks, leaves and jumps on through a register, stubs in a row included, are entries; code after a `b` or a `j` inside a function, code that calls or uses `$sp`, data after a `jr` with stray fields or a jump in a delay slot, a jump table's cases (tables of functions next to each other in one run included) and a pair of words are not |

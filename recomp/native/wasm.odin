@@ -68,8 +68,6 @@ Wasm_Call :: struct {
 	depth:                  string, // import: the u32 in-line call depth
 	max_depth:              u32,
 	table, text_lo:         string, // imports: the call table (wa_table_slot)
-	spin_dirty:             string, // import: a u32 the call ORs spin_bit into
-	spin_bit:               u32,
 	exit:                   string, // import: the exit record, reason at 0
 	exit_pc, exit_arg:      u32,
 	exit_call, exit_return: u32, // its reasons
@@ -1397,7 +1395,6 @@ wasm_emit_call :: proc(a: ^Asm, c: Wasm_Call) {
 	emit8(a, I32_EQZ)
 	wa_call_fall(a, c.fall[3])
 	wa_imp_add32(a, dk, 1)
-	wa_imp_add32(a, imp(a, c.spin_dirty), c.spin_bit, I32_OR)
 	wasm_imp_inc64(a, c.fast)
 	wa_global(a, st)
 	wa_mem(a, I32_LOAD, 2, c.sp)

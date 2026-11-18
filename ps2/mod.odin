@@ -533,16 +533,19 @@ mod_cont_new :: proc(c: Mod_Cont) -> u32 {
 // The entry of a call on x, at x.pc, whose checks flat_reload owes: a
 // hooked function's runs its before hooks and marks its return, and the run
 // goes on at the replacement, if any (x.pc). A call to MOD_ORIGINAL goes on
-// at the original.
+// at the original. Either is a side effect to the spin skip (the hooks, the
+// continuations), as a thunk's cpu.call is outside FLAT.
 @(private)
 mod_flat_enter :: proc(x: ^kernel.Flat_Ctx) {
 	t := x.pc
 	if t == mem.MOD_ORIGINAL {
+		cpu.spin_dirty |= cpu.SPIN_SIDE
 		mod_flat_original(x)
 		return
 	}
 	site, ok := mod_at[t]
 	if !ok || !mod_live(site) {return}
+	cpu.spin_dirty |= cpu.SPIN_SIDE
 	m := Mod_Cont{site = site, depth = cpu.mod_depth, entry = mod_args()}
 	if x.depth > 0 {
 		m.ret = x.ret[x.depth - 1]
@@ -593,11 +596,13 @@ mod_flat_drop :: proc(ret: []u32) {
 	}
 }
 
-// The return through mark: the after hooks of its call, unless it was
+// The return through mark (a side effect to the spin skip, as its
+// mod_flat_enter is): the after hooks of its call, unless it was
 // mod_call_original's; then the address the mark replaced, and whether the
 // return ends the run instead (again).
 @(private)
 mod_flat_return :: proc(mark: u32) -> (ret: u32, again: bool) {
+	cpu.spin_dirty |= cpu.SPIN_SIDE
 	n := int(mark >> 2)
 	m := mod_conts[n]
 	append(&mod_conts_free, n)

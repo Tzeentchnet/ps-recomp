@@ -30,6 +30,14 @@
 // threads switching back and forth at the same points; the skip then moves
 // the ready order on by n passes as well.
 //
+// A guest call is no side effect when it is code calling code: x64 native
+// code's direct calls, and FLAT's calls (the runner's and wasm32 native
+// code's in-line ones). What the call leaves behind that cpu.state does not
+// show is compared instead: FLAT's shadow stacks (kernel spin_flat_same),
+// and the in-line calls on the host stack (cpu.wasm_depth). cpu.call stays
+// a side effect: host code calling guest code (a handler, a hook), and x64
+// native code's calls that are not direct (a jalr, a target with no code).
+//
 // SPIN=0 turns it off. STATS counts the cycles it skipped (cpu.spin_cycles);
 // they are not idle cycles.
 package ps2
@@ -92,6 +100,7 @@ spin: struct {
 	back:   i32,
 	passed: i32, // other branches passed since armed
 	thread: i32, // the thread armed in (kernel.current_id)
+	depth:  u32, // cpu.wasm_depth when armed
 	cpu:    cpu.Cpu,
 	vu0:    vu.Vu,
 }
@@ -120,6 +129,7 @@ spin_probe :: proc(site: u32) {
 		rotated := dirty & cpu.SPIN_ROTATE != 0
 		skip := same && dirty &~ cpu.SPIN_ROTATE == 0 && d > 0 && now < next && !cpu.in_interrupt && next != max(u64)
 		if skip && rotated {skip = kernel.spin_threads_same()}
+		if skip {skip = cpu.wasm_depth == spin.depth && kernel.spin_flat_same()}
 		if skip {
 			// Every pass skipped ends at or before now + n*d <= next - 1,
 			// below next_event; see the top of the file.
@@ -141,11 +151,11 @@ spin_probe :: proc(site: u32) {
 		spin_tick = spin.back
 		return
 	}
-	if cpu.in_interrupt || cpu.next_event == max(u64) || mem.watch_len != 0 {
+	if cpu.in_interrupt || cpu.next_event == max(u64) || mem.watch_len != 0 || !kernel.spin_flat_save() {
 		spin_tick = spin.back
 		return
 	}
-	spin.site, spin.cycles, spin.passed, spin.thread = site, cpu.state.cycles, 0, kernel.current_id()
+	spin.site, spin.cycles, spin.passed, spin.thread, spin.depth = site, cpu.state.cycles, 0, kernel.current_id(), cpu.wasm_depth
 	spin.cpu, spin.vu0 = cpu.state, vu.vu0
 	cpu.spin_dirty = 0
 	mem.spin_armed = true

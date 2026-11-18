@@ -23,6 +23,7 @@
 package ps2_kernel
 
 import "base:runtime"
+import "ps:core"
 import cpu "../cpu"
 import mem "../mem"
 
@@ -92,4 +93,64 @@ spin_threads_skip :: proc(n, d: u64) {
 		if t.regs.cycles != saved.t[i].regs.cycles {t.regs.cycles += n * d}
 	}
 	k.seq += n * dseq
+}
+
+// FLAT: each run's interpreter state (Flat_Ctx), which a pass may leave
+// other than it found it with cpu.state the same: a call it left open, a
+// return address on the shadow stack another one (a `jr $ra` that
+// unwinds, or no call's, goes by the shadow stack, not by $ra). The probe
+// saves every thread's run and the nested runs as it arms
+// (spin_flat_save) and skips only with all of them as they were
+// (spin_flat_same). No run switches or ends between the two without a
+// rotate the threads' compare sees, or a side effect that stops the skip.
+// More than SPIN_FLAT_FRAMES calls open in all: the probe does not arm.
+SPIN_FLAT_FRAMES :: 1024
+
+@(private = "file")
+saved_flat: struct {
+	threads:    int, // k.thread_end as saved
+	nest_depth: int,
+	ctx:        [FLAT_THREADS + FLAT_NEST]Flat_Ctx, // the threads', then the nested runs'; ret and sp unused
+	at:         [FLAT_THREADS + FLAT_NEST]int, // where each one's frames start in ret and sp
+	wait:       [FLAT_THREADS]bool,
+	ret, sp:    [SPIN_FLAT_FRAMES]u32,
+}
+
+// Save the runs as the probe arms: false with more calls open than
+// SPIN_FLAT_FRAMES, when it must not arm.
+spin_flat_save :: proc() -> bool {
+	when !core.FLAT {return true} else {
+		s := &saved_flat
+		s.threads, s.nest_depth = k.thread_end, flat.nest_depth
+		n := 0
+		for i in 0 ..< s.threads + s.nest_depth {
+			x := i < s.threads ? &flat.ee[i] : &flat.nest[i - s.threads]
+			d := int(x.depth)
+			if d > SPIN_FLAT_FRAMES - n {return false}
+			s.ctx[i], s.at[i] = x^, n
+			copy(s.ret[n:][:d], x.ret[:d])
+			copy(s.sp[n:][:d], x.sp[:d])
+			n += d
+		}
+		copy(s.wait[:s.threads], flat.wait[:s.threads])
+		return true
+	}
+}
+
+// Whether the runs are as spin_flat_save saved them, each one's calls open
+// all the same.
+spin_flat_same :: proc() -> bool {
+	when !core.FLAT {return true} else {
+		s := &saved_flat
+		if k.thread_end != s.threads || flat.nest_depth != s.nest_depth {return false}
+		for i in 0 ..< s.threads + s.nest_depth {
+			x := i < s.threads ? &flat.ee[i] : &flat.nest[i - s.threads]
+			was := &s.ctx[i]
+			if x.pc != was.pc || x.depth != was.depth || x.enter != was.enter || x.back != was.back || x.end != was.end || x.ra != was.ra || x.ra_sp != was.ra_sp {return false}
+			d := int(x.depth)
+			if d == 0 {continue}
+			if !runtime.memory_equal(raw_data(x.ret), &s.ret[s.at[i]], d * size_of(u32)) || !runtime.memory_equal(raw_data(x.sp), &s.sp[s.at[i]], d * size_of(u32)) {return false}
+		}
+		return runtime.memory_equal(&flat.wait, &s.wait, s.threads * size_of(bool))
+	}
 }

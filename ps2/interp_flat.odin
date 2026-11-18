@@ -308,11 +308,13 @@ flat_reload :: proc() -> (^kernel.Flat_Ctx, u32) {
 	}
 }
 
-// A call from x to t returning to ret, as cpu.call does: its entry checks
-// are owed (flat_reload).
+// A call from x to t returning to ret: its entry checks are owed
+// (flat_reload). Unlike cpu.call it is no side effect to the spin skip: the
+// call is on x's shadow stack, which the probe compares (kernel
+// spin_flat_same), and a hooked callee marks one as it enters
+// (mod_flat_enter).
 @(private = "file")
 flat_enter :: #force_inline proc(x: ^kernel.Flat_Ctx, ret, t: u32) {
-	cpu.spin_dirty |= cpu.SPIN_SIDE
 	kernel.flat_push(x, ret, t)
 }
 
