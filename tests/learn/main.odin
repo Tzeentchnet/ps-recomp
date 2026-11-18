@@ -2,9 +2,11 @@
 // runs written through learn_begin, learn_fetch, learn_store and learn_end
 // read back the same; a repeated run is written once; a store into a run's
 // range marks it .Smc and one outside does not, a store by another run in
-// progress included; stores past the log mark .Smc_Unknown, but not with
-// RAM stamps, which see a store any number of stores back, through RAM's
-// mirrors, and mark a range outside RAM .Smc_Unknown; a repeated store
+// progress included; without RAM stamps, a store any number of stores back
+// is seen, the log folded each time it fills, a run that never returns
+// included (its clean record is compilable); RAM stamps also see a store
+// any number of stores back, through RAM's mirrors, and mark a range
+// outside RAM .Smc_Unknown; a repeated store
 // address is seen by a run begun between the two stores; code changed
 // mid-run with no store noted (a callee patching its caller) marks the run
 // .Smc, whether RAM no longer holds a word it fetched or a word it fetched
@@ -27,6 +29,7 @@ import "core:fmt"
 import "core:hash/xxhash"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "ps:core"
 
 @(private = "file")
@@ -110,7 +113,7 @@ main :: proc() {
 	// overlapping its first byte hits.
 	run(.Iop, 0x1010, {0x1010, 0x1014}, {0x100c})
 	run(.Iop, 0x1020, {0x1020, 0x1024}, {0x101d})
-	// More stores than the log holds, none in range.
+	// More stores than the log holds, none in range: clean.
 	{
 		f := core.learn_begin(.Iop, 0x1030)
 		core.learn_fetch(f, 0x1030, word(0x1030))
@@ -249,13 +252,52 @@ main :: proc() {
 		check(!core.learn_on(.Iop), "IOP on after the report")
 	}
 
+	// Without RAM stamps, runs as long as a guest thread's loop that never
+	// returns: more than twice the stores the log holds, so it is folded
+	// at least twice under each. A clean one is written .Open at the report
+	// and is compilable; a store into the range early (folded away) or late
+	// (still in the log) marks the run .Smc, open or not.
+	{
+		long_path, _ := filepath.join({tmp, "long.bin"}, context.allocator)
+		check(core.learn_open_path(long_path, {.Iop}), "open for the long runs")
+		many :: proc(f: ^core.Learn_Frame) {
+			for i in 0 ..= 2 * u32(core.LEARN_STORES_MAX) {core.learn_store(f, 0x9000_0000 + i * 4)}
+		}
+		clean := core.learn_begin(.Iop, 0x1400)
+		core.learn_fetch(clean, 0x1400, word(0x1400))
+		core.learn_fetch(clean, 0x1404, word(0x1404))
+		many(clean)
+		early := core.learn_begin(.Iop, 0x1500)
+		core.learn_fetch(early, 0x1500, word(0x1500))
+		core.learn_store(early, 0x1500)
+		many(early)
+		core.learn_end(early)
+		late := core.learn_begin(.Iop, 0x1600)
+		core.learn_fetch(late, 0x1600, word(0x1600))
+		many(late)
+		core.learn_store(late, 0x1600)
+		core.learn_report()
+		long, lerr := os.read_entire_file(long_path, context.allocator)
+		check(lerr == nil, "read back the long runs")
+		long_recs, long_bad := core.learn_read(long)
+		check(long_bad == 0, fmt.tprintf("long runs: %d bad", long_bad))
+		iop := make([dynamic]core.Learn_Record, context.allocator)
+		for r in long_recs {
+			if r.cpu == .Iop {append(&iop, r)}
+		}
+		slice.sort_by(iop[:], proc(a, b: core.Learn_Record) -> bool {return a.entry < b.entry})
+		check_recs(iop[:], {{.Iop, {.Open}, 0x1400, 0x1400, 2}, {.Iop, {.Smc}, 0x1500, 0x1500, 1}, {.Iop, {.Smc, .Open}, 0x1600, 0x1600, 1}}, "long runs")
+		out, _, smc := core.learn_compilable(iop[:], .Iop, context.allocator)
+		check(len(out) == 1 && out[0].entry == 0x1400 && smc == 2, fmt.tprintf("long runs: %d compilable, %d stored into; want 0x1400 alone, 2", len(out), smc))
+	}
+
 	want := []Want {
 		{.Ee, {}, 0x1000, 0x1000, 4},
 		{.Psx, {.Smc}, 0x1000, 0x1000, 3},
 		{.Ee, {.Large}, 0x3000, 0x3000, 0},
 		{.Iop, {}, 0x1010, 0x1010, 2},
 		{.Iop, {.Smc}, 0x1020, 0x1020, 2},
-		{.Iop, {.Smc_Unknown}, 0x1030, 0x1030, 1},
+		{.Iop, {}, 0x1030, 0x1030, 1},
 		{.Ee, {}, 0x2000, 0x2000, 1},
 		{.Ee, {.Smc}, 0x1100, 0x1100, 3},
 		{.Iop, {}, 0x1200, 0x1200, 1},

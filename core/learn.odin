@@ -22,8 +22,12 @@
 // stamps (PS1, IOP), each RAM word keeps the number of the last store into
 // it, so the check is exact for any run length; a range outside RAM cannot
 // be checked and is marked .Smc_Unknown. Without (EE), a ring of the last
-// LEARN_STORES_MAX store addresses is looked back over; a run whose stores
-// outran it is marked .Smc_Unknown, never clean.
+// LEARN_STORES_MAX store addresses is looked back over. Each time the ring
+// fills, every run in progress checks the stores since it last checked
+// against the range it fetched so far (learn_fold), so a run of any length
+// is checked, a guest thread's loop that never returns included: a store
+// before the run fetched a word is one the fetch saw, and a word fetched
+// again after another store there is checked at the next fold or the end.
 //
 // The file's format is core/learnfile's.
 //
@@ -71,7 +75,8 @@ Learn_Frame :: struct {
 	slot:   u16, // its index in learn.pool
 	entry:  u32,
 	lo, hi: u32, // the lowest and highest word fetched
-	log_at:   u64, // Learn_Space.seq when the run began
+	log_at:   u64, // Learn_Space.seq when the run began, or last folded
+	stored:   bool, // a folded store reached its range (learn_fold)
 	epoch:    u32, // its stamp, Learn_Space.epoch when it began
 	changed:  bool, // a fetch saw another word than an earlier one there
 }
@@ -111,8 +116,8 @@ Learn_Space :: struct {
 	// Per RAM word, its last fetch.
 	fetched:   []Learn_Fetch,
 	// Without: the store addresses, a ring of LEARN_STORES_MAX; a run looks
-	// back over those since it began. Never cleared, as a run that never
-	// returns must not hold it.
+	// back over those since it began or was last folded. Never cleared, as
+	// a run that never returns must not hold it.
 	log:       []u32,
 }
 
@@ -421,6 +426,8 @@ learn_store :: proc(f: ^Learn_Frame, addr: u32) #no_bounds_check {
 		// The same address as the last store, which every run in progress
 		// sees already: it began after the latest run did.
 		return
+	} else if s.seq % LEARN_STORES_MAX == 0 {
+		learn_fold(s, f.cpu) // full: this store overwrites the oldest
 	}
 	s.log[s.seq % LEARN_STORES_MAX] = addr
 	s.seq += 1
@@ -464,6 +471,25 @@ learn_free :: proc(f: ^Learn_Frame) {
 	learn.n_free += 1
 }
 
+// cpu's store ring is full: each run of cpu in progress checks the stores
+// it has not checked (all since it began or was last folded, all in the
+// ring) against the range it fetched so far, notes a hit, and checks from
+// here on. A run then never looks back past the ring.
+@(private = "file")
+learn_fold :: proc(s: ^Learn_Space, cpu: Learn_Cpu) #no_bounds_check {
+	for used, k in learn.used {
+		f := &learn.pool[k]
+		if !used || f.cpu != cpu {
+			continue
+		}
+		for i := f.log_at; i < s.seq && !f.stored; i += 1 {
+			a := s.log[i % LEARN_STORES_MAX]
+			f.stored = a + 3 >= f.lo && a <= f.hi + 3
+		}
+		f.log_at = s.seq
+	}
+}
+
 // Whether stores since f's run began reached its range. Runs of other guest
 // threads may have stored since too; a run is marked by their stores as
 // well, never missing its own.
@@ -488,12 +514,12 @@ learn_smc :: proc(s: ^Learn_Space, f: ^Learn_Frame) -> Learn_Flags #no_bounds_ch
 		}
 		return {}
 	}
+	if f.stored {
+		return {.Smc}
+	}
 	flags: Learn_Flags
 	at := f.log_at
-	if s.seq - at > LEARN_STORES_MAX {
-		flags += {.Smc_Unknown}
-		at = s.seq - LEARN_STORES_MAX
-	}
+	assert(s.seq - at <= LEARN_STORES_MAX) // learn_fold keeps it so
 	for i in at ..< s.seq {
 		a := s.log[i % LEARN_STORES_MAX]
 		if a + 3 >= f.lo && a <= f.hi + 3 {

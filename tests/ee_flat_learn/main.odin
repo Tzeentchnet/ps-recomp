@@ -152,6 +152,20 @@ H :: u32(0x0011c000)
 @(private = "file")
 G :: H + 4
 
+// The store loops, their interpreted callers (PUSH; jal S; nop; lw ra,
+// 0(sp); jr ra; POP), and their passes (more stores than core.LEARN_STORES_MAX).
+@(private = "file")
+S1 :: u32(0x00120000)
+@(private = "file")
+S2 :: u32(0x001f0000) // its stores go down from here, clear of the rest
+@(private = "file")
+A11 :: u32(0x00100a00)
+@(private = "file")
+A12 :: u32(0x00100b00)
+@(private = "file")
+LOOPS :: u32(70000)
+#assert(LOOPS > core.LEARN_STORES_MAX)
+
 @(private = "file")
 NOP :: u32(0)
 @(private = "file")
@@ -378,6 +392,67 @@ main :: proc() {
 
 	core.learn_report()
 	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {E, 3}}, "the report")
+
+	// A loop that stores more often than the store log holds (each pass to
+	// the next word, the log noting each): its run is checked all through,
+	// clean, and compiled; the same loop storing into its own code first is
+	// marked .Smc, left out, and runs interpreted.
+	//   lui t1, hi; ori t1, t1, lo; lui t0, 1; ori t0, t0, 0x1170 (70000);
+	//   nop; loop: sw zero, 0(t1); addiu t1, t1, step; addiu t0, t0, -1;
+	//   bne t0, zero, loop; addiu v0, v0, 1; jr ra; nop.
+	// S1 stores from 0x130000 up, clear of its code. S2 stores from its nop
+	// down, over its first words (run by then) and on below: its first
+	// store is into a word its run fetched, as a store after it fetched one
+	// is all a record can be marked by.
+	{
+		loop :: proc(at, step: u32) -> [12]u32 {
+			return {
+				0x3c09_0000 | at >> 16, 0x3529_0000 | at & 0xffff, 0x3c08_0001, 0x3508_1170, NOP,
+				0xad20_0000, 0x2529_0000 | step & 0xffff, 0x2508_ffff, 0x1500_fffc, addiu_v0(2, 1), JR_RA, NOP,
+			}
+		}
+		s1, s2 := loop(0x0013_0000, 4), loop(S2 + 16, ~u32(3))
+		put(S1, s1[:])
+		put(S2, s2[:])
+		put(A11, {PUSH_1, PUSH_2, jal(S1), NOP, LOAD_RA, JR_RA, POP})
+		put(A12, {PUSH_1, PUSH_2, jal(S2), NOP, LOAD_RA, JR_RA, POP})
+		long_path :: "long.bin"
+		check(core.learn_open_path(long_path, {.Ee}), "open for the loops")
+		v0, ran = call(A11)
+		check(v0 == LOOPS && !ran, fmt.tprintf("S1: v0 %d, learned code ran %v; want %d, none", v0, ran, LOOPS))
+		v0, ran = call(A12)
+		check(v0 == LOOPS && !ran, fmt.tprintf("S2: v0 %d, learned code ran %v; want %d, none", v0, ran, LOOPS))
+		put(S2, s2[:]) // its stores zeroed its first words
+		core.learn_report()
+		// Not the temp allocator: learned_blob frees it all.
+		data, err := os.read_entire_file(long_path, context.allocator)
+		check(err == nil, fmt.tprintf("read %s: %v", long_path, err))
+		recs, bad := core.learn_read(data, context.allocator)
+		check(bad == 0, fmt.tprintf("loops: %d bad records", bad))
+		flags: [2]core.Learn_Flags
+		seen: [2]int
+		for r in recs {
+			if r.entry != S1 && r.entry != S2 {continue}
+			k := r.entry == S1 ? 0 : 1
+			flags[k] = r.flags
+			seen[k] += 1
+		}
+		check(seen == {1, 1} && flags[0] == {} && flags[1] == {.Smc}, fmt.tprintf("loops: S1 %d records %v, S2 %d %v; want 1 clean, 1 .Smc", seen[0], flags[0], seen[1], flags[1]))
+		out, _, smc := core.learn_compilable(recs[:], .Ee, context.allocator)
+		runs := make([dynamic]r5900.Learned, context.allocator)
+		for r in out {
+			if r.entry == S1 || r.entry == S2 {append(&runs, r5900.Learned{r.entry, r.lo, r.words})}
+		}
+		check(len(runs) == 1 && runs[0].entry == S1 && smc >= 1, fmt.tprintf("loops: %d compiled, %d stored into; want S1 alone", len(runs), smc))
+		loops_blob, loops_skipped := r5900.learned_blob(runs[:], .Wasm32)
+		check(loops_skipped == 0, fmt.tprintf("loops: %d runs not lowered", loops_skipped))
+		check(os.write_entire_file("loops.bin", loops_blob) == nil, "write the loops' blob")
+		check(ps2.load_learned("loops.bin"), "load the loops' blob")
+		v0, ran = call(A11)
+		check(v0 == LOOPS && ran, fmt.tprintf("S1 learned: v0 %d, learned code ran %v; want %d, ran", v0, ran, LOOPS))
+		v0, ran = call(A12)
+		check(v0 == LOOPS && !ran, fmt.tprintf("S2 left out: v0 %d, learned code ran %v; want %d, none", v0, ran, LOOPS))
+	}
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code")
 }
