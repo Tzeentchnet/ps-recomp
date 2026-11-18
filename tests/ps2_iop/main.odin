@@ -169,6 +169,7 @@ game :: proc(_: rawptr) {
 	check(r3000.gte_cmd == nil && r3000.gte_read == nil && r3000.gte_write == nil, "no GTE")
 	check(r3000.bios_entry == iop.iop_hle_entry && r3000.ram_keep == nil, "the IOP's stubs, no RAM watch")
 	check(len(r3000.dispatch.fixed) == r3000.RAM_SIZE / 4, "an empty dispatch table, mapped read-only")
+	io_far_write := r3000.io_far_write
 	r3000.io_far_write = proc(a, v: u32, size: u32) {append(&far, [3]u32{a, v, size})}
 
 	hle := (^u32)(raw_data(iop.iop_mem(0x200010, 4)))
@@ -193,6 +194,10 @@ game :: proc(_: rawptr) {
 	check(r3000.state.r[11] == 0xdeadbeef, "kseg1 load reads RAM")
 	check(len(far) == 1 && far[0] == {0x1f900000, 0xdeadbeef, 4}, "SPU2 store reaches io_far_write")
 	check(r3000.state.cycles == u64(len(code)) * r3000.CYCLES_PER_INSN, "every word ran once")
+	far_hook := r3000.io_far_write
+	r3000.io_far_write = io_far_write
+	test_spad_hi()
+	r3000.io_far_write = far_hook
 
 	(^u32)(&iop.iop_ram[GROW])^ = 0x3c0cbf90 // lui t4, 0xbf90
 	for k in u32(0) ..< GROWN {(^u32)(&iop.iop_ram[GROW + 4 + 4 * k])^ = 0x8d8d0000 | 4 * k} // lw t5, 4k(t4)
@@ -302,6 +307,24 @@ main :: proc() {
 	context.allocator = core.emu_allocator()
 	core.co_allocator = context.allocator
 	core.snap_run(core.co_create(game, nil))
+}
+
+// The scratchpad past the PS1 bus's 1KB is memory, and the base register
+// reads back what was written.
+test_spad_hi :: proc() {
+	r3000.sw(0x1f800400, 0x11223344)
+	r3000.sh(0x1f800ffe, 0xbeef)
+	r3000.sb(0x1f80085c, 0x5a)
+	check(r3000.lw(0x1f800400) == 0x11223344 && r3000.lbu(0x1f800401) == 0x33, "spad: a word above the PS1 1KB reads back, by byte too")
+	check(r3000.lh(0x1f800ffe) & 0xffff == 0xbeef && r3000.lbu(0x1f80085c) == 0x5a, "spad: its last halfword and a byte read back")
+	check(r3000.lw(0xbf800400) == 0x11223344, "spad: through kseg1 too")
+	r3000.sw(0xbffe0144, 0x1f800000)
+	check(r3000.lw(0xbffe0144) == 0x1f800000, "spad: the base register reads back")
+	n := len(iop.iop_io_seen)
+	_ = r3000.lw(0x1f800ffc)
+	check(len(iop.iop_io_seen) == n, "spad: no unmapped note")
+	r3000.sw(0x1f800400, 0)
+	r3000.sw(0xbffe0144, 0)
 }
 
 // The EE heap's allocator before sysmem: a bump over 0x40000..0x100000 that

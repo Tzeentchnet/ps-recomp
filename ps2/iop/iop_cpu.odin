@@ -69,6 +69,8 @@ iop_cpu_init :: proc() {
 	r3000.io_far_read = iop_io_read
 	r3000.io_far_write = iop_io_write
 	r3000.ram_keep = nil
+	iop_spad_hi = {}
+	iop_spad_base = 0
 	clear(&iop_io_seen)
 	iop_dispatch_init()
 }
@@ -88,14 +90,41 @@ iop_no_bios :: proc(fn: u32) {
 // heap's restore has freed or reused.
 iop_io_seen: map[u32]bool
 
+// The IOP scratchpad past the 1KB the shared PS1 bus maps at 0x1f800000:
+// SCRTCHPD.IRX ("PsIIscrtchpd2700") hands it out, and Jak II's OVERLORD
+// keeps its page pool there. Plain memory, little-endian like the rest.
+IOP_SPAD_HI_BASE :: 0x1f800400
+IOP_SPAD_HI_END :: 0x1f801000
+iop_spad_hi: [IOP_SPAD_HI_END - IOP_SPAD_HI_BASE]u8
+
+// The scratchpad base register at 0x1ffe0144: it reads back what was
+// written. Real hardware moves the scratchpad to that base; here it stays
+// at 0x1f800000 whatever is written.
+IOP_SPAD_BASE_REG :: 0x1ffe0144
+iop_spad_base: u32
+
 @(private = "file")
 iop_io_read :: proc(p: u32, size: u32) -> u32 {
+	if p >= IOP_SPAD_HI_BASE && p <= IOP_SPAD_HI_END - size {
+		v: u32
+		for i in 0 ..< size {v |= u32(iop_spad_hi[p - IOP_SPAD_HI_BASE + i]) << (8 * i)}
+		return v
+	}
+	if p == IOP_SPAD_BASE_REG && size == 4 {return iop_spad_base}
 	iop_io_note(p, size, "read")
 	return 0
 }
 
 @(private = "file")
 iop_io_write :: proc(p, v: u32, size: u32) {
+	if p >= IOP_SPAD_HI_BASE && p <= IOP_SPAD_HI_END - size {
+		for i in 0 ..< size {iop_spad_hi[p - IOP_SPAD_HI_BASE + i] = u8(v >> (8 * i))}
+		return
+	}
+	if p == IOP_SPAD_BASE_REG && size == 4 {
+		iop_spad_base = v
+		return
+	}
 	iop_io_note(p, size, "write")
 }
 
@@ -113,6 +142,8 @@ iop_cpu_snap :: proc() {
 	core.snap_add(&r3000.cop0)
 	core.snap_add(&r3000.next_event)
 	core.snap_add(&r3000.scratch)
+	core.snap_add(&iop_spad_hi)
+	core.snap_add(&iop_spad_base)
 	core.snap_add_bytes(r3000.ram[:])
 	core.snap_add(&iop_io_seen)
 	core.snap_add(&r3000.dispatch.reported) // report_once grows it
