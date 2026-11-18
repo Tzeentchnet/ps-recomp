@@ -14,6 +14,7 @@ package ps2_kernel
 import "base:intrinsics"
 import "core:fmt"
 import "core:hash/xxhash"
+import "core:slice"
 import "core:strings"
 import "ps:core"
 import cpu "../cpu"
@@ -64,13 +65,26 @@ exec_boot :: proc() {
 		fmt.eprintfln("ee: recompiled text %08x-%08x is not in RAM; a program started by ExecPS2 runs interpreted", lo, hi)
 		return
 	}
-	e.text_hash = text_hash()
-	cpu.entries_keep(mem.ram)
+	// A packed executable's code is in RAM only once its stub has run: the
+	// program the checks keep is RAM with that code (mem.unpacked_code).
+	// The checks read only [lo, hi), so the code counts only where it
+	// starts below hi; a blob compiled without it (one older than the
+	// unpacked range, or a standalone blob) can end before it, and then the
+	// checks keep RAM as it is. copy cuts a code that runs past hi.
+	packed := mem.unpacked_code != nil && mem.unpacked_at < hi
+	boot := mem.ram
+	if packed {
+		boot = slice.clone(mem.ram[:hi])
+		copy(boot[mem.unpacked_at:], mem.unpacked_code)
+	}
+	e.text_hash = text_hash(boot)
+	cpu.entries_keep(boot)
+	if packed {delete(boot)}
 }
 
 @(private = "file")
-text_hash :: proc() -> u64 {
-	return xxhash.XXH3_64_default(mem.ram[cpu.text_lo:cpu.text_hi])
+text_hash :: proc(ram: []u8) -> u64 {
+	return xxhash.XXH3_64_default(ram[cpu.text_lo:cpu.text_hi])
 }
 
 // The boot program, whose ELF file is elf, is the one in RAM.
@@ -100,7 +114,7 @@ exec_boot_args :: proc(argv0: string) {
 @(private = "file")
 text_check :: proc(entry: u32) -> (same: bool) {
 	e := &k.exec
-	same = e.text_ok && text_hash() == e.text_hash
+	same = e.text_ok && text_hash(mem.ram) == e.text_hash
 	// wasm32: the boot program back has every function back.
 	when ODIN_ARCH == .wasm32 {if same {text_apply("exec")}}
 	if same != e.text_off {return}

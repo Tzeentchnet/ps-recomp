@@ -5,6 +5,10 @@
 // written, so a bad ELF leaves memory untouched and returns false.
 package ps2_mem
 
+import "core:bytes"
+import "core:compress"
+import "core:compress/zlib"
+
 @(private = "file")
 ELF_MAGIC :: 0x464c457f // "\x7fELF"
 
@@ -42,11 +46,19 @@ elf_header :: proc(data: []u8) -> (h: Elf_Header, ok: bool) {
 	return h, true
 }
 
+// A packed executable's code (unpack): its RAM offset and its bytes as the
+// stub inflates them, nil when the last ELF loaded has none. RAM gets them
+// only when the stub runs; the text check compares against them
+// (ps2/kernel exec_boot).
+unpacked_at: u32
+unpacked_code: []u8
+
 // Load `data` into RAM; mem_init must have run. Returns the entry point.
 load_elf :: proc(data: []u8) -> (entry: u32, ok: bool) {
 	Segment :: struct {
-		dst:          []u8,
-		off, filesz: u32,
+		dst:                []u8,
+		off, filesz, vaddr: u32,
+		exec:               bool,
 	}
 	h := elf_header(data) or_return
 	phoff, phentsize, phnum := u64(h.phoff), u64(h.phentsize), u64(h.phnum)
@@ -63,13 +75,58 @@ load_elf :: proc(data: []u8) -> (entry: u32, ok: bool) {
 			off = 0
 		}
 		dst := guest_range(vaddr, memsz) or_return
-		append(&segs, Segment{dst, off, filesz})
+		append(&segs, Segment{dst, off, filesz, vaddr, le32(data, p + 24) & PF_X != 0})
 	}
 	for s in segs {
 		copy(s.dst, data[s.off:][:s.filesz])
 		for &b in s.dst[s.filesz:] {b = 0}
 	}
+	delete(unpacked_code)
+	unpacked_code = nil
+	for s in segs {
+		if s.exec {unpack(data[s.off:][:s.filesz], h.entry, segs[:])}
+	}
 	return h.entry, true
+}
+
+@(private = "file")
+PF_X :: 1
+
+// The code a packed executable (Metal Gear Solid 3) inflates, as
+// unpacked_at and unpacked_code: a segment t that starts [u32 size][zlib
+// stream][u32 dest][u32 entry] is a stub that inflates size bytes to dest
+// and jumps to entry. The checks are recomp/mips unpacked's, so the
+// runtime finds the code the recompiler compiled: a zlib header, a clean
+// inflate of exactly size bytes, dest aligned and in RAM, entry inside the
+// code, the code in the ELF entry's 16 MB and clear of every segment.
+@(private = "file")
+unpack :: proc(t: []u8, elf_entry: u32, segs: []$S) {
+	if unpacked_code != nil || len(t) < 16 || t[4] != 0x78 || (u32(t[4]) << 8 | u32(t[5])) % 31 != 0 {return}
+	size := le32(t, 0)
+	if size == 0 || size >= RAM_SIZE {return}
+	buf: bytes.Buffer
+	ctx := compress.Context_Memory_Input {
+		input_data = t[4:],
+		output     = &buf,
+	}
+	if zlib.inflate_from_context(&ctx, false, int(size)) != nil || bytes.buffer_length(&buf) != int(size) {
+		bytes.buffer_destroy(&buf)
+		return
+	}
+	end := len(t) - len(ctx.input_data) - int(ctx.num_bits / 8)
+	fits := end + 8 <= len(t)
+	dest, at: u32
+	if fits {dest, at = le32(t, end), le32(t, end + 4)}
+	fits &&= dest & 3 == 0 && u64(dest) + u64(size) <= RAM_SIZE && dest <= at && at < dest + size
+	fits &&= dest >> 24 == elf_entry >> 24 && (dest + size - 1) >> 24 == elf_entry >> 24
+	for o in segs {
+		fits &&= dest + size <= o.vaddr || o.vaddr + u32(len(o.dst)) <= dest
+	}
+	if !fits {
+		bytes.buffer_destroy(&buf)
+		return
+	}
+	unpacked_at, unpacked_code = dest, bytes.buffer_to_bytes(&buf)
 }
 
 // The host bytes of guest [a, a+n) in RAM or the scratchpad, as ram_slice

@@ -1,5 +1,8 @@
 package mips
 
+import "core:bytes"
+import "core:compress"
+import "core:compress/zlib"
 import "core:fmt"
 import "core:strings"
 import "ps:core/disc"
@@ -28,6 +31,9 @@ Image :: struct {
 	// ELF sections; none for a PS-X EXE or an overlay, which do not tell
 	// code from data.
 	sections: []Section,
+	// The entry of the code a packed executable inflates (".unpacked",
+	// load_elf); 0 when it has none.
+	unpacked_entry: u32,
 }
 
 word :: proc(img: Image, addr: u32) -> (u32, bool) {
@@ -170,6 +176,12 @@ load_elf :: proc(o: Options) -> Image {
 			hi = max(hi, addr + size)
 		}
 	}
+	if u, at, ok := unpacked(sections[:], img.entry); ok {
+		append(&sections, u)
+		img.unpacked_entry = at
+		lo = min(lo, u.addr)
+		hi = max(hi, u.addr + u.size)
+	}
 	img.base = lo
 	img.data = make([]u8, hi - lo)
 	for s in sections {
@@ -179,6 +191,54 @@ load_elf :: proc(o: Options) -> Image {
 	}
 	img.sections = sections[:]
 	return img
+}
+
+// The code a packed executable (Metal Gear Solid 3) inflates: an executable
+// section that starts [u32 size][zlib stream][u32 dest][u32 entry], {dest,
+// entry} right after the stream, is a stub that inflates size bytes to dest
+// and jumps to entry. That code as the section ".unpacked" (writable, so its
+// words count as mixed_words) and its entry. ok is false unless every check
+// passes: a zlib header, a clean inflate of exactly size bytes, dest aligned
+// and in RAM, entry inside the code, the code in the ELF entry's 16 MB (the
+// flat view) and clear of every section.
+unpacked :: proc(sections: []Section, elf_entry: u32) -> (u: Section, entry: u32, ok: bool) {
+	for s in sections {
+		t := s.data
+		if s.flags & SHF_EXEC == 0 || len(t) < 16 || t[4] != 0x78 || (u32(t[4]) << 8 | u32(t[5])) % 31 != 0 {
+			continue
+		}
+		size := u32le(t, 0)
+		if size == 0 || size >= 0x02000000 {
+			continue
+		}
+		buf: bytes.Buffer
+		ctx := compress.Context_Memory_Input {
+			input_data = t[4:],
+			output     = &buf,
+		}
+		if zlib.inflate_from_context(&ctx, false, int(size)) != nil || bytes.buffer_length(&buf) != int(size) {
+			bytes.buffer_destroy(&buf)
+			continue
+		}
+		end := len(t) - len(ctx.input_data) - int(ctx.num_bits / 8)
+		if end + 8 > len(t) {
+			bytes.buffer_destroy(&buf)
+			continue
+		}
+		dest, at := u32le(t, end), u32le(t, end + 4)
+		fits := dest & 3 == 0 && u64(dest) + u64(size) <= 0x02000000 && dest <= at && at < dest + size
+		fits &&= dest >> 24 == elf_entry >> 24 && (dest + size - 1) >> 24 == elf_entry >> 24
+		for o in sections {
+			fits &&= dest + size <= o.addr || o.addr + o.size <= dest
+		}
+		if !fits {
+			bytes.buffer_destroy(&buf)
+			continue
+		}
+		u = {".unpacked", dest, size, bytes.buffer_to_bytes(&buf), SHF_ALLOC | SHF_EXEC | SHF_WRITE}
+		return u, at, true
+	}
+	return
 }
 
 // True when s is in img's flat view (load_elf's rule: the entry's 16 MB).

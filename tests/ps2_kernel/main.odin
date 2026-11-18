@@ -605,6 +605,33 @@ loadfile_version_test :: proc() {
 	fmt.println("ok LOADFILE version")
 }
 
+// exec_boot with a packed executable's code (mem.unpacked_code): code that
+// starts past the recompiled range (a blob compiled without it) leaves the
+// hash RAM's, and code that starts inside it and runs past its end counts
+// for the part inside, as if the stub had written it.
+exec_boot_packed :: proc() {
+	h0 := kernel.k.exec.text_hash
+	code := [16]u8{0 ..< 16 = 0xaa}
+	mem.unpacked_code = code[:]
+	mem.unpacked_at = ENTRY + 0x1000
+	kernel.exec_boot()
+	if kernel.k.exec.text_hash != h0 {fail("fail: packed code past the range changed the text hash")}
+	mem.unpacked_at = ENTRY + 0xf8
+	kernel.exec_boot()
+	h1 := kernel.k.exec.text_hash
+	if h1 == h0 {fail("fail: packed code inside the range left the text hash")}
+	mem.unpacked_code = nil
+	keep: [8]u8
+	copy(keep[:], mem.ram[ENTRY + 0xf8:][:8])
+	copy(mem.ram[ENTRY + 0xf8:], code[:8])
+	kernel.exec_boot()
+	if kernel.k.exec.text_hash != h1 {fail("fail: packed code is not hashed as RAM that holds it")}
+	copy(mem.ram[ENTRY + 0xf8:], keep[:])
+	kernel.exec_boot()
+	if kernel.k.exec.text_hash != h0 {fail("fail: the text hash did not come back")}
+	fmt.println("ok exec_boot packed")
+}
+
 fail :: proc(format: string, args: ..any) -> ! {
 	fmt.eprintfln(format, ..args)
 	os.exit(1)
@@ -623,6 +650,7 @@ main :: proc() {
 	cpu.register(EXEC, exec_prog)
 	cpu.interp_hook = exec_interp
 	kernel.exec_boot()
+	exec_boot_packed()
 
 	mem.wr32(PARAM + 4, ENTRY)
 	mem.wr32(PARAM + 8, STACK)

@@ -108,7 +108,15 @@ code_ranges :: proc(o: mips.Options, img: mips.Image) -> (ranges: [][2]u32, expl
 	} else if code_lo := mips.option_or(o, "code_lo", ""); code_lo != "" {
 		append(&list, [2]u32{mips.parse_hex(code_lo), mips.parse_hex(mips.option(o, "code_hi"))})
 	} else if text := mips.find_section(img, ".text"); text != nil {
-		append(&list, [2]u32{text.addr, text.addr + text.size})
+		// A packed executable's code is the code it inflates (mips.unpacked).
+		// Its stub, which runs once, is left to the interpreter: the program
+		// reuses the stub's memory, which would take the table off at the
+		// next FlushCache (ps2/kernel flush_text_check).
+		if u := mips.find_section(img, ".unpacked"); u != nil {
+			append(&list, [2]u32{u.addr, u.addr + u.size})
+		} else {
+			append(&list, [2]u32{text.addr, text.addr + text.size})
+		}
 		return list[:], false
 	} else {
 		for s in img.sections {
@@ -238,6 +246,10 @@ discover :: proc(o: mips.Options, img: mips.Image) -> (funcs: [dynamic]^Func, la
 	// jal targets from any range are certain entries in theirs.
 	known: mips.Set
 	known[img.entry] = {}
+	// Only the stub's jalr reaches a packed executable's inflated code.
+	if img.unpacked_entry != 0 {
+		known[img.unpacked_entry] = {}
+	}
 	for e in calls {
 		known[e] = {}
 	}

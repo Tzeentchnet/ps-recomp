@@ -116,6 +116,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import mem "ps:ps2/mem"
 import "ps:recomp/mips"
 import "ps:recomp/r5900"
 
@@ -307,8 +308,136 @@ main :: proc() {
 	mips.func_free(k)
 	delete(five)
 
+	test_unpacked()
+	test_unpack_agree()
 	if failed != 0 {
 		os.exit(1)
 	}
 	fmt.println("ok discover")
+}
+
+// mips.unpacked on a stub section that starts [u32 size][zlib stream][u32
+// dest][u32 entry]: the stream inflates to 64 bytes, 0..31 twice.
+@(private = "file")
+ZLIB := [?]u8 {
+	0x78, 0xda, 0x63, 0x60, 0x64, 0x62, 0x66, 0x61, 0x65, 0x63, 0xe7, 0xe0, 0xe4, 0xe2, 0xe6, 0xe1, 0xe5, 0xe3, 0x17, 0x10, 0x14, 0x12,
+	0x16, 0x11, 0x15, 0x13, 0x97, 0x90, 0x94, 0x92, 0x96, 0x91, 0x95, 0x93, 0x67, 0x20, 0x20, 0x0f, 0x00, 0x68, 0xe0, 0x03, 0xe1,
+}
+
+@(private = "file")
+le :: proc(b: []u8, o: int, v: u32) {
+	b[o], b[o + 1], b[o + 2], b[o + 3] = u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24)
+}
+
+// The stub's section: the header words, then 16 bytes of its code.
+@(private = "file")
+stub :: proc(size, dest, entry: u32) -> []u8 {
+	t := make([]u8, 4 + len(ZLIB) + 8 + 16)
+	le(t, 0, size)
+	copy(t[4:], ZLIB[:])
+	le(t, 4 + len(ZLIB), dest)
+	le(t, 8 + len(ZLIB), entry)
+	return t
+}
+
+@(private = "file")
+stub_sections :: proc(t: []u8) -> []mips.Section {
+	out := make([]mips.Section, 2)
+	out[0] = {name = ".text", addr = 0x00800000, size = u32(len(t)), data = t, flags = mips.SHF_ALLOC | mips.SHF_EXEC}
+	out[1] = {name = ".bss", addr = 0x00900000, size = 0x1000, flags = mips.SHF_ALLOC | mips.SHF_WRITE}
+	return out
+}
+
+@(private = "file")
+test_unpacked :: proc() {
+	u, entry, ok := mips.unpacked(stub_sections(stub(64, 0x00100000, 0x00100024)), 0x00800010)
+	check(ok && entry == 0x00100024 && u.name == ".unpacked" && u.addr == 0x00100000 && u.size == 64, "unpacked: the stub not found")
+	check(u.flags == mips.SHF_ALLOC | mips.SHF_EXEC | mips.SHF_WRITE, "unpacked: not writable executable code")
+	check(len(u.data) == 64, fmt.tprintf("unpacked: %d bytes, want 64", len(u.data)))
+	for k in 0 ..< len(u.data) {
+		check(u.data[k] == u8(k & 31), fmt.tprintf("unpacked: byte %d is %x", k, u.data[k]))
+	}
+	Bad :: struct {
+		size, dest, entry, elf_entry: u32,
+		what:                         string,
+	}
+	bads := [?]Bad {
+		{63, 0x00100000, 0x00100024, 0x00800010, "a size the stream does not inflate to"},
+		{64, 0x00100002, 0x00100024, 0x00800010, "dest not aligned"},
+		{64, 0x00100000, 0x00100040, 0x00800010, "entry past the code"},
+		{64, 0x00100000, 0x000ffffc, 0x00800010, "entry before the code"},
+		{64, 0x008fffe0, 0x008fffe0, 0x00800010, "the code over .bss"},
+		{64, 0x00800000, 0x00800000, 0x00800010, "the code over the stub"},
+		{64, 0x00ffffe0, 0x00ffffe0, 0x00800010, "the code past the entry's 16 MB"},
+		{64, 0x00100000, 0x00100024, 0x01000010, "an ELF entry in another 16 MB"},
+	}
+	for c in bads {
+		_, _, bad := mips.unpacked(stub_sections(stub(c.size, c.dest, c.entry)), c.elf_entry)
+		check(!bad, fmt.tprintf("unpacked: took %s", c.what))
+	}
+	plain := stub(64, 0x00100000, 0x00100024)
+	plain[4] = 0x27 // no zlib header: an ordinary .text
+	_, _, bad := mips.unpacked(stub_sections(plain), 0x00800010)
+	check(!bad, "unpacked: took a section without a zlib header")
+}
+
+// An ELF with the program headers of stub_sections: the stub's segment
+// (executable) at 0x00800000 and 0x1000 bytes of BSS at 0x00900000.
+@(private = "file")
+stub_elf :: proc(t: []u8, elf_entry: u32) -> []u8 {
+	PH :: 52
+	DATA :: PH + 2 * 32
+	f := make([]u8, DATA + len(t))
+	le(f, 0, 0x464c457f)
+	f[4], f[5] = 1, 1
+	le(f, 24, elf_entry)
+	le(f, 28, PH)
+	f[42], f[44] = 32, 2
+	// type, offset, vaddr, paddr, filesz, memsz, flags
+	ph := [2][7]u32{{1, DATA, 0x00800000, 0x00800000, u32(len(t)), u32(len(t)), 5}, {1, 0, 0x00900000, 0x00900000, 0, 0x1000, 6}}
+	for h, i in ph {
+		for x, k in h {le(f, PH + i * 32 + k * 4, x)}
+	}
+	copy(f[DATA:], t)
+	return f
+}
+
+// recomp/mips unpacked and ps2/mem load_elf's unpack keep the same checks:
+// on the same stub, both find the same code at the same address or both
+// refuse it. If they ever part, the runtime's text check keeps other words
+// than the blob was compiled from, and the run interprets.
+@(private = "file")
+test_unpack_agree :: proc() {
+	mem.mem_init()
+	Case :: struct {
+		size, dest, entry, elf_entry: u32,
+		header:                       u8,
+		what:                         string,
+	}
+	cases := [?]Case {
+		{64, 0x00100000, 0x00100024, 0x00800010, 0x78, "a good stream"},
+		{64, 0x00100000, 0x00100024, 0x00800010, 0x27, "no zlib header"},
+		{65, 0x00100000, 0x00100024, 0x00800010, 0x78, "a short inflate"},
+		{64, 0x00100002, 0x00100024, 0x00800010, 0x78, "dest unaligned"},
+		{64, 0x00100000, 0x00100040, 0x00800010, 0x78, "entry past the code"},
+		{64, 0x008fffe0, 0x008fffe0, 0x00800010, 0x78, "the code over the BSS"},
+		{64, 0x00100000, 0x00100024, 0x01000010, 0x78, "an ELF entry in another 16 MB"},
+		{64, 0x80100000, 0x80100024, 0x80800010, 0x78, "a kseg0 dest"},
+	}
+	for c in cases {
+		t := stub(c.size, c.dest, c.entry)
+		t[4] = c.header
+		u, _, ok := mips.unpacked(stub_sections(t), c.elf_entry)
+		f := stub_elf(t, c.elf_entry)
+		_, loaded := mem.load_elf(f)
+		check(loaded, fmt.tprintf("unpack agree: %s: the ELF did not load", c.what))
+		rt := mem.unpacked_code != nil
+		check(ok == rt, fmt.tprintf("unpack agree: %s: recomp %v, runtime %v", c.what, ok, rt))
+		if ok && rt {
+			check(u.addr == mem.unpacked_at, fmt.tprintf("unpack agree: %s: at %08x and %08x", c.what, u.addr, mem.unpacked_at))
+			check(string(u.data) == string(mem.unpacked_code), fmt.tprintf("unpack agree: %s: the code differs", c.what))
+		}
+		delete(f)
+		delete(t)
+	}
 }
