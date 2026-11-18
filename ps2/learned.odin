@@ -177,6 +177,9 @@ learned_steps_add :: proc(code: ^core.Native_Code) {
 	}
 	slice.sort_by(learned_steps[:], proc(a, b: Learned_Step) -> bool {return a.lo < b.lo})
 	learned_entry_cache = {}
+	// A load mid-run (play/midload_learned.odin) may hold a function for
+	// the pc last checked.
+	learned_ran()
 	flat_native_on = true
 }
 

@@ -1,5 +1,5 @@
 // A mid-run learned compile for play.mjs, on a worker_thread (the module
-// blocks the main one): runs `play --learned psx` on another instance of
+// blocks the main one): runs `play --learned <psx | ee>` on another instance of
 // the module, with the records and interp list play passed (web/learn.js),
 // and delivers its blob, or a failure, through the LEARN buffer, for its
 // compile's generation. The main
@@ -8,17 +8,17 @@
 import { writeSync } from "node:fs";
 import { workerData } from "node:worker_threads";
 import { NO_BAND } from "../../web/band.js";
-import { LEARN_ARGS, LEARN_OUT, learnDeliver, learnSeed, NO_LEARN, NO_SDL } from "../../web/learn.js";
+import { LEARN_OUT, learnArgs, learnDeliver, learnSeed, NO_LEARN, NO_SDL } from "../../web/learn.js";
 import { Native } from "../../web/native.js";
 import { NO_NET } from "../../web/net.js";
 import { Wasi } from "../../web/wasi.js";
 
-const { buffer, gen, module, limits, records, interp } = workerData;
+const { buffer, gen, module, limits, records, interp, cpu } = workerData;
 const say = (text) => writeSync(2, text);
 let blob = null;
 try {
 	const t0 = performance.now();
-	const wasi = new Wasi({ args: LEARN_ARGS, env: {}, disc: new Map(), log: (_fd, text) => say(text) });
+	const wasi = new Wasi({ args: learnArgs(cpu), env: {}, disc: new Map(), log: (_fd, text) => say(text) });
 	wasi.seed(learnSeed(records, interp));
 	const native = new Native({ log: say });
 	const instance = await WebAssembly.instantiate(module, {

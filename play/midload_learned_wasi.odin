@@ -13,10 +13,11 @@ foreign import ps_learn "system:ps_learn"
 @(default_calling_convention = "contextless")
 foreign ps_learn {
 	// Start compiling the LEARN records rec and the interp list interp
-	// (native.Blob_Interp each) in the host's worker: the compile's
-	// generation (> 0), or -1 for a host that compiles nothing.
+	// (native.Blob_Interp each) in the host's worker, for the PS1 (cpu 0)
+	// or the EE (1): the compile's generation (> 0), or -1 for a host that
+	// compiles nothing.
 	@(link_name = "start")
-	learn_host_start :: proc(rec: [^]u8, rec_len: i32, interp: [^]u8, interp_len: i32) -> i32 ---
+	learn_host_start :: proc(rec: [^]u8, rec_len: i32, interp: [^]u8, interp_len: i32, cpu: i32) -> i32 ---
 	// Wait up to timeout_ms for compile gen: -1 still running, -2 failed
 	// (an empty blob too), -3 a blob over the host's size, dropped; else
 	// the blob's size, copied to buf (and taken) only when cap holds it. A
@@ -48,7 +49,7 @@ midlearn_host_init :: proc() -> bool {
 @(private)
 midlearn_host_start :: proc() -> Midload_Start {
 	bytes := learned_interp_bytes(mlrn.interp)
-	mlw.gen = learn_host_start(raw_data(mlrn.stream), i32(len(mlrn.stream)), raw_data(bytes), i32(len(bytes)))
+	mlw.gen = learn_host_start(raw_data(mlrn.stream), i32(len(mlrn.stream)), raw_data(bytes), i32(len(bytes)), 0 if mlrn.cpu == .Psx else 1)
 	if mlw.gen <= 0 {
 		fmt.eprintln("play: mid-run learned loading off: this host has no worker to compile in")
 		midlearn_cleanup()
@@ -70,7 +71,7 @@ midlearn_host_poll :: proc(timeout: time.Duration) -> Midload_Poll {
 		return .Failed
 	case LEARN_OVERSIZED:
 		// The host said so, once; not again until the records grow.
-		mlrn.oversized = core.learn_count(.Psx)
+		mlrn.oversized = core.learn_count(mlrn.cpu)
 		midlearn_cleanup()
 		return .Failed
 	}

@@ -75,7 +75,8 @@ async function discFor({ files, urls, store: name, stored }) {
 // there). Before /data is stored the page gets {saving}: from then on
 // stopping the Worker could cut a write short. A mid-run learned compile
 // (web/learn.js) goes to the page as {learn: {records, interp, buffer,
-// gen}}: the LEARN buffer, made at the first, and the compile's generation.
+// gen, cpu}}: the LEARN buffer, made at the first, the compile's generation
+// and its cpu.
 //
 // The software GS's band workers (PS_BANDS, ps2/gs/band_wasm.odin) run on
 // a pool of Workers (web/band.js) made before the run: as many as
@@ -145,8 +146,8 @@ onmessage = async ({ data }) => {
 		const net = netBuffer ? new NetImports(netBuffer, await buildId(bytes)) : null;
 		const learn = out
 			? null
-			: new LearnImports((records, interp, buffer, gen) => {
-					postMessage({ learn: { records, interp, buffer, gen } }, [records.buffer, interp.buffer]);
+			: new LearnImports((records, interp, buffer, gen, cpu) => {
+					postMessage({ learn: { records, interp, buffer, gen, cpu } }, [records.buffer, interp.buffer]);
 					return true;
 				});
 		times.compileMs = Math.round(performance.now() - t0);

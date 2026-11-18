@@ -45,7 +45,7 @@
 // (tick) and the frames the audio worklet played as silence for an empty
 // ring. No backend exists (the site is static), so the player files it.
 import { SCANCODE_OF_CODE } from "./keys.js";
-import { LEARN_ARGS, LEARN_OUT, learnDeliver, learnSeed } from "./learn.js";
+import { LEARN_OUT, learnArgs, learnDeliver, learnSeed } from "./learn.js";
 import { AUDIO, CONTROL, EV, NET, PAD, PRESENT } from "./layout.js";
 import { serveLink } from "./net.js";
 import { Present } from "./present.js";
@@ -549,7 +549,7 @@ function onMessage({ data }) {
 }
 
 // A mid-run learned compile the play Worker asked for (web/learn.js): run
-// `play --learned psx` in a Worker of its own (an `out` run) and hand its
+// `play --learned <psx | ee>` in a Worker of its own (an `out` run) and hand its
 // blob to the play Worker. Its log goes to the page's; the instantiate's
 // time is said, for the cost of a mid-run compile on this browser. One
 // compile Worker runs at a time: a new compile, or a new run (start),
@@ -560,7 +560,7 @@ function learnStop() {
 	learnConv?.terminate();
 	learnConv = null;
 }
-function learnCompile({ records, interp, buffer, gen }) {
+function learnCompile({ records, interp, buffer, gen, cpu }) {
 	learnStop();
 	const t0 = performance.now();
 	const conv = new Worker("play-worker.js", { type: "module" });
@@ -593,7 +593,7 @@ function learnCompile({ records, interp, buffer, gen }) {
 		log("play: mid-run learned compile failed: a message from its worker could not be read\n");
 		finish(null);
 	};
-	conv.postMessage({ wasm: "play.wasm", args: LEARN_ARGS.slice(1), out: true, seed: learnSeed(records, interp) }, [records.buffer, interp.buffer]);
+	conv.postMessage({ wasm: "play.wasm", args: learnArgs(cpu).slice(1), out: true, seed: learnSeed(records, interp) }, [records.buffer, interp.buffer]);
 }
 
 // The run's history, a second an entry while it runs: {t: seconds since

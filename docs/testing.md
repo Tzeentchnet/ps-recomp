@@ -569,10 +569,12 @@ above 1 the software GS's band workers run on a pool of n worker_threads
 (`tests/wasi/bandlink.mjs`), as the page's run on Workers (web/band.js);
 the hashes are the same at every n.
 
-A wasm PS1 run that records its code and runs learned code compiles its
-new records mid-run (play/midload_learned.odin): once they have stopped
-growing for 300 frames, the records no loaded blob covers, at most 480
-per compile, go to another instance of the module (`play --learned psx`),
+A wasm run that records its code and runs learned code, for a PS1 game
+or a PS2 game's EE, compiles its new records mid-run
+(play/midload_learned.odin): once they have stopped growing for 300
+frames, the records no loaded blob covers, at most 480 per compile (for
+the EE too: the run compiles the blob's module on its own thread), go to
+another instance of the module (`play --learned <psx | ee>`),
 in a Worker on the page (web/learn.js) and in a worker_thread under
 play.mjs (`tests/wasi/learnlink.mjs`), and the run loads the blob it hands
 back. Nothing is stored; the next run compiles its own set as before.

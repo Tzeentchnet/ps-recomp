@@ -1,6 +1,6 @@
 // A mid-run learned compile (play/midload_learned.odin): the play module's
 // "system:ps_learn" imports, and the relay that runs the compile in a
-// worker of its own (`play --learned psx`, another instance of the same
+// worker of its own (`play --learned <psx | ee>`, another instance of the same
 // module) and hands its blob back through the LEARN SharedArrayBuffer.
 //
 // The play Worker never yields, so the compile cannot be started from it:
@@ -34,8 +34,9 @@ const POLL_OVERSIZED = -3;
 // How long start waits at a time for a deliverer still writing.
 const WRITING_WAIT_MS = 1000;
 
-// The compile's command line and files, under the compile instance's /data.
-export const LEARN_ARGS = ["play", "--learned", "psx", "/data/records", "/data/out", "/data/interp"];
+// The compile's command line for cpu (start's: 0 the PS1, 1 a PS2 game's
+// EE) and its files, under the compile instance's /data.
+export const learnArgs = (cpu) => ["play", "--learned", cpu === 1 ? "ee" : "psx", "/data/records", "/data/out", "/data/interp"];
 export const learnSeed = (records, interp) =>
 	new Map([
 		["records", records],
@@ -55,9 +56,10 @@ export const NO_LEARN = {
 };
 
 export class LearnImports {
-	// startCb(records, interp, buffer, gen), with copies of the bytes, the
-	// LEARN SharedArrayBuffer (made at the first start) and the compile's
-	// generation, for learnDeliver: true when a compile was started.
+	// startCb(records, interp, buffer, gen, cpu), with copies of the bytes,
+	// the LEARN SharedArrayBuffer (made at the first start), the compile's
+	// generation, for learnDeliver, and its cpu (learnArgs): true when a
+	// compile was started.
 	constructor(startCb) {
 		this.buffer = null;
 		this.words = null;
@@ -66,7 +68,7 @@ export class LearnImports {
 		this.memory = null;
 		this.imports = {
 			// The compile's generation (> 0), or -1.
-			start: (rec, recLen, interp, interpLen) => {
+			start: (rec, recLen, interp, interpLen, cpu) => {
 				if (this.buffer === null) {
 					this.buffer = new SharedArrayBuffer(LEARN.SIZE);
 					this.words = new Int32Array(this.buffer, 0, LEARN.DATA / 4);
@@ -77,7 +79,7 @@ export class LearnImports {
 				const m = new Uint8Array(this.memory.buffer);
 				const records = m.slice(rec, rec + recLen);
 				const list = m.slice(interp, interp + interpLen);
-				return this.startCb(records, list, this.buffer, gen) ? gen : -1;
+				return this.startCb(records, list, this.buffer, gen, cpu) ? gen : -1;
 			},
 			poll: (buf, cap, timeoutMs, gen) => {
 				if (this.words === null) return POLL_FAILED;

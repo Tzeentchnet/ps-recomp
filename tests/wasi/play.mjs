@@ -158,8 +158,8 @@ if (settings.PS_NET_PEER !== undefined) {
 // The worker is made inside the start import, while the module blocks this
 // thread: its 'error' and 'message' events are never seen here, so
 // learnlink.mjs catches everything and delivers a failure itself.
-const learn = new LearnImports((records, interp, buffer, gen) => {
-	new Worker(new URL("learnlink.mjs", import.meta.url), { workerData: { buffer, gen, module, limits, records, interp } }).unref();
+const learn = new LearnImports((records, interp, buffer, gen, cpu) => {
+	new Worker(new URL("learnlink.mjs", import.meta.url), { workerData: { buffer, gen, module, limits, records, interp, cpu } }).unref();
 	return true;
 });
 const instance = await WebAssembly.instantiate(module, {
