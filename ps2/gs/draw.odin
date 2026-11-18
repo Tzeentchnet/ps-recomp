@@ -283,6 +283,7 @@ draw :: proc(kind, prim: u64) {
 	c := &ctx_cur
 	if skip_on && c.on_display {return} // headless: a shown buffer, redrawn before it is read
 	if c.zte && c.ztst == 0 {return} // NEVER
+	if haz_on {haz_draw(c, kind)}
 	if hw_on {
 		hw_draw(c, kind)
 		return
@@ -419,31 +420,62 @@ tex_lod :: #force_inline proc(m: Tex_Map, q: f32) -> i32 {
 	return x + m.k
 }
 
+// A sprite's box and its attributes from the left/top corner to the
+// right/bottom one; pixels px0..px1 x py0..py1, scissored. draw_sprite and
+// the hazard tracker (haz.odin) take a pixel's texel coordinates from it the
+// same way, so both see the same texels.
+@(private)
+Sprite :: struct {
+	x0, x1, y0, y1:                 f32,
+	ua, ub, va, vb, sa, sb, ta, tb: f32,
+	px0, px1, py0, py1:             i32,
+}
+
+// False when the sprite has no area.
+@(private)
+sprite_span :: #force_inline proc(c: ^Ctx, a, b: ^Vertex) -> (s: Sprite, ok: bool) {
+	s.x0, s.x1 = min(a.x, b.x), max(a.x, b.x)
+	s.y0, s.y1 = min(a.y, b.y), max(a.y, b.y)
+	if s.x1 <= s.x0 || s.y1 <= s.y0 {return}
+	// Attributes run from a to b; flip if b is the left/top corner.
+	s.ua, s.ub = a.u, b.u
+	s.va, s.vb = a.v, b.v
+	s.sa, s.sb = a.s, b.s
+	s.ta, s.tb = a.t, b.t
+	if a.x > b.x {s.ua, s.ub, s.sa, s.sb = s.ub, s.ua, s.sb, s.sa}
+	if a.y > b.y {s.va, s.vb, s.ta, s.tb = s.vb, s.va, s.tb, s.ta}
+	s.px0 = max(i32(math.ceil(s.x0)), c.sx0)
+	s.px1 = min(i32(math.ceil(s.x1)) - 1, c.sx1)
+	s.py0 = max(i32(math.ceil(s.y0)), c.sy0)
+	s.py1 = min(i32(math.ceil(s.y1)) - 1, c.sy1)
+	return s, true
+}
+
+// Row y's V and T.
+@(private)
+sprite_row :: #force_inline proc "contextless" (s: ^Sprite, y: i32) -> (vv, tt: f32) {
+	fy := (f32(y) - s.y0) / (s.y1 - s.y0)
+	return s.va + (s.vb - s.va) * fy, s.ta + (s.tb - s.ta) * fy
+}
+
+// Pixel x's texel coordinates and LOD on the row sprite_row gave vv, tt
+// for; q is the second vertex's.
+@(private)
+sprite_tex :: #force_inline proc(c: ^Ctx, s: ^Sprite, x: i32, vv, tt, q: f32) -> (f32, f32, i32) {
+	fx := (f32(x) - s.x0) / (s.x1 - s.x0)
+	return tex_coord(c, {s.sa + (s.sb - s.sa) * fx, tt, s.ua + (s.ub - s.ua) * fx, vv}, q)
+}
+
 @(private)
 draw_sprite :: proc(c: ^Ctx, a, b: ^Vertex) {
-	x0, x1 := min(a.x, b.x), max(a.x, b.x)
-	y0, y1 := min(a.y, b.y), max(a.y, b.y)
-	if x1 <= x0 || y1 <= y0 {return}
-	// Attributes run from a to b; flip if b is the left/top corner.
-	ua, ub := a.u, b.u
-	va, vb := a.v, b.v
-	sa, sb := a.s, b.s
-	ta, tb := a.t, b.t
-	if a.x > b.x {ua, ub, sa, sb = ub, ua, sb, sa}
-	if a.y > b.y {va, vb, ta, tb = vb, va, tb, ta}
-	px0 := max(i32(math.ceil(x0)), c.sx0)
-	px1 := min(i32(math.ceil(x1)) - 1, c.sx1)
-	py0 := max(i32(math.ceil(y0)), c.sy0)
-	py1 := min(i32(math.ceil(y1)) - 1, c.sy1)
-	for y in py0 ..= py1 {
+	s, ok := sprite_span(c, a, b)
+	if !ok {return}
+	for y in s.py0 ..= s.py1 {
 		if band_skip(c, y) {continue}
-		fy := (f32(y) - y0) / (y1 - y0)
-		vv := va + (vb - va) * fy
-		tt := ta + (tb - ta) * fy
+		vv, tt := sprite_row(&s, y)
 		ctx_seek(c, y)
-		for x in px0 ..= px1 {
-			fx := (f32(x) - x0) / (x1 - x0)
-			u, v, lod := tex_coord(c, {sa + (sb - sa) * fx, tt, ua + (ub - ua) * fx, vv}, b.q)
+		for x in s.px0 ..= s.px1 {
+			u, v, lod := sprite_tex(c, &s, x, vv, tt, b.q)
 			c.px(c, x, y, b.z, b.c, u, v, lod, b.fog)
 		}
 	}
@@ -686,6 +718,7 @@ sample_level :: #force_inline proc(t: ^Tex, n: u32, tu, tv: f32, bilinear: bool)
 	// Round the 1/256 weights rather than truncate: the GPU's float
 	// barycentrics land a hair under exact texel positions, and rounding on
 	// both sides keeps the two renderers equal (shaders/prim.frag).
+	// haz_taps (haz.odin) copies these taps: change both.
 	UV_EPS :: 1.0 / 512
 	u, v = u - 0.5 + UV_EPS, v - 0.5 + UV_EPS
 	uv := #simd[4]f32{u, u, v, v}

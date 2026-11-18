@@ -180,6 +180,7 @@ tc_ctx :: proc(tc: ^Tc, c: ^Ctx) {
 // validate again before their next sample.
 @(private)
 tc_write_rect :: proc(bp, bw, psm, x0, y0, w, h: u32) {
+	if haz_on {haz_write(psm, bp, bw, x0, y0, w, h)}
 	tc := &tc_main
 	p: Page_Set
 	page_rect(psm, bp, bw, x0, y0, x0 + w, y0 + h, &p)

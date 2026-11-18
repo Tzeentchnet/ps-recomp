@@ -125,9 +125,11 @@ band: struct {
 }
 
 // Primitives queued for the workers, primitives drawn serially, and joins
-// by cause (tests/gs_band).
+// by cause (tests/gs_band). Under the hazard tracker (haz.odin): batches
+// ended, by cause, transfers hoisted, and snapshot and ordered primitives.
 band_stats: struct {
-	jobs, serial, raw, war, alias, xfer, read: u64,
+	jobs, serial, raw, war, alias, xfer, read:                            u64,
+	batches, haz_raw, haz_xfer, haz_read, haz_hoist, haz_snap, haz_ordered: u64,
 }
 
 // Test knobs (tests/gs_band). Lazy: publish jobs only when a join or a
@@ -396,6 +398,7 @@ band_write :: proc(p: ^Page_Set) {
 // joins when outstanding jobs write its pages.
 @(private)
 band_read :: proc(psm, bp, bw, x, y, w, h: u32) {
+	if haz_on {haz_read(psm, bp, bw, x, y, w, h)}
 	if band.n == 0 || band.base == band.next {return}
 	p: Page_Set
 	page_rect(psm, bp, bw, x, y, x + w, y + h, &p)
@@ -408,6 +411,7 @@ band_read :: proc(psm, bp, bw, x, y, w, h: u32) {
 // About to read blocks [b0, b1) from the producer (a CSM1 CLUT).
 @(private)
 band_read_blocks :: proc(b0, b1: u32) {
+	if haz_on {haz_read_blocks(b0, b1)}
 	if band.n == 0 || band.base == band.next {return}
 	p: Page_Set
 	for b in b0 ..< b1 {
