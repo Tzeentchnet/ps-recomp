@@ -45,6 +45,38 @@ Wasm :: struct {
 	n_funcs: int,
 	st:      int, // import index of the open function's state
 	stats:   Wasm_Stats,
+	// The shared in-line call routine (inline_call), placed at finish
+	// after the slow routines when a function called it.
+	call:     Wasm_Call,
+	call_at:  Label,
+	has_call: bool,
+}
+
+// What the shared in-line call routine checks and keeps: a guest CPU's
+// FLAT runner fields (the r5900 backend's). The routine, of type
+// (t, link, ctx: i32) -> i32, calls the generated function at guest
+// address t in place when the runner's entry checks pass, and returns 1
+// when it came back to link as the runner's own return would; 0 when it
+// left: with the call's exit set (exit_call) when a check failed, or with
+// the callee's own exit and its frame given to pend.
+Wasm_Call :: struct {
+	state:                  string, // import: the CPU state
+	cycles:                 u32, // state offset: the u64 cycle count
+	sp:                     u32, // state offset: the stack pointer's low word
+	next_event:             string, // import: the u64 cycles of the next event
+	mod_on:                 string, // import: a byte, set while a mod is in play
+	depth:                  string, // import: the u32 in-line call depth
+	max_depth:              u32,
+	table, text_lo:         string, // imports: the call table (wa_table_slot)
+	spin_dirty:             string, // import: a u32 the call ORs spin_bit into
+	spin_bit:               u32,
+	exit:                   string, // import: the exit record, reason at 0
+	exit_pc, exit_arg:      u32,
+	exit_call, exit_return: u32, // its reasons
+	pend:                   string, // runtime procedure (link, sp): a frame left
+	pending:                string, // import: the u32 count of frames left; a fast return needs 0
+	fast, returns:          string, // imports: u64 counters of calls and returns made
+	fall:                   [4]string, // imports: u64 counters of calls left for events, a mod, the depth, no code
 }
 
 // The generated functions' sizes, for recomp's report. A branch through
@@ -204,6 +236,12 @@ I32_EQZ :: 0x45
 I32_EQ :: 0x46
 @(private = "file")
 I32_LT_U :: 0x49
+@(private = "file")
+I32_NE :: 0x47
+@(private = "file")
+I32_GE_U :: 0x4f
+@(private = "file")
+I32_OR :: 0x72
 @(private = "file")
 I64_LT_U :: 0x54
 @(private = "file")
@@ -1224,10 +1262,195 @@ wasm_call :: proc(a: ^Asm, k: int, args: []Reg) {
 	if sig.result {wa_set(a, wa_reg(.A))}
 }
 
+// Local dst = the call table entry at the guest address in local t, 0 for
+// none: the slice at import tk (data at 0, len at 4) holds one per word
+// from the u32 at import lk. Out of range or misaligned is none; a nil
+// slice has len 0. d and ok are scratch locals.
+@(private = "file")
+wa_table_slot :: proc(a: ^Asm, dst, t, d, ok, tk, lk: int) {
+	wa_get(a, t) // d = t - lo
+	wa_global(a, lk)
+	wa_mem(a, I32_LOAD, 2, 0)
+	emit8(a, I32_SUB)
+	wa_set(a, d)
+	wa_get(a, d) // ok = d < len << 2 && d & 3 == 0
+	wa_global(a, tk)
+	wa_mem(a, I32_LOAD, 2, 4)
+	wa_i32(a, 2)
+	emit8(a, I32_SHL, I32_LT_U)
+	wa_get(a, d)
+	wa_i32(a, 3)
+	emit8(a, I32_AND, I32_EQZ, I32_AND)
+	wa_set(a, ok)
+	wa_global(a, tk) // ok ? data[d >> 2] : 0, loading data[0] when not
+	wa_mem(a, I32_LOAD, 2, 0)
+	wa_get(a, d)
+	wa_i32(a, 0)
+	wa_get(a, ok)
+	emit8(a, OP_SELECT, I32_ADD)
+	wa_mem(a, I32_LOAD, 2, 0)
+	wa_i32(a, 0)
+	wa_get(a, ok)
+	emit8(a, OP_SELECT)
+	wa_set(a, dst)
+}
+
+// The u64 at the address in import name += 1.
+@(private = "file")
+wasm_imp_inc64 :: proc(a: ^Asm, name: string) {
+	k := imp(a, name)
+	wa_global(a, k)
+	wa_global(a, k)
+	wa_mem(a, I64_LOAD, 3, 0)
+	wa_i64(a, 1)
+	emit8(a, I64_ADD)
+	wa_mem(a, I64_STORE, 3, 0)
+}
+
 wasm_call_func :: proc(a: ^Asm, l: Label) {
 	if !a.ctx_only {wa_i32(a, 0)}
 	wa_get(a, wa_ctx(a))
 	wa_call_label(a, l)
+}
+
+// The call of the guest function at t returning to link through the
+// shared routine c describes (Wasm_Call): on its fast return go on at
+// back with the cached fields reloaded, else return, the state written.
+wasm_inline_call :: proc(a: ^Asm, c: Wasm_Call, t: Reg, link: u32, back: Label) {
+	assert(!a.ctx_only, "native: wasm32 inline_call under ctx_only")
+	w := &a.wa
+	if !w.has_call {
+		w.call = c
+		w.call_at = new_label(a)
+		w.has_call = true
+	}
+	assert(w.call == c, "native: wasm32 inline_call with two routines")
+	cache_sync(a, true)
+	wa_get(a, wa_reg(t))
+	wa_i32(a, link)
+	wa_get(a, wa_ctx(a))
+	wa_call_label(a, w.call_at)
+	emit8(a, I32_EQZ, OP_IF, VOID, OP_RETURN, OP_END)
+	cache_sync(a, false)
+	jmp(a, back)
+}
+
+// The shared in-line call routine's locals: its parameters, then 4 i32.
+@(private = "file")
+H_T :: 0
+@(private = "file")
+H_LINK :: 1
+@(private = "file")
+H_CTX :: 2
+@(private = "file")
+H_FN :: 3
+@(private = "file")
+H_D :: 4
+@(private = "file")
+H_OK :: 5
+@(private = "file")
+H_SP :: 6
+
+// Leave the check block counting counter when the i32 on the stack is set.
+@(private = "file")
+wa_call_fall :: proc(a: ^Asm, counter: string) {
+	emit8(a, OP_IF, VOID)
+	wasm_imp_inc64(a, counter)
+	emit8(a, OP_BR, 1, OP_END)
+}
+
+// The u32 at the address in import k += v (a wrapping add).
+@(private = "file")
+wa_imp_add32 :: proc(a: ^Asm, k: int, v: u32, op: u8 = I32_ADD) {
+	wa_global(a, k)
+	wa_global(a, k)
+	wa_mem(a, I32_LOAD, 2, 0)
+	wa_i32(a, v)
+	emit8(a, op)
+	wa_mem(a, I32_STORE, 2, 0)
+}
+
+// The body of the shared in-line call routine (Wasm_Call).
+@(private = "file")
+wasm_emit_call :: proc(a: ^Asm, c: Wasm_Call) {
+	st, dk, ek := imp(a, c.state), imp(a, c.depth), imp(a, c.exit)
+	emit8(a, OP_BLOCK, VOID) // the checks; a failed one leaves it
+	wa_get(a, H_T) // a call to its own return address is no call
+	wa_get(a, H_LINK)
+	emit8(a, I32_EQ, OP_BR_IF, 0)
+	wa_global(a, st)
+	wa_mem(a, I64_LOAD, 3, c.cycles)
+	wa_global(a, imp(a, c.next_event))
+	wa_mem(a, I64_LOAD, 3, 0)
+	emit8(a, I64_LT_U, I32_EQZ)
+	wa_call_fall(a, c.fall[0])
+	wa_global(a, imp(a, c.mod_on))
+	wa_mem(a, I32_LOAD8_U, 0, 0)
+	wa_call_fall(a, c.fall[1])
+	wa_global(a, dk)
+	wa_mem(a, I32_LOAD, 2, 0)
+	wa_i32(a, c.max_depth)
+	emit8(a, I32_GE_U)
+	wa_call_fall(a, c.fall[2])
+	wa_table_slot(a, H_FN, H_T, H_D, H_OK, imp(a, c.table), imp(a, c.text_lo))
+	wa_get(a, H_FN)
+	emit8(a, I32_EQZ)
+	wa_call_fall(a, c.fall[3])
+	wa_imp_add32(a, dk, 1)
+	wa_imp_add32(a, imp(a, c.spin_dirty), c.spin_bit, I32_OR)
+	wasm_imp_inc64(a, c.fast)
+	wa_global(a, st)
+	wa_mem(a, I32_LOAD, 2, c.sp)
+	wa_set(a, H_SP)
+	wa_get(a, H_T)
+	wa_get(a, H_CTX)
+	wa_get(a, H_FN)
+	emit8(a, OP_CALL_INDIRECT)
+	wa_uleb(&a.code, u64(wa_type(a, {I32, I32}, 0)))
+	emit8(a, 0x00)
+	wa_imp_add32(a, dk, 0xffffffff)
+	// A return to link with the caller's sp, and no frame left by a
+	// callee deeper in: one that returned past its own link to this one
+	// left its frame, which the runner pops only as an exit's unwind.
+	emit8(a, OP_BLOCK, VOID)
+	wa_global(a, imp(a, c.pending))
+	wa_mem(a, I32_LOAD, 2, 0)
+	emit8(a, OP_BR_IF, 0)
+	wa_global(a, ek)
+	wa_mem(a, I32_LOAD, 2, 0)
+	wa_i32(a, c.exit_return)
+	emit8(a, I32_NE, OP_BR_IF, 0)
+	wa_global(a, ek)
+	wa_mem(a, I32_LOAD, 2, c.exit_pc)
+	wa_get(a, H_LINK)
+	emit8(a, I32_NE, OP_BR_IF, 0)
+	wa_global(a, st)
+	wa_mem(a, I32_LOAD, 2, c.sp)
+	wa_get(a, H_SP)
+	emit8(a, I32_NE, OP_BR_IF, 0)
+	wasm_imp_inc64(a, c.returns)
+	wa_i32(a, 1)
+	emit8(a, OP_RETURN, OP_END)
+	wa_get(a, H_LINK) // left another way: the runner gets the frame
+	wa_get(a, H_SP)
+	wa_get(a, H_CTX)
+	wa_global(a, imp(a, c.pend))
+	emit8(a, OP_CALL_INDIRECT)
+	wa_uleb(&a.code, u64(wa_type(a, {I32, I32, I32}, 0)))
+	emit8(a, 0x00)
+	wa_i32(a, 0)
+	emit8(a, OP_RETURN, OP_END)
+	wa_global(a, ek) // the call's exit, for the runner to make
+	wa_i32(a, c.exit_call)
+	wa_mem(a, I32_STORE, 2, 0)
+	wa_global(a, ek)
+	wa_get(a, H_T)
+	wa_mem(a, I32_STORE, 2, c.exit_pc)
+	wa_global(a, ek)
+	wa_get(a, H_LINK)
+	wa_mem(a, I32_STORE, 2, c.exit_arg)
+	wa_i32(a, 0)
+	emit8(a, OP_END) // the function
 }
 
 // ---------------------------------------------------------------- RAM
@@ -1853,6 +2076,17 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 		append(&w.out, 3, I32, 2, I64, 1, V128)
 		append(&w.out, ..a.code[:])
 		append(&w.bodies, Wasm_Body{lo, len(w.out), slow_type})
+	}
+	if w.has_call {
+		bind_at(a, w.call_at, w.n_funcs)
+		w.n_funcs += 1
+		clear(&a.code)
+		wasm_emit_call(a, w.call)
+		lo := len(w.out)
+		wa_uleb(&w.out, 1)
+		append(&w.out, 4, I32)
+		append(&w.out, ..a.code[:])
+		append(&w.bodies, Wasm_Body{lo, len(w.out), wa_type(a, {I32, I32, I32}, I32)})
 	}
 	clear(&a.code)
 	for f in w.fixes {

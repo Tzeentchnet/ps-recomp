@@ -108,6 +108,11 @@ text_range :: proc(lo, hi: u32) {
 	fn_table = make([]Func_Proc, (hi - lo) / 4, core.long_allocator())
 }
 
+// The table's address, for wasm32 native code's in-line calls, which read
+// its slice (data at 0, len at 4) and text_lo at every call: dispatch_set
+// may have taken it away since.
+fn_table_at :: proc() -> rawptr {return &fn_table}
+
 register :: proc(addr: u32, fn: Func_Proc) {
 	t := fn_held != nil ? fn_held : fn_table
 	t[(addr - text_lo) >> 2] = fn

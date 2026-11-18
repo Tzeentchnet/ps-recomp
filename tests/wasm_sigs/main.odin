@@ -10,6 +10,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "ps:ps2"
+import cpu "ps:ps2/cpu"
 import psx_native "ps:psx/native"
 import "ps:recomp/native"
 import "ps:recomp/r3000"
@@ -85,6 +86,7 @@ main :: proc() {
 	_ = ps2.native_imports(&ee)
 	_ = psx_native.imports(&iop)
 	check("EE", r5900.EE_SIGS[:], ee)
+	if r5900.WASM_CALL_MAX != cpu.WASM_CALL_MAX {fail("EE: WASM_CALL_MAX %d, cpu.WASM_CALL_MAX %d", r5900.WASM_CALL_MAX, cpu.WASM_CALL_MAX)}
 	check("R3000", r3000.R3000_SIGS[:], iop)
 	if failed {os.exit(1)}
 	fmt.printfln("wasm_sigs: %d EE and %d R3000 signatures agree", len(r5900.EE_SIGS), len(r3000.R3000_SIGS))

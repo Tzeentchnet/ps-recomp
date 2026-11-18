@@ -1095,6 +1095,16 @@ call_leave :: proc(a: ^Asm, leave, name: string, args: ..Reg) {
 	call_after(a, leave)
 }
 
+// wasm32 only: the call of the guest function at t returning to link,
+// made in place through the shared routine c describes (Wasm_Call) when
+// the FLAT runner's entry checks pass: its return to link goes on at back,
+// any other way out of it, or a failed check, leaves the function with
+// the exit set.
+inline_call :: proc(a: ^Asm, c: Wasm_Call, t: Reg, link: u32, back: Label) {
+	assert(a.arch == .Wasm32, "native: inline_call is wasm32's")
+	wasm_inline_call(a, c, t, link, back)
+}
+
 // Call the function at label l (bound with bind_at), passing the context
 // as the runtime's call table does, so the callee's prologue is entered the
 // same way. As call, the cached fields go to the state and come back after,

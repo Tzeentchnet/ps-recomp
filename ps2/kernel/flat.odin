@@ -133,6 +133,15 @@ flat_nest_pop :: proc() {
 // not counted against $ra, which the host did not set.
 FLAT_HOST_TAIL :: u32(1)
 
+// Push a call native code already made in-line, returning to ret with the
+// guest sp sp: its entry checks are done (cpu.wasm_pend).
+flat_push_made :: proc(x: ^Flat_Ctx, ret, sp: u32) {
+	if int(x.depth) == len(x.ret) {flat_grow(x, ret)}
+	x.ret[x.depth] = ret
+	x.sp[x.depth] = sp
+	x.depth += 1
+}
+
 // Push a call from x to t that returns to ret, with the checks a call makes
 // on entry owed (the flat interpreter's flat_reload).
 flat_push :: proc(x: ^Flat_Ctx, ret, t: u32) {

@@ -52,6 +52,7 @@ EE_SIGS := [?]native.Sig {
 	{"ps2.wr16", 2, false},
 	{"ps2.wr32", 2, false},
 	{"cpu.call", 1, false},
+	{"cpu.wasm_pend", 2, false}, // wasm32 only
 	{"cpu.jump_unknown", 2, false},
 	{"cpu.bad_insn", 2, false},
 	{"cpu.brk", 2, false},
@@ -1504,6 +1505,40 @@ exit :: proc(a: ^native.Asm, reason: Exit, pc := native.Reg.T, arg: u32 = 0) {
 	native.ret(a)
 }
 
+// The deepest in-line calls go, cpu.WASM_CALL_MAX: ps2/native.odin checks.
+WASM_CALL_MAX :: 64
+
+// wasm32: the shared routine of the in-line calls (native.inline_call):
+// the FLAT runner's entry checks (no events due, no mods, native code at
+// the target in the call table, under WASM_CALL_MAX deep) and its return
+// check (a `jr $ra` to the link with the caller's sp, as flat_return
+// makes, with no frame left from deeper in); a callee leaving any other
+// way leaves its frame (cpu.wasm_pend).
+@(private = "file")
+WASM_CALL := native.Wasm_Call {
+	state       = "cpu.state",
+	cycles      = CYCLES,
+	sp          = GPR * 29,
+	next_event  = "cpu.next_event",
+	mod_on      = "cpu.mod_on",
+	depth       = "cpu.wasm_depth",
+	max_depth   = WASM_CALL_MAX,
+	table       = "cpu.fn_table",
+	text_lo     = "cpu.text_lo",
+	spin_dirty  = "cpu.spin_dirty",
+	spin_bit    = 1, // cpu.SPIN_SIDE
+	exit        = "cpu.native_exit",
+	exit_pc     = EXIT_PC,
+	exit_arg    = EXIT_ARG,
+	exit_call   = u32(Exit.Call),
+	exit_return = u32(Exit.Return),
+	pend        = "cpu.wasm_pend",
+	pending     = "cpu.wasm_npending",
+	fast        = "cpu.wasm_fast_calls",
+	returns     = "cpu.flat_returns",
+	fall        = {"cpu.wasm_fall_events", "cpu.wasm_fall_mod", "cpu.wasm_fall_depth", "cpu.wasm_fall_nil"},
+}
+
 // wasm32: when events are due, leave to run them with pc t (and back B).
 @(private = "file")
 events_exit :: proc(a: ^native.Asm, t: native.Reg) {
@@ -1677,7 +1712,11 @@ native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow:
 		case .Call:
 			if wasm {
 				native.mov_imm(a, .T, s.target)
-				exit(a, .Call, .T, s.n)
+				if back, ok := labels[s.n]; ok {
+					native.inline_call(a, WASM_CALL, .T, s.n, back)
+				} else {
+					exit(a, .Call, .T, s.n)
+				}
 				leaves = true
 			} else if mods && s.target == MOD_ORIGINAL {
 				native.call_leave(a, UNWINDING, "ps2.mod_call_original")
@@ -1706,7 +1745,13 @@ native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow:
 			append(&ifs, -1)
 		case .Call_Reg:
 			if wasm {
-				exit(a, .Call, .T, s.n)
+				// to the return address: no call (flat_resume's .Call;
+				// the in-line call's routine leaves it to the runner)
+				if back, ok := labels[s.n]; ok {
+					native.inline_call(a, WASM_CALL, .T, s.n, back)
+				} else {
+					exit(a, .Call, .T, s.n)
+				}
 				leaves = true
 			} else {
 				// to the return address: no call (flat_loop's .Jalr)

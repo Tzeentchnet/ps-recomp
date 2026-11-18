@@ -192,6 +192,12 @@ flat_resume :: proc() -> (x: ^kernel.Flat_Ctx, pc: u32, ok: bool) {
 			e := &cpu.native_exit
 			when mem.MOD_PROBE {mem.mod_probe.enters[int(mem.mod_ram_has(pc))] += 1}
 			(cast(Wasm_Func)rawptr(f))(pc)
+			// The frames of calls made in-line whose callee left (cpu.wasm_pend).
+			for cpu.wasm_npending > 0 {
+				cpu.wasm_npending -= 1
+				w := cpu.wasm_pending[cpu.wasm_npending]
+				kernel.flat_push_made(x, w.ret, w.sp)
+			}
 			switch e.reason {
 			case .None:
 				// An entry its code has no block for: interpret, rather
