@@ -33,7 +33,10 @@ page_demoted: [RAM_PAGES][dynamic]Demoted
 // The signed entry code_demote made for the function at addr.
 @(private = "file")
 demoted_entry :: proc(addr: u32) -> ^Ovl_Entry {
-	for &e in dispatch.overlay[addr] {
+	// A local, not the map index in the range: ranging over a map index
+	// reads the slot through its address, nil for a missing key.
+	es := dispatch.overlay[addr]
+	for &e in es {
 		if e.slot == addr {
 			return &e
 		}

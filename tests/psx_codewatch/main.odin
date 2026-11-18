@@ -55,7 +55,8 @@ hook_b :: proc() {runs.b += 1}
 // G's signed entry, which code_demote made.
 @(private = "file")
 entry_g :: proc() -> ^cpu.Ovl_Entry {
-	for &e in cpu.dispatch.overlay[0x80010100] {
+	es := cpu.dispatch.overlay[0x80010100]
+	for &e in es {
 		if e.slot == e.addr {
 			return &e
 		}

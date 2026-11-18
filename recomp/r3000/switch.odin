@@ -62,7 +62,10 @@ thread_switches :: proc(mods: [][]^mips.Func) -> Set {
 	}
 	for len(work) > 0 {
 		e := pop(&work)
-		for c in callers[e] {
+		// A local, not callers[e] in the range: ranging over a map index
+		// reads the slot through its address, nil for an entry nobody calls.
+		cs := callers[e]
+		for c in cs {
 			if c in out {continue}
 			out[c] = {}
 			append(&work, c)

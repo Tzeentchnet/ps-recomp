@@ -146,7 +146,10 @@ load_native :: proc(path: string, standalone := false, skip: []u32 = nil) -> boo
 	}
 	for o in code.ovls {
 		found := false
-		for e in cpu.dispatch.overlay[o.addr] {
+		// A local, not the map index in the range: ranging over a map index
+		// reads the slot through its address, nil for a missing key.
+		es := cpu.dispatch.overlay[o.addr]
+		for e in es {
 			if ovl_match(e, o) {found = true}
 		}
 		if !found {missing += 1}
@@ -160,7 +163,8 @@ load_native :: proc(path: string, standalone := false, skip: []u32 = nil) -> boo
 	}
 	for o in code.ovls {
 		if skipped(skip, o.addr) {continue}
-		for &e in cpu.dispatch.overlay[o.addr] {
+		es := cpu.dispatch.overlay[o.addr]
+		for &e in es {
 			if ovl_match(e, o) {e.fn = fn(code, o.off)}
 		}
 	}
