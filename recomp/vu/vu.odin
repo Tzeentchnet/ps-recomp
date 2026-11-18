@@ -112,13 +112,13 @@ emit_upper :: proc(sb: ^strings.Builder, uw: u32, flags: Flags, known: ^Known) -
 	bc := uw & 3
 	Op :: enum {Add, Sub, Madd, Msub, Max, Mini, Mul}
 	OPS := [Op]string {
-		.Add  = "s + %s",
-		.Sub  = "s - %s",
-		.Madd = "v.acc.f + s * %s",
-		.Msub = "v.acc.f - s * %s",
+		.Add  = "vadd(s, %s)",
+		.Sub  = "vadd(s, -%s)",
+		.Madd = "vadd(v.acc.f, vmul(s, %s))",
+		.Msub = "vadd(v.acc.f, -vmul(s, %s))",
 		.Max  = "vmax",
 		.Mini = "vmin",
-		.Mul  = "s * %s",
+		.Mul  = "vmul(s, %s)",
 	}
 	BC := [4]string{"sp(t.x)", "sp(t.y)", "sp(t.z)", "sp(t.w)"}
 	// Write r to fd (or ACC), with the flags asked for. The add and
@@ -183,7 +183,7 @@ emit_upper :: proc(sb: ^strings.Builder, uw: u32, flags: Flags, known: ^Known) -
 		case 0x2c: op, b = .Sub, "t"
 		case 0x2d: op, b = .Msub, "t"
 		case 0x2e: // OPMSUB
-			arith(sb, "v.acc.f - [4]f32{s.y * t.z, s.z * t.x, s.x * t.y, 0}", vfd, 0xe, fs, ft, 0xe, 0xe, flags, known)
+			arith(sb, "vadd(v.acc.f, -vmul([4]f32{s.y, s.z, s.x, 0}, [4]f32{t.z, t.x, t.y, 0}))", vfd, 0xe, fs, ft, 0xe, 0xe, flags, known)
 			wrote(known, fd, 0xe)
 			return
 		case 0x2f: op, b = .Mini, "t"
@@ -270,7 +270,7 @@ emit_upper :: proc(sb: ^strings.Builder, uw: u32, flags: Flags, known: ^Known) -
 	case 0x2c: op, b = .Sub, "t"
 	case 0x2d: op, b = .Msub, "t"
 	case 0x2e: // OPMULA
-		arith(sb, "[4]f32{s.y * t.z, s.z * t.x, s.x * t.y, 0}", acc, 0xe, fs, ft, 0xe, 0xe, flags, known)
+		arith(sb, "vmul([4]f32{s.y, s.z, s.x, 0}, [4]f32{t.z, t.x, t.y, 0})", acc, 0xe, fs, ft, 0xe, 0xe, flags, known)
 		return
 	case 0x2f: return // NOP
 	case: return true
@@ -977,6 +977,34 @@ clamp4 :: #force_inline proc "contextless" (r: [4]f32) -> [4]f32 {
 	u = simd.select(simd.lanes_eq(e, 0), sign, u)
 	u = simd.select(simd.lanes_eq(e, 0x7f800000), sign | 0x7f7fffff, u)
 	return transmute([4]f32)u
+}
+
+// The PS2 FPU's add and multiply, as ps2/vu's ps2_add and ps2_mul: the
+// exact result rounded toward zero, the smaller add operand cut to the
+// larger's last mantissa bit first, a result below 2^-126 a signed zero.
+rtz_f32 :: #force_inline proc "contextless" (d: f64) -> f32 {
+	b := transmute(u64)d
+	if (b >> 52) & 0x7ff < 1023 - 126 {return transmute(f32)(u32(b >> 32) & 0x80000000)}
+	return f32(transmute(f64)(b &~ ((u64(1) << 29) - 1)))
+}
+
+ps2_mul :: #force_inline proc "contextless" (a, b: f32) -> f32 {return rtz_f32(f64(a) * f64(b))}
+
+ps2_add :: #force_inline proc "contextless" (a, b: f32) -> f32 {
+	ua, ub := transmute(u32)a, transmute(u32)b
+	big, small := ua, ub
+	if ub & 0x7fffffff > ua & 0x7fffffff {big, small = ub, ua}
+	d := (big >> 23 & 0xff) - (small >> 23 & 0xff)
+	if d >= 24 {small &= 0x80000000} else {small &~= (u32(1) << d) - 1}
+	return rtz_f32(f64(transmute(f32)big) + f64(transmute(f32)small))
+}
+
+vadd :: #force_inline proc "contextless" (a, b: [4]f32) -> [4]f32 {
+	return {ps2_add(a.x, b.x), ps2_add(a.y, b.y), ps2_add(a.z, b.z), ps2_add(a.w, b.w)}
+}
+
+vmul :: #force_inline proc "contextless" (a, b: [4]f32) -> [4]f32 {
+	return {ps2_mul(a.x, b.x), ps2_mul(a.y, b.y), ps2_mul(a.z, b.z), ps2_mul(a.w, b.w)}
 }
 
 fclamp :: #force_inline proc "contextless" (x: f32) -> f32 {

@@ -336,6 +336,14 @@ V_I32_SUB :: 0xb1
 @(private = "file")
 V_TRUNC_SAT :: 0xf8
 @(private = "file")
+V_F64_LT :: 0x49
+@(private = "file")
+V_F64_MUL :: 0xf2
+@(private = "file")
+V_DEMOTE :: 0x5e
+@(private = "file")
+V_PROMOTE :: 0x5f
+@(private = "file")
 V_CONVERT :: 0xfa
 
 @(private = "file", rodata)
@@ -420,6 +428,11 @@ VOP_SIMPLE := [Vop]u32 {
 	.Abs32    = 0,
 	.Even32   = 0,
 	.Min32p   = 0,
+	.Widen_Lo = 0,
+	.Widen_Hi = 0,
+	.Narrow   = 0,
+	.Fmul64   = V_F64_MUL,
+	.Lt64f    = V_F64_LT,
 }
 
 // ---------------------------------------------------------------- encoding
@@ -1020,6 +1033,25 @@ wasm_vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 		wa_i32(a, 31)
 		wa_simd(a, V_I32_SHR_S)
 		wa_simd(a, V_I32_ADD)
+	case .Widen_Lo:
+		wa_get(a, s)
+		wa_simd(a, V_PROMOTE)
+	case .Widen_Hi:
+		hi: [16]u8
+		for i in u8(0) ..< 16 {hi[i] = (8 + i) & 15}
+		wa_get(a, s)
+		wa_get(a, s)
+		wa_shuffle(a, hi)
+		wa_simd(a, V_PROMOTE)
+	case .Narrow:
+		// demote zeroes lanes 2-3; the shuffle keeps lanes 0-1 of each.
+		lo: [16]u8
+		for i in u8(0) ..< 8 {lo[i], lo[8 + i] = i, 16 + i}
+		wa_get(a, d)
+		wa_simd(a, V_DEMOTE)
+		wa_get(a, s)
+		wa_simd(a, V_DEMOTE)
+		wa_shuffle(a, lo)
 	case .Min32p:
 		wa_get(a, d)
 		wa_get(a, s)

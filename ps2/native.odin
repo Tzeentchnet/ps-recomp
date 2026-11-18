@@ -211,9 +211,11 @@ exec_op :: proc(pc, w, op: u32) {
 // the exponent, the sign, the largest finite value, the magnitude, zero,
 // then the lanes of each dest field, the ITOF4/12/15 and FTOI4/12/15
 // scales, the bits of the largest f32 below 2^31, and those of the
-// smallest normal f32.
+// smallest normal f32; then for the PS2 add and multiply, 23, the bits of
+// 1.0, and in f64 lanes the mask of the bits above the low 29, the
+// magnitude and the bits of 2^-126.
 @(private = "file")
-vu_k: [5 + 16 + 8][4]u32
+vu_k: [5 + 16 + 13][4]u32
 
 // The runtime procedures and variables native code imports, by name; with
 // types, each procedure's type too, for the signatures wasm32 calls with.
@@ -234,6 +236,11 @@ native_imports :: proc(types: ^map[string]typeid = nil) -> map[string]u64 {
 	}
 	vu_k[27] = {0x4effffff, 0x4effffff, 0x4effffff, 0x4effffff}
 	vu_k[28] = {0x00800000, 0x00800000, 0x00800000, 0x00800000}
+	vu_k[29] = {23, 23, 23, 23}
+	vu_k[30] = {0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000}
+	vu_k[31] = {0xe0000000, 0xffffffff, 0xe0000000, 0xffffffff}
+	vu_k[32] = {0xffffffff, 0x7fffffff, 0xffffffff, 0x7fffffff}
+	vu_k[33] = {0, 0x38100000, 0, 0x38100000}
 	m["mem.ram"] = p(mem.ram_base)
 	m["ps2.no_pages"] = p(&no_pages)
 	m["mem.spr"] = p(&mem.spr)

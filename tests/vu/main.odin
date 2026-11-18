@@ -197,6 +197,49 @@ clamped :: proc() {
 	}
 }
 
+// The add and multiply family rounds as the PS2 does, not as IEEE: a
+// product is the exact one rounded toward zero, a sum drops the smaller
+// operand's bits below the larger one's last bit and then rounds toward
+// zero, and VMADD and VMSUB round the product first. Star Ocean 3's key
+// (VU0 micro code, MULi then ADDi per lane) is the first case: IEEE
+// rounding gives 4b1ed5e8 in z, and the game's decompression fails.
+@(private = "file")
+rounding :: proc() {
+	Case :: struct {
+		name:    string,
+		fn:      u32,
+		s, t, d: [4]u32,
+		acc:     [4]u32,
+	}
+	reply :: [4]u32{0xb063b75b, 0x8701ce82, 0x46fcc888, 0x793cc535}
+	imul :: [4]u32{0x42fecccd, 0x43d80d3e, 0x43a0da10, 0x43546e14}
+	iadd :: [4]u32{0x42546666, 0xc7f079b3, 0x43a02666, 0x42f23333}
+	key :: [4]u32{0x42546666, 0xc7f079b3, 0x4b1ed5e7, 0x7d1ca47b}
+	cases := [?]Case {
+		{"VMADD", 0x29, reply, imul, key, iadd},
+		{"VMSUB", 0x2d, reply ~ 0x80000000, imul, key, iadd},
+		// 1 - 2^-24 stays 1 (the addend is below 1's last bit); 1 - 2^-23
+		// is exact; 1 + 2^-23 - 1 cancels exactly; a same-sign sum rounds
+		// toward zero
+		{"VADD", 0x28, {0x3f800000, 0x3f800000, 0x3f800001, 0x3f800000}, {0xb3800000, 0xb4000000, 0xbf800000, 0x33ffffff}, {0x3f800000, 0x3f7ffffe, 0x34000000, 0x3f800000}, {}},
+		{"VSUB", 0x2c, {0x3f800000, 0x3f800000, 0x3f800001, 0x3f800000}, {0x33800000, 0x34000000, 0x3f800000, 0xb3ffffff}, {0x3f800000, 0x3f7ffffe, 0x34000000, 0x3f800000}, {}},
+		// below 2^-126 a zero of the product's sign; past the largest
+		// finite value the largest; toward zero where nearest would round up
+		{"VMUL", 0x2a, {0x00800000, 0x80800000, 0x7f7fffff, 0x3fffffff}, {0x3f000000, 0x3f7fffff, 0x3f800001, 0x3fffffff}, {0, 0x80000000, 0x7f7fffff, 0x407ffffe}, {}},
+		// operands of all magnitudes
+		{"VMUL", 0x2a, {0x2620a61a, 0xd27463d0, 0x9f7f4cca, 0xaefaba63}, {0x1f616737, 0x4ea38ac5, 0x22af2686, 0x2d992708}, {0x060d72c2, 0xe19c2007, 0x82aeabe9, 0x9d15ff9f}, {}},
+		{"VADD", 0x28, {0x2620a61a, 0xd27463d0, 0x9f7f4cca, 0xaefaba63}, {0x1f616737, 0x4ea38ac5, 0x22af2686, 0x2d992708}, {0x2620a99f, 0xd2731cbb, 0x22ad27ed, 0xaed470a1}, {}},
+		{"VMUL", 0x2a, {0x23dfb1b9, 0x369445ed, 0x27287913, 0x43146d59}, {0x1a8776be, 0x32fb695a, 0x26944422, 0xbf31b11d}, {0, 0x2a119d94, 0x0e4325ab, 0xc2ce0c95}, {}},
+		{"VADD", 0x28, {0x23dfb1b9, 0x369445ed, 0x27287913, 0x43146d59}, {0x1a8776be, 0x32fb695a, 0x26944422, 0xbf31b11d}, {0x23dfb1da, 0x36954156, 0x27729b24, 0x4313bba8}, {}},
+	}
+	v := &vu.vu0
+	for c in cases {
+		v.vf[1].u, v.vf[2].u, v.vf[3], v.acc.u = c.s, c.t, {}, c.acc
+		vu.vu_op(v, 0x4a000000 | 0xf << 21 | 2 << 16 | 1 << 11 | 3 << 6 | c.fn) // fd 3, fs 1, ft 2
+		if v.vf[3].u != c.d {fail("%s %08x %08x: vf3 = %08x, want %08x", c.name, c.s, c.t, v.vf[3].u, c.d)}
+	}
+}
+
 // DIV, RSQRT and the EFU clamp their operands as the add and multiply
 // family does, so exponent 255 is a large number the host never sees as
 // an infinity: no host NaN, whose sign differs between hosts (x64 sets
@@ -1451,6 +1494,7 @@ main :: proc() {
 	})
 	all_vi()
 	clamped()
+	rounding()
 	div_efu()
 	flags()
 	minmax()

@@ -174,6 +174,46 @@ vclamp :: #force_inline proc(x: f32) -> f32 {return cpu.fclamp(x)}
 @(private)
 vclamp4 :: #force_inline proc(r: [4]f32) -> [4]f32 {return {vclamp(r.x), vclamp(r.y), vclamp(r.z), vclamp(r.w)}}
 
+// The PS2 FPU's rounding (SO3-BOOT, PLAN.md): every result rounds toward
+// zero, and one below 2^-126 is a zero with its sign. The f64 value d is
+// exact (a product or sum of two f32s), so cutting its low 29 mantissa bits
+// is rounding it toward zero to 24 bits. A value past the f32 range comes out
+// infinite, which the write's clamp makes the largest value.
+@(private)
+rtz_f32 :: #force_inline proc "contextless" (d: f64) -> f32 {
+	b := transmute(u64)d
+	if (b >> 52) & 0x7ff < 1023 - 126 {return transmute(f32)(u32(b >> 32) & 0x80000000)}
+	return f32(transmute(f64)(b &~ ((u64(1) << 29) - 1)))
+}
+
+// a * b on the PS2: the exact product, rounded toward zero (rtz_f32).
+@(private)
+ps2_mul :: #force_inline proc "contextless" (a, b: f32) -> f32 {return rtz_f32(f64(a) * f64(b))}
+
+// a + b on the PS2: the operand with the smaller exponent loses the bits
+// below the other's last mantissa bit (all of them, keeping its sign, 24 or
+// more exponents down), then the exact sum rounds toward zero. A difference
+// is a + -b.
+@(private)
+ps2_add :: #force_inline proc "contextless" (a, b: f32) -> f32 {
+	ua, ub := transmute(u32)a, transmute(u32)b
+	big, small := ua, ub
+	if ub & 0x7fffffff > ua & 0x7fffffff {big, small = ub, ua}
+	d := (big >> 23 & 0xff) - (small >> 23 & 0xff)
+	if d >= 24 {small &= 0x80000000} else {small &~= (u32(1) << d) - 1}
+	return rtz_f32(f64(transmute(f32)big) + f64(transmute(f32)small))
+}
+
+// ps2_add and ps2_mul lane by lane.
+@(private)
+vadd :: #force_inline proc "contextless" (a, b: [4]f32) -> [4]f32 {
+	return {ps2_add(a.x, b.x), ps2_add(a.y, b.y), ps2_add(a.z, b.z), ps2_add(a.w, b.w)}
+}
+@(private)
+vmul :: #force_inline proc "contextless" (a, b: [4]f32) -> [4]f32 {
+	return {ps2_mul(a.x, b.x), ps2_mul(a.y, b.y), ps2_mul(a.z, b.z), ps2_mul(a.w, b.w)}
+}
+
 // VU0 macro instruction (COP2 with CO set).
 vu0_macro :: proc(w: u32) {
 	cpu.spin_dirty |= cpu.SPIN_SIDE // the spin skip's probe (ps2/spin.odin)
@@ -236,33 +276,33 @@ vu_op :: proc(v: ^Vu, w: u32, pc: u32 = VU_PC_MACRO) #no_bounds_check {
 
 	if fn < 0x3c {
 		switch fn {
-		case 0x00 ..= 0x03: put(v, fd, dest, cs + splat(ct[bc]))
-		case 0x04 ..= 0x07: put(v, fd, dest, cs - splat(ct[bc]))
-		case 0x08 ..= 0x0b: put(v, fd, dest, v.acc.f + cs * splat(ct[bc]))
-		case 0x0c ..= 0x0f: put(v, fd, dest, v.acc.f - cs * splat(ct[bc]))
+		case 0x00 ..= 0x03: put(v, fd, dest, vadd(cs, splat(ct[bc])))
+		case 0x04 ..= 0x07: put(v, fd, dest, vadd(cs, -splat(ct[bc])))
+		case 0x08 ..= 0x0b: put(v, fd, dest, vadd(v.acc.f, vmul(cs, splat(ct[bc]))))
+		case 0x0c ..= 0x0f: put(v, fd, dest, vadd(v.acc.f, -vmul(cs, splat(ct[bc]))))
 		case 0x10 ..= 0x13: put_bits(v, fd, dest, vmax(su, splat(tu[bc])))
 		case 0x14 ..= 0x17: put_bits(v, fd, dest, vmin(su, splat(tu[bc])))
-		case 0x18 ..= 0x1b: put(v, fd, dest, cs * splat(ct[bc]))
-		case 0x1c: put(v, fd, dest, cs * splat(cq))
+		case 0x18 ..= 0x1b: put(v, fd, dest, vmul(cs, splat(ct[bc])))
+		case 0x1c: put(v, fd, dest, vmul(cs, splat(cq)))
 		case 0x1d: put_bits(v, fd, dest, vmax(su, splat(iu)))
-		case 0x1e: put(v, fd, dest, cs * splat(ci))
+		case 0x1e: put(v, fd, dest, vmul(cs, splat(ci)))
 		case 0x1f: put_bits(v, fd, dest, vmin(su, splat(iu)))
-		case 0x20: put(v, fd, dest, cs + splat(cq))
-		case 0x21: put(v, fd, dest, v.acc.f + cs * splat(cq))
-		case 0x22: put(v, fd, dest, cs + splat(ci))
-		case 0x23: put(v, fd, dest, v.acc.f + cs * splat(ci))
-		case 0x24: put(v, fd, dest, cs - splat(cq))
-		case 0x25: put(v, fd, dest, v.acc.f - cs * splat(cq))
-		case 0x26: put(v, fd, dest, cs - splat(ci))
-		case 0x27: put(v, fd, dest, v.acc.f - cs * splat(ci))
-		case 0x28: put(v, fd, dest, cs + ct)
-		case 0x29: put(v, fd, dest, v.acc.f + cs * ct)
-		case 0x2a: put(v, fd, dest, cs * ct)
+		case 0x20: put(v, fd, dest, vadd(cs, splat(cq)))
+		case 0x21: put(v, fd, dest, vadd(v.acc.f, vmul(cs, splat(cq))))
+		case 0x22: put(v, fd, dest, vadd(cs, splat(ci)))
+		case 0x23: put(v, fd, dest, vadd(v.acc.f, vmul(cs, splat(ci))))
+		case 0x24: put(v, fd, dest, vadd(cs, -splat(cq)))
+		case 0x25: put(v, fd, dest, vadd(v.acc.f, -vmul(cs, splat(cq))))
+		case 0x26: put(v, fd, dest, vadd(cs, -splat(ci)))
+		case 0x27: put(v, fd, dest, vadd(v.acc.f, -vmul(cs, splat(ci))))
+		case 0x28: put(v, fd, dest, vadd(cs, ct))
+		case 0x29: put(v, fd, dest, vadd(v.acc.f, vmul(cs, ct)))
+		case 0x2a: put(v, fd, dest, vmul(cs, ct))
 		case 0x2b: put_bits(v, fd, dest, vmax(su, tu))
-		case 0x2c: put(v, fd, dest, cs - ct)
-		case 0x2d: put(v, fd, dest, v.acc.f - cs * ct)
+		case 0x2c: put(v, fd, dest, vadd(cs, -ct))
+		case 0x2d: put(v, fd, dest, vadd(v.acc.f, -vmul(cs, ct)))
 		case 0x2e: // VOPMSUB: fd.xyz = acc - fs.yzx * ft.zxy
-			r := v.acc.f - [4]f32{cs.y * ct.z, cs.z * ct.x, cs.x * ct.y, 0}
+			r := vadd(v.acc.f, -vmul({cs.y, cs.z, cs.x, 0}, {ct.z, ct.x, ct.y, 0}))
 			put(v, fd, 0xe, r)
 		case 0x2f: put_bits(v, fd, dest, vmin(su, tu))
 		case 0x30: if fd != 0 {v.vi[fd & 15] = v.vi[fs & 15] + v.vi[ft & 15]}
@@ -285,10 +325,10 @@ vu_op :: proc(v: ^Vu, w: u32, pc: u32 = VU_PC_MACRO) #no_bounds_check {
 	is := fs & 15
 	it := ft & 15
 	switch ((w >> 4) & 0x7c) | (w & 3) {
-	case 0x00 ..= 0x03: put_acc(v, dest, cs + splat(ct[bc]))
-	case 0x04 ..= 0x07: put_acc(v, dest, cs - splat(ct[bc]))
-	case 0x08 ..= 0x0b: put_acc(v, dest, v.acc.f + cs * splat(ct[bc]))
-	case 0x0c ..= 0x0f: put_acc(v, dest, v.acc.f - cs * splat(ct[bc]))
+	case 0x00 ..= 0x03: put_acc(v, dest, vadd(cs, splat(ct[bc])))
+	case 0x04 ..= 0x07: put_acc(v, dest, vadd(cs, -splat(ct[bc])))
+	case 0x08 ..= 0x0b: put_acc(v, dest, vadd(v.acc.f, vmul(cs, splat(ct[bc]))))
+	case 0x0c ..= 0x0f: put_acc(v, dest, vadd(v.acc.f, -vmul(cs, splat(ct[bc]))))
 	case 0x10 ..= 0x13: // ITOF0/4/12/15
 		@(static, rodata) itof_scale := [4]f32{1, 1.0 / 16, 1.0 / 4096, 1.0 / 32768}
 		scale := itof_scale[w & 3]
@@ -303,10 +343,10 @@ vu_op :: proc(v: ^Vu, w: u32, pc: u32 = VU_PC_MACRO) #no_bounds_check {
 				if dest & (8 >> u32(k)) != 0 {v.vf[ft].i[k] = cpu.cvt_w(s[k] * scale)}
 			}
 		}
-	case 0x18 ..= 0x1b: put_acc(v, dest, cs * splat(ct[bc]))
-	case 0x1c: put_acc(v, dest, cs * splat(cq))
+	case 0x18 ..= 0x1b: put_acc(v, dest, vmul(cs, splat(ct[bc])))
+	case 0x1c: put_acc(v, dest, vmul(cs, splat(cq)))
 	case 0x1d: put_raw(v, ft, dest, {abs(s.x), abs(s.y), abs(s.z), abs(s.w)})
-	case 0x1e: put_acc(v, dest, cs * splat(ci))
+	case 0x1e: put_acc(v, dest, vmul(cs, splat(ci)))
 	case 0x1f: // VCLIP
 		lim := abs(t.w)
 		f: u32 = 0
@@ -315,20 +355,20 @@ vu_op :: proc(v: ^Vu, w: u32, pc: u32 = VU_PC_MACRO) #no_bounds_check {
 			if s[k] < -lim {f |= 2 << (2 * u32(k))}
 		}
 		v.clip = ((v.clip << 6) | f) & 0xffffff
-	case 0x20: put_acc(v, dest, cs + splat(cq))
-	case 0x21: put_acc(v, dest, v.acc.f + cs * splat(cq))
-	case 0x22: put_acc(v, dest, cs + splat(ci))
-	case 0x23: put_acc(v, dest, v.acc.f + cs * splat(ci))
-	case 0x24: put_acc(v, dest, cs - splat(cq))
-	case 0x25: put_acc(v, dest, v.acc.f - cs * splat(cq))
-	case 0x26: put_acc(v, dest, cs - splat(ci))
-	case 0x27: put_acc(v, dest, v.acc.f - cs * splat(ci))
-	case 0x28: put_acc(v, dest, cs + ct)
-	case 0x29: put_acc(v, dest, v.acc.f + cs * ct)
-	case 0x2a: put_acc(v, dest, cs * ct)
-	case 0x2c: put_acc(v, dest, cs - ct)
-	case 0x2d: put_acc(v, dest, v.acc.f - cs * ct)
-	case 0x2e: put_acc(v, 0xe, {cs.y * ct.z, cs.z * ct.x, cs.x * ct.y, 0}) // VOPMULA
+	case 0x20: put_acc(v, dest, vadd(cs, splat(cq)))
+	case 0x21: put_acc(v, dest, vadd(v.acc.f, vmul(cs, splat(cq))))
+	case 0x22: put_acc(v, dest, vadd(cs, splat(ci)))
+	case 0x23: put_acc(v, dest, vadd(v.acc.f, vmul(cs, splat(ci))))
+	case 0x24: put_acc(v, dest, vadd(cs, -splat(cq)))
+	case 0x25: put_acc(v, dest, vadd(v.acc.f, -vmul(cs, splat(cq))))
+	case 0x26: put_acc(v, dest, vadd(cs, -splat(ci)))
+	case 0x27: put_acc(v, dest, vadd(v.acc.f, -vmul(cs, splat(ci))))
+	case 0x28: put_acc(v, dest, vadd(cs, ct))
+	case 0x29: put_acc(v, dest, vadd(v.acc.f, vmul(cs, ct)))
+	case 0x2a: put_acc(v, dest, vmul(cs, ct))
+	case 0x2c: put_acc(v, dest, vadd(cs, -ct))
+	case 0x2d: put_acc(v, dest, vadd(v.acc.f, -vmul(cs, ct)))
+	case 0x2e: put_acc(v, 0xe, vmul({cs.y, cs.z, cs.x, 0}, {ct.z, ct.x, ct.y, 0})) // VOPMULA
 	case 0x2f: // VNOP
 	case 0x30: // VMOVE
 		if ft != 0 {

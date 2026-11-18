@@ -292,9 +292,19 @@ a64_vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 		.Abs32    = 0x4ea07800, // sqabs .4s
 		.Even32   = 0x4e801800, // uzp1 .4s
 		.Min32p   = 0x4ea06c00, // smin .4s
+		.Widen_Lo = 0x0e617800, // fcvtl .2d, .2s
+		.Widen_Hi = 0x4e617800, // fcvtl2 .2d, .4s
+		.Narrow   = 0x0e616800, // fcvtn .2s, .2d, then fcvtn2 .4s, .2d
+		.Fmul64   = 0x6e60dc00, // fmul .2d
+		.Lt64f    = 0x6ee0e400, // fcmgt .2d, of src and dst
 	}
 	ops := OPS
-	if op == .Itof || op == .Ftoi || op == .Abs16 || op == .Abs32 {
+	if op == .Narrow {
+		rrr(a, ops[op], u32(dst), u32(dst), 0)
+		rrr(a, 0x4e616800, u32(dst), u32(src), 0) // fcvtn2
+		return
+	}
+	if op == .Itof || op == .Ftoi || op == .Abs16 || op == .Abs32 || op == .Widen_Lo || op == .Widen_Hi {
 		rrr(a, ops[op], u32(dst), u32(src), 0)
 		return
 	}
@@ -310,7 +320,7 @@ a64_vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 		rrr(a, ops[op], u32(dst), v2, v3)
 		return
 	}
-	if op == .Andn {
+	if op == .Andn || op == .Lt64f {
 		rrr(a, ops[op], u32(dst), u32(src), u32(dst))
 		return
 	}

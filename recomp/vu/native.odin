@@ -96,6 +96,8 @@ VU_EXP, VU_SIGN, VU_MAX, VU_ABS, VU_ZERO, VU_DEST :: 0, 16, 32, 48, 64, 80
 VU_ITOF, VU_FTOI, VU_BIG :: 336, 384, 432 // ITOF and FTOI rows for bc 1-3
 @(private = "file")
 VU_NORM :: 448
+@(private = "file")
+VU_23, VU_ONE, VU_MASK29, VU_ABS64, VU_TINY64 :: 464, 480, 496, 512, 528
 
 // The offsets of vi and the other registers from vf in vu.Vu, which
 // ps2/native.odin asserts: they are reached through import vf, which a
@@ -756,7 +758,7 @@ op :: proc(a: ^native.Asm, u: Unit, w: u32, flags: Flags, known: ^[32]u8 = nil, 
 		native.vec_shuf32(a, .V1, .V2, {2, 0, 1, 3})
 		if !sure(known, fs, 0xe) {clamp(a, .V0, .V2, .V3, .V4)}
 		if !sure(known, ft, 0xe) {clamp(a, .V1, .V2, .V3, .V4)}
-		native.vec_op(a, .Fmul, .V0, .V1)
+		ps2_mul(a)
 	case .Add, .Sub, .Mul, .Madd, .Msub:
 		native.vec_load(a, .V0, 16 * fs, vf)
 		switch src {
@@ -775,16 +777,24 @@ op :: proc(a: ^native.Asm, u: Unit, w: u32, flags: Flags, known: ^[32]u8 = nil, 
 		if !sure(known, fs, dest) {clamp(a, .V0, .V2, .V3, .V4)}
 		if src > .Bc || !sure(known, ft, dest if src == .Vec else 8 >> bc) {clamp(a, .V1, .V2, .V3, .V4)}
 		#partial switch kind {
-		case .Add: native.vec_op(a, .Fadd, .V0, .V1)
-		case .Sub: native.vec_op(a, .Fsub, .V0, .V1)
-		case: native.vec_op(a, .Fmul, .V0, .V1)
+		case .Add:
+			ps2_add(a)
+		case .Sub:
+			native.vec_load(a, .V2, VU_SIGN, K)
+			native.vec_op(a, .Xor, .V1, .V2)
+			ps2_add(a)
+		case:
+			ps2_mul(a)
 		}
 	}
 	if kind == .Madd || kind == .Msub || kind == .Opmsub {
 		// acc + or - the product, rounded on its own first
+		if kind != .Madd {
+			native.vec_load(a, .V1, VU_SIGN, K)
+			native.vec_op(a, .Xor, .V0, .V1)
+		}
 		native.vec_load(a, .V1, VU_ACC, vf)
-		native.vec_op(a, .Fadd if kind == .Madd else .Fsub, .V1, .V0)
-		native.vec_copy(a, .V0, .V1)
+		ps2_add(a)
 	}
 	clamp(a, .V0, .V1, .V2, .V3)
 	if flags != .None {
@@ -831,6 +841,104 @@ op :: proc(a: ^native.Asm, u: Unit, w: u32, flags: Flags, known: ^[32]u8 = nil, 
 	native.alu(a, .Or, .A, .B)
 	native.imp_store(a, IMPORTS[u][.Vf], .A, VU_STATUS)
 	return true
+}
+
+// V0 = V0 * V1 as the PS2 multiplies, as ps2/vu ps2_mul: the exact
+// product, in f64 lanes, with its low 29 bits cleared, so rounded toward
+// zero to 24 bits; below 2^-126 a zero of its sign; past the largest
+// finite value infinite, which the caller's clamp makes the largest.
+// Operands not infinite, NaN or denormal. Uses V0-V4.
+@(private = "file")
+ps2_mul :: proc(a: ^native.Asm) {
+	native.vec_op(a, .Widen_Lo, .V2, .V0)
+	native.vec_op(a, .Widen_Lo, .V3, .V1)
+	native.vec_op(a, .Fmul64, .V2, .V3)
+	native.vec_op(a, .Widen_Hi, .V3, .V0)
+	native.vec_op(a, .Widen_Hi, .V4, .V1)
+	native.vec_op(a, .Fmul64, .V3, .V4)
+	native.vec_load(a, .V4, VU_MASK29, K)
+	native.vec_op(a, .And, .V2, .V4)
+	native.vec_op(a, .And, .V3, .V4)
+	// p &~ (|p| < 2^-126, without the sign), lanes 0-1 into V0, 2-3 into V1
+	native.vec_load(a, .V4, VU_ABS64, K)
+	native.vec_copy(a, .V0, .V2)
+	native.vec_op(a, .And, .V0, .V4)
+	native.vec_load(a, .V1, VU_TINY64, K)
+	native.vec_op(a, .Lt64f, .V0, .V1)
+	native.vec_op(a, .And, .V0, .V4)
+	native.vec_op(a, .Andn, .V0, .V2)
+	native.vec_copy(a, .V1, .V3)
+	native.vec_op(a, .And, .V1, .V4)
+	native.vec_load(a, .V2, VU_TINY64, K)
+	native.vec_op(a, .Lt64f, .V1, .V2)
+	native.vec_op(a, .And, .V1, .V4)
+	native.vec_op(a, .Andn, .V1, .V3)
+	native.vec_op(a, .Narrow, .V0, .V1)
+}
+
+// V0 = V0 + V1 as the PS2 adds, as ps2/vu ps2_add: the smaller operand
+// (by magnitude) cut to the larger's last mantissa bit, then the sum
+// rounded toward zero. In f32 lanes: the cut sum rounded to nearest, r,
+// and its exact error, e (Fast2Sum, as |big| >= |small|); where e is not
+// zero and its sign is not r's, r is one past the sum away from zero, and
+// its bits less one are the sum rounded toward zero. Past the largest
+// finite value r is infinite or the largest, which the caller's clamp
+// makes the largest; below 2^-126 the sum is exact, so denormal, which the
+// clamp makes zero. Operands not infinite, NaN or denormal, except that an
+// infinite V0 (a product) gives an infinite or the largest. Uses V0-V4.
+@(private = "file")
+ps2_add :: proc(a: ^native.Asm) {
+	// big in V0, small in V1: swapped where |V1| > |V0|
+	native.vec_load(a, .V2, VU_ABS, K)
+	native.vec_copy(a, .V3, .V0)
+	native.vec_op(a, .And, .V3, .V2)
+	native.vec_op(a, .And, .V2, .V1)
+	native.vec_copy(a, .V4, .V2)
+	native.vec_op(a, .Gt32, .V4, .V3)
+	native.vec_copy(a, .V3, .V0)
+	native.vec_op(a, .Xor, .V3, .V1)
+	native.vec_op(a, .And, .V3, .V4)
+	native.vec_op(a, .Xor, .V0, .V3)
+	native.vec_op(a, .Xor, .V1, .V3)
+	// d = the exponent fields' difference; small &= -(1 << d), or to its
+	// sign where d > 23. 1 << d is the i32 of the f32 with exponent d.
+	native.vec_copy(a, .V2, .V0)
+	native.vec_shift32(a, .Shl, .V2, 1)
+	native.vec_shift32(a, .Shr, .V2, 24)
+	native.vec_copy(a, .V3, .V1)
+	native.vec_shift32(a, .Shl, .V3, 1)
+	native.vec_shift32(a, .Shr, .V3, 24)
+	native.vec_op(a, .Sub32, .V2, .V3)
+	native.vec_load(a, .V3, VU_23, K)
+	native.vec_copy(a, .V4, .V2)
+	native.vec_op(a, .Gt32, .V4, .V3)
+	native.vec_shift32(a, .Shl, .V2, 23)
+	native.vec_load(a, .V3, VU_ONE, K)
+	native.vec_op(a, .Add32, .V2, .V3)
+	native.vec_op(a, .Ftoi, .V3, .V2)
+	native.vec_load(a, .V2, VU_ZERO, K)
+	native.vec_op(a, .Sub32, .V2, .V3)
+	native.vec_op(a, .And, .V1, .V2)
+	native.vec_load(a, .V2, VU_ABS, K)
+	native.vec_op(a, .And, .V4, .V2)
+	native.vec_op(a, .Andn, .V4, .V1)
+	// r = big + small in V1, e = small - (r - big) in V4
+	native.vec_copy(a, .V1, .V0)
+	native.vec_op(a, .Fadd, .V1, .V4)
+	native.vec_copy(a, .V2, .V1)
+	native.vec_op(a, .Fsub, .V2, .V0)
+	native.vec_op(a, .Fsub, .V4, .V2)
+	// r - 1 where e's sign is not r's and e is not zero
+	native.vec_copy(a, .V2, .V4)
+	native.vec_op(a, .Xor, .V2, .V1)
+	native.vec_shift32(a, .Sar, .V2, 31)
+	native.vec_load(a, .V3, VU_ABS, K)
+	native.vec_op(a, .And, .V3, .V4)
+	native.vec_load(a, .V0, VU_ZERO, K)
+	native.vec_op(a, .Eq32, .V3, .V0)
+	native.vec_op(a, .Andn, .V3, .V2)
+	native.vec_op(a, .Add32, .V1, .V3)
+	native.vec_copy(a, .V0, .V1)
 }
 
 // ---------------------------------------------------------------- micro mode

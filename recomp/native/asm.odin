@@ -164,6 +164,15 @@ Vop :: enum u8 {
 	// NaN as f32: x64's minps then orders the words as smin does, and a NaN
 	// dst lane gives src's
 	Min32p,
+	// dst = the f32 lanes 0-1 (Widen_Lo) or 2-3 (Widen_Hi) of src as two
+	// f64 lanes, exact
+	Widen_Lo,
+	Widen_Hi,
+	// dst = f32 lanes of dst's two f64 lanes, then src's, rounded to
+	// nearest; dst is not src, and src is lost on x64
+	Narrow,
+	Fmul64, // f64 lanes, rounded to nearest
+	Lt64f, // all ones in each 64-bit lane where dst < src as f64
 }
 
 Label :: distinct i32
@@ -750,6 +759,7 @@ vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 	USES_SCRATCH :: bit_set[Vop]{.Addu32, .Madd16, .Subu32, .Adds32, .Subs32, .Max32, .Min32, .Abs32}
 	assert(op not_in USES_SCRATCH || (dst not_in SCRATCH && src not_in SCRATCH), "native: vector op of V2 or V3")
 	assert(op != .Abs16 || dst != src, "native: Abs16 in place")
+	assert(op != .Narrow || dst != src, "native: Narrow in place")
 	switch a.arch {
 	case .X64_SysV, .X64_Win:
 		x64_vec_op(a, op, dst, src)

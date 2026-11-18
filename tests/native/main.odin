@@ -479,6 +479,20 @@ vec_ref :: proc(op: native.Vop, d, s: [4]u32) -> [4]u32 {
 	case .Min32p:
 		for k in 0 ..< 4 {r4[k] = u32(min(i32(d[k]), i32(s[k])))}
 		return r4
+	case .Widen_Lo, .Widen_Hi:
+		sf := transmute([4]f32)s
+		h := 2 if op == .Widen_Hi else 0
+		return transmute([4]u32)[2]f64{f64(sf[h]), f64(sf[h + 1])}
+	case .Narrow:
+		dd, sd := transmute([2]f64)d, transmute([2]f64)s
+		return transmute([4]u32)[4]f32{f32(dd[0]), f32(dd[1]), f32(sd[0]), f32(sd[1])}
+	case .Fmul64:
+		return transmute([4]u32)((transmute([2]f64)d) * (transmute([2]f64)s))
+	case .Lt64f:
+		dd, sd := transmute([2]f64)d, transmute([2]f64)s
+		r2: [2]u64
+		for k in 0 ..< 2 {r2[k] = max(u64) if dd[k] < sd[k] else 0}
+		return transmute([4]u32)r2
 	}
 	return transmute([4]u32)r
 }

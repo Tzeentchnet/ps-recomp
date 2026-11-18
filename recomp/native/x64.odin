@@ -384,6 +384,11 @@ x64_vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 		.Abs32    = 0x0ffa, // psubd of the sign mask from src ^ it, then paddd of where that is negative
 		.Even32   = 0x0fc6, // shufps 0x88
 		.Min32p   = 0x0f5d, // minps
+		.Widen_Lo = 0x0f5a, // cvtps2pd
+		.Widen_Hi = 0x0f12, // movhlps, then cvtps2pd
+		.Narrow   = 0x0f5a, // cvtpd2ps of each, then movlhps
+		.Fmul64   = 0x0f59, // mulpd
+		.Lt64f    = 0x0fc2, // cmppd 1
 	}
 	ops := OPS
 	sse :: proc(a: ^Asm, op: u32, dst, src: Vreg, ps := false) {
@@ -481,6 +486,22 @@ x64_vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 		emit8(a, 0x88)
 		return
 	}
+	if op == .Widen_Hi {
+		sse(a, ops[op], dst, src, ps = true)
+		sse(a, 0x0f5a, dst, dst, ps = true) // cvtps2pd
+		return
+	}
+	if op == .Narrow {
+		sse(a, ops[op], dst, dst)
+		sse(a, ops[op], src, src)
+		sse(a, 0x0f16, dst, src, ps = true) // movlhps
+		return
+	}
+	if op == .Lt64f {
+		sse(a, ops[op], dst, src)
+		emit8(a, 1)
+		return
+	}
 	if op == .Addu32 {
 		// Unsigned below as signed after flipping the sign bits.
 		sse(a, 0x0f6f, .V2, dst) // movdqa
@@ -494,7 +515,7 @@ x64_vec_op :: proc(a: ^Asm, op: Vop, dst, src: Vreg) {
 		return
 	}
 	if op == .Ftoi {emit8(a, 0xf3)}
-	sse(a, ops[op], dst, src, op == .Fadd || op == .Fsub || op == .Fmul || op == .Fdiv || op == .Itof || op == .Ftoi || op == .Min32p)
+	sse(a, ops[op], dst, src, op == .Fadd || op == .Fsub || op == .Fmul || op == .Fdiv || op == .Itof || op == .Ftoi || op == .Min32p || op == .Widen_Lo)
 	if op == .Nor {
 		sse(a, 0x0f76, .V2, .V2) // pcmpeqd: all ones
 		sse(a, 0x0fef, dst, .V2) // pxor
