@@ -12,6 +12,13 @@
 # does not depend on the checkout path: two checkouts give the same bytes.
 # play exports its function table, growable, for web/native.js to put a
 # wasm32 native blob's functions in.
+# play's memory is shared and imported (-target-features atomics and
+# bulk-memory, --shared-memory --import-memory), so the software GS's band
+# workers (PS_BANDS) run on Workers with instances of their own on the
+# same memory (web/band.js); it exports the memory still, and the symbols a
+# Worker's instance sets up its stack and TLS with. Its maximum is 4 GiB,
+# wasm32's whole range: a shared memory is reserved up front only in
+# address space, not in pages.
 # Both are built with -target-features:simd128. play's #simd code (the
 # software GS's sampling, blending and attribute math) runs as wasm SIMD
 # instead of being split into scalar lanes: sp and gh with a native blob
@@ -40,19 +47,20 @@ fi
 for p in recomp play; do
 	# play exports its function table for native blobs (web/native.js);
 	# odin refuses an empty -extra-linker-flags, so recomp passes none.
-	set --
-	[ "$p" = play ] && set -- -extra-linker-flags:"--export-table --growable-table"
+	set -- -target-features:simd128
+	[ "$p" = play ] && set -- -target-features:simd128,atomics,bulk-memory \
+		-extra-linker-flags:"--export-table --growable-table --shared-memory --import-memory --export-memory --max-memory=4294967296 --export=__wasm_init_tls --export=__tls_size --export=__tls_align --export=__stack_pointer"
 	odin build "$root/$p" -target:wasi_wasm32 -collection:ps="$root" -o:speed \
-		-source-code-locations:filename -define:COMMIT="$define" -target-features:simd128 "$@" -out:"$out/$p.wasm"
+		-source-code-locations:filename -define:COMMIT="$define" "$@" -out:"$out/$p.wasm"
 	if command -v wasm-opt >/dev/null; then
 		wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
-			--enable-mutable-globals --enable-simd "$out/$p.wasm" -o "$out/$p.wasm"
+			--enable-mutable-globals --enable-simd --enable-threads "$out/$p.wasm" -o "$out/$p.wasm"
 	else
 		echo "build.sh: no wasm-opt, $p.wasm left unoptimized" >&2
 	fi
 done
 for f in index.html page.css page.js worker.js readers.js wasi.js \
-	play.html play.js play-worker.js learn.js native.js sdl.js net.js keys.js layout.js present.js audio.js sw.js; do
+	play.html play.js play-worker.js band.js band-worker.js learn.js native.js sdl.js net.js keys.js layout.js present.js audio.js sw.js; do
 	cp "$root/web/$f" "$out/$f"
 done
 printf '%s\n' "$commit" > "$out/commit.txt"

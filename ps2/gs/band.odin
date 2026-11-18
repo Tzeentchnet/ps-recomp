@@ -28,13 +28,15 @@
 // @(thread_local) (package-level thread locals are not thread-local on
 // wasm). Their asserts (tc_victim, tc_alloc) go through the runtime's
 // default assertion_failure_proc, which prints without allocating and
-// traps; the thread's context comes from core:thread.
+// traps. A worker's thread is a core:thread thread, and on wasm a Worker
+// of the host's pool running this module on the shared memory
+// (band_wasm.odin).
 package ps2_gs
 
 import "base:intrinsics"
 import "core:math/bits"
+import "core:fmt"
 import "core:sync"
-import "core:thread"
 import "ps:core"
 
 BAND_MAX :: 16
@@ -73,7 +75,7 @@ Band_Worker :: struct {
 	clut_gen:          u64,
 	ctx_seq, clut_seq: u64, // the snapshots ctx and clut hold
 	id:                u32,
-	th:                ^thread.Thread,
+	th:                Band_Thread,
 	_:                 [64]u8,
 	done:              u64, // jobs finished (atomic, the worker's own line)
 	_:                 [56]u8,
@@ -163,7 +165,17 @@ band_set :: proc(want: int) {
 		band.w[i] = w
 	}
 	for i in 0 ..< n {
-		band.w[i].th = thread.create_and_start_with_poly_data(band.w[i], band_run)
+		if band_spawn(band.w[i]) {continue}
+		// No thread for this worker (on wasm: no pool, or fewer Workers
+		// than asked): the ones started stop, and the producer draws.
+		fmt.eprintfln("gs: BANDS=%d: worker %d has no thread, drawing on one", want, i)
+		band.n = u32(i)
+		band_stop()
+		for j in i ..< n {
+			free(band.w[j])
+			band.w[j] = nil
+		}
+		return
 	}
 	band_ctx_new()
 }
@@ -178,8 +190,7 @@ band_stop :: proc() {
 	sync.futex_broadcast(&band.wake)
 	if core.host_allocator.procedure != nil {context.allocator = core.host_allocator}
 	for i in 0 ..< band.n {
-		thread.join(band.w[i].th)
-		thread.destroy(band.w[i].th)
+		band_reap(band.w[i])
 		free(band.w[i])
 		band.w[i] = nil
 	}

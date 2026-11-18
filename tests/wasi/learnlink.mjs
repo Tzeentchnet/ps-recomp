@@ -7,12 +7,13 @@
 // delivered here, and the log goes straight to fd 2.
 import { writeSync } from "node:fs";
 import { workerData } from "node:worker_threads";
+import { NO_BAND } from "../../web/band.js";
 import { LEARN_ARGS, LEARN_OUT, learnDeliver, learnSeed, NO_LEARN, NO_SDL } from "../../web/learn.js";
 import { Native } from "../../web/native.js";
 import { NO_NET } from "../../web/net.js";
 import { Wasi } from "../../web/wasi.js";
 
-const { buffer, gen, module, records, interp } = workerData;
+const { buffer, gen, module, limits, records, interp } = workerData;
 const say = (text) => writeSync(2, text);
 let blob = null;
 try {
@@ -22,10 +23,13 @@ try {
 	const native = new Native({ log: say });
 	const instance = await WebAssembly.instantiate(module, {
 		...wasi.imports,
+		// A memory of its own, as play's (play.mjs passes its limits).
+		...(limits && { env: { memory: new WebAssembly.Memory(limits) } }),
 		"system:SDL2": NO_SDL,
 		"system:ps_native": native.imports,
 		"system:ps_net": NO_NET,
 		"system:ps_learn": NO_LEARN,
+		"system:ps_band": NO_BAND,
 	});
 	native.attach(instance);
 	const t1 = performance.now();

@@ -234,7 +234,8 @@ export class Wasi {
 		return new Uint8Array(this.memory.buffer, ptr, len);
 	}
 	str(ptr, len) {
-		return new TextDecoder().decode(this.bytes(ptr, len));
+		// A copy: TextDecoder takes no view of a shared memory.
+		return new TextDecoder().decode(this.bytes(ptr, len).slice());
 	}
 	iovs(ptr, n) {
 		const dv = this.dv(), r = [];
@@ -326,7 +327,7 @@ export class Wasi {
 			if (at !== undefined) return [ERR.SPIPE, 0];
 			let total = 0;
 			for (const v of iovs) {
-				this.log(fd, this.decoders[fd].decode(v, { stream: true }));
+				this.log(fd, this.decoders[fd].decode(v.slice(), { stream: true }));
 				total += v.length;
 			}
 			return [ERR.SUCCESS, total];
@@ -428,7 +429,11 @@ export class Wasi {
 				throw new Exit(code);
 			},
 			random_get: (ptr, len) => {
-				for (let o = 0; o < len; o += 65536) crypto.getRandomValues(this.bytes(ptr + o, Math.min(65536, len - o)));
+				// Through a copy: getRandomValues takes no view of a shared memory.
+				for (let o = 0; o < len; o += 65536) {
+					const n = Math.min(65536, len - o);
+					this.bytes(ptr + o, n).set(crypto.getRandomValues(new Uint8Array(n)));
+				}
 				return ERR.SUCCESS;
 			},
 			path_open: (fd, _dirflags, path, len, oflags, _base, _inheriting, fdflags, out) => {
@@ -578,4 +583,50 @@ export class Wasi {
 			fd_close: (fd) => (this.fds.delete(fd) ? ERR.SUCCESS : ERR.BADF),
 		};
 	}
+}
+
+// The limits of the memory the module imports (env.memory), for a new
+// WebAssembly.Memory, from its bytes; null when it imports none.
+export function memoryImport(bytes) {
+	const b = new Uint8Array(bytes);
+	let at = 8;
+	const uleb = () => {
+		let v = 0, shift = 0, c;
+		do {
+			c = b[at++];
+			v += (c & 0x7f) * 2 ** shift;
+			shift += 7;
+		} while (c & 0x80);
+		return v;
+	};
+	const name = () => {
+		const n = uleb();
+		at += n;
+		return new TextDecoder().decode(b.subarray(at - n, at));
+	};
+	while (at < b.length) {
+		const id = b[at++];
+		const size = uleb();
+		const end = at + size;
+		if (id === 2) {
+			for (let k = uleb(); k > 0; k--) {
+				const m = name(), field = name(), kind = b[at++];
+				if (kind === 0) uleb(); // function: type index
+				else if (kind === 1) { // table: type, limits
+					at++;
+					if (uleb() & 1) uleb();
+					uleb();
+				} else if (kind === 3) at += 2; // global: type, mutability
+				else if (kind === 2) {
+					const flags = uleb();
+					const initial = uleb();
+					const maximum = flags & 1 ? uleb() : undefined;
+					if (m === "env" && field === "memory") return { initial, maximum, shared: (flags & 2) !== 0 };
+				} else throw new Error(`import of kind ${kind}`);
+			}
+			return null;
+		}
+		at = end;
+	}
+	return null;
 }

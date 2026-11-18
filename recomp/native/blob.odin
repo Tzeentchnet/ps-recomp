@@ -31,7 +31,9 @@ import "core:slice"
 // on wasm32, the functions that may switch threads (recomp/r3000
 // thread_switches).
 BLOB_MAGIC :: 0x4e525350 // "PSRN"
-BLOB_VERSION :: 4
+// core.NATIVE_VERSION, which reads it. 5: a wasm32 blob imports a shared
+// memory (wasm.odin).
+BLOB_VERSION :: 5
 
 // core/native.odin's Native_Kind.
 Span_Kind :: enum u32 {

@@ -1,7 +1,9 @@
 // WebAssembly encoding of the operations in asm.odin: finish returns one
 // module rather than machine code.
 //
-// The module imports env.memory (the runtime's linear memory), env.table
+// The module imports env.memory (the runtime's linear memory, shared, as
+// play.wasm's is for its band Workers: ps2/gs/band_wasm.odin; any maximum
+// up to 4 GiB matches the import), env.table
 // (its function table), one immutable i32 global env.s<k> per import slot k
 // (the slot's address or value; for a procedure, its index in the table)
 // and env.base, the table index the module's functions start at: the
@@ -1879,7 +1881,8 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 	wa_uleb(&sec, u64(3 + len(a.imports)))
 	wa_name(&sec, "env")
 	wa_name(&sec, "memory")
-	append(&sec, 0x02, 0x00, 0x00)
+	// Shared, minimum 0 pages, maximum 65536 (uleb 80 80 04).
+	append(&sec, 0x02, 0x03, 0x00, 0x80, 0x80, 0x04)
 	wa_name(&sec, "env")
 	wa_name(&sec, "table")
 	append(&sec, 0x01, 0x70, 0x00, 0x00)

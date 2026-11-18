@@ -41,7 +41,7 @@ odin run tests/psx_cover -collection:ps=.
 odin run tests/psx_timer -collection:ps=.
 odin run tests/psx_access_cycles -collection:ps=.
 odin run tests/psx_access_cycles -collection:ps=. -define:PS_FLAT=true
-odin build tests/psx_access_cycles -collection:ps=. -target:wasi_wasm32 -extra-linker-flags:"--export-table --growable-table" -out:psx_access_cycles.wasm
+odin build tests/psx_access_cycles -collection:ps=. -target:wasi_wasm32 -target-features:atomics,bulk-memory -extra-linker-flags:"--export-table --growable-table --shared-memory --import-memory --export-memory --max-memory=4294967296" -out:psx_access_cycles.wasm
 node tests/psx_access_cycles/run.mjs psx_access_cycles.wasm
 odin run tests/psx_gpu_upload -collection:ps=.
 odin run tests/ps2_kernel -collection:ps=.
@@ -83,7 +83,7 @@ odin run tests/psx_mod_native -collection:ps=.
 odin run tests/psx_mod_native -collection:ps=. -define:PS_FLAT=true
 odin run tests/ps2_mod -collection:ps=.
 odin run tests/ps2_mod -collection:ps=. -define:PS_FLAT=true
-odin build tests/ps2_mod -collection:ps=. -target:wasi_wasm32 -extra-linker-flags:"--export-table --growable-table" -out:ps2_mod.wasm
+odin build tests/ps2_mod -collection:ps=. -target:wasi_wasm32 -target-features:atomics,bulk-memory -extra-linker-flags:"--export-table --growable-table --shared-memory --import-memory --export-memory --max-memory=4294967296" -out:ps2_mod.wasm
 node tests/ps2_mod/run.mjs ps2_mod.wasm
 odin run tests/ps2_mod_elf -collection:ps=.
 odin run tests/ps2_mod_elf -collection:ps=. -- interp
@@ -553,6 +553,13 @@ cmp out-wasm/hashes.tsv out-native/hashes.tsv
 
 Both runs start from an empty data directory. A `PS_*` variable set for
 play.mjs is passed on to the module.
+
+play.wasm imports its memory, shared (web/build.sh), and a test built for
+wasi_wasm32 that a run.mjs runs takes the same flags, as a wasm32 native
+blob imports a shared memory (recomp/native/wasm.odin). With `PS_BANDS=n`
+above 1 the software GS's band workers run on a pool of n worker_threads
+(`tests/wasi/bandlink.mjs`), as the page's run on Workers (web/band.js);
+the hashes are the same at every n.
 
 A wasm PS1 run that records its code and runs learned code compiles its
 new records mid-run (play/midload_learned.odin): once they have stopped

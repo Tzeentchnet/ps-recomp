@@ -5,7 +5,8 @@
 //   odin run tests/wasm_asm -collection:ps=. -- <dir> [cases]
 //   node tests/wasm_asm/run.mjs <dir>
 //
-// Each module gets a fresh memory and table: the state at STATE, the host
+// Each module gets a fresh memory (shared, as a blob imports it:
+// recomp/native/wasm.odin) and table: the state at STATE, the host
 // procedure "t.host" at table slot 1 (through a small module, as a table
 // holds only wasm functions), the generated functions from slot BASE. The
 // first is called with pc 0 and context CTX, which the host checks it is
@@ -64,7 +65,7 @@ for (const line of readFileSync(`${dir}/cases.txt`, "utf8").trimEnd().split("\n"
 		failed++;
 		continue;
 	}
-	const memory = new WebAssembly.Memory({ initial: 1 });
+	const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
 	const table = new WebAssembly.Table({ initial: 64, element: "anyfunc" });
 	table.set(1, new WebAssembly.Instance(wrapperModule, { env: { f: host } }).exports.f);
 	const env = { memory, table, base: new WebAssembly.Global({ value: "i32" }, BASE) };
@@ -104,7 +105,7 @@ for (const line of memCases) {
 		failed++;
 		continue;
 	}
-	const memory = new WebAssembly.Memory({ initial: 1 });
+	const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
 	const m = new Uint8Array(memory.buffer);
 	for (let i = 0; i < M.hi - M.lo; i++) m[M.lo + i] = ((i * 131 + 7) >> 1) & 0xff;
 	m.fill(0, M.log, M.log + 4 + 12 * LOG_MAX);

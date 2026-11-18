@@ -6,14 +6,17 @@
 // newer, no npm packages.
 //
 //   odin build tests/psx_access_cycles -collection:ps=. -target:wasi_wasm32 \
-//       -extra-linker-flags:"--export-table --growable-table" -out:psx_access_cycles.wasm
+//       -target-features:atomics,bulk-memory -extra-linker-flags:"--export-table \
+//       --growable-table --shared-memory --import-memory --export-memory \
+//       --max-memory=4294967296" -out:psx_access_cycles.wasm
 //   node tests/psx_access_cycles/run.mjs psx_access_cycles.wasm
 import { readFileSync } from "node:fs";
 import { argv, exit, stderr, stdout } from "node:process";
 import { AUDIO, CONTROL, PRESENT } from "../../web/layout.js";
+import { NO_BAND } from "../../web/band.js";
 import { Native } from "../../web/native.js";
 import { Sdl } from "../../web/sdl.js";
-import { Wasi } from "../../web/wasi.js";
+import { memoryImport, Wasi } from "../../web/wasi.js";
 
 if (argv.length !== 3) {
 	console.error("usage: node tests/psx_access_cycles/run.mjs <psx_access_cycles.wasm>");
@@ -28,11 +31,17 @@ const sdl = new Sdl({
 	post: (m) => m.log !== undefined && stderr.write(m.log),
 });
 const native = new Native({ log: (text) => stderr.write(text) });
-const module = await WebAssembly.compile(readFileSync(argv[2]));
+const bytes = readFileSync(argv[2]);
+const module = await WebAssembly.compile(bytes);
+// Its memory imported and shared, as play.wasm's (web/build.sh): a native
+// blob imports a shared one (recomp/native/wasm.odin).
+const limits = memoryImport(bytes);
 const instance = await WebAssembly.instantiate(module, {
 	...wasi.imports,
+	...(limits && { env: { memory: new WebAssembly.Memory(limits) } }),
 	"system:SDL2": sdl.imports,
 	"system:ps_native": native.imports,
+	"system:ps_band": NO_BAND,
 });
 sdl.attach(instance);
 native.attach(instance);

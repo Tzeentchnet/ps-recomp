@@ -33,16 +33,21 @@
 // A mid-run learned compile (play/midload_learned.odin) runs on a
 // worker_thread (learnlink.mjs), as the play page runs it in a Worker of
 // its own (web/learn.js).
+//
+// With PS_BANDS=n above 1, the software GS's n band workers each run on a
+// worker_thread of a pool (bandlink.mjs), as the play page's run on
+// Workers (web/band.js).
 import { mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { argv, env, exit, stderr, stdout } from "node:process";
 import { Worker } from "node:worker_threads";
 import { LearnImports } from "../../web/learn.js";
 import { AUDIO, CONTROL, NET, PRESENT } from "../../web/layout.js";
+import { Bands, NO_BAND } from "../../web/band.js";
 import { Native } from "../../web/native.js";
 import { buildId, NetImports, NO_NET } from "../../web/net.js";
 import { Sdl } from "../../web/sdl.js";
-import { Wasi } from "../../web/wasi.js";
+import { memoryImport, Wasi } from "../../web/wasi.js";
 
 const args = argv.slice(2);
 if (args.length !== 3 && args.length !== 4) {
@@ -123,6 +128,20 @@ sdl.present = () => {
 
 const bytes = readFileSync(wasm);
 const module = await WebAssembly.compile(bytes);
+// play.wasm imports its memory, shared with the band workers.
+const limits = memoryImport(bytes);
+const memory = limits && new WebAssembly.Memory(limits);
+const nBands = Number(settings.PS_BANDS ?? 1);
+const bands = memory && nBands > 1
+	? await Bands.make(module, memory, nBands, (_, workerData) => {
+			const w = new Worker(new URL("bandlink.mjs", import.meta.url), { workerData });
+			w.unref();
+			return new Promise((resolve, reject) => {
+				w.once("message", resolve);
+				w.once("error", reject);
+			});
+		})
+	: null;
 let net = null;
 if (settings.PS_NET_PEER !== undefined) {
 	const buffer = new SharedArrayBuffer(NET.SIZE);
@@ -140,15 +159,17 @@ if (settings.PS_NET_PEER !== undefined) {
 // thread: its 'error' and 'message' events are never seen here, so
 // learnlink.mjs catches everything and delivers a failure itself.
 const learn = new LearnImports((records, interp, buffer, gen) => {
-	new Worker(new URL("learnlink.mjs", import.meta.url), { workerData: { buffer, gen, module, records, interp } }).unref();
+	new Worker(new URL("learnlink.mjs", import.meta.url), { workerData: { buffer, gen, module, limits, records, interp } }).unref();
 	return true;
 });
 const instance = await WebAssembly.instantiate(module, {
 	...wasi.imports,
+	...(memory && { env: { memory } }),
 	"system:SDL2": sdl.imports,
 	"system:ps_native": native.imports,
 	"system:ps_net": net?.imports ?? NO_NET,
 	"system:ps_learn": learn.imports,
+	"system:ps_band": bands?.imports ?? NO_BAND,
 });
 sdl.attach(instance);
 native.attach(instance);

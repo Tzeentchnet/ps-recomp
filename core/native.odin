@@ -62,7 +62,8 @@ Native_Code :: struct {
 }
 
 NATIVE_MAGIC :: 0x4e525350 // "PSRN"
-NATIVE_VERSION :: 4
+// 5: a wasm32 blob imports a shared memory (recomp/native/wasm.odin).
+NATIVE_VERSION :: 5
 // Bytes of the header: magic, version, arch, then the counts and sizes.
 NATIVE_HEADER :: 48
 
