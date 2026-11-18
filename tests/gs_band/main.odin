@@ -12,6 +12,10 @@
 // local-to-local transfers and CLUT loads over drawn pages, local-to-host
 // readback, and scissors past the buffer width. Each cause's count has a
 // floor.
+//
+// The texel span a context's texture reads (band_ctx_new) is checked
+// against the sampler's wrap brute force: every result in the span, both
+// ends reached. Wrong spans (mutants) must fail the same check.
 package main
 
 import "core:fmt"
@@ -114,6 +118,98 @@ prim :: proc() {
 		put(0x02, u64(transmute(u32)(f32(rndn(1000)) / 500)) | u64(transmute(u32)(f32(rndn(1000)) / 500)) << 32)
 		put(0x03, rndn(1 << 14) | rndn(1 << 14) << 16)
 		put(0x05, rndn(300 << 4) | rndn(150 << 4) << 16 | rnd() << 32)
+	}
+}
+
+// A texel span for one axis: wrap mode, level-0 size, MIN (MASK), MAX
+// (FIX), level.
+@(private = "file")
+Span :: proc(mode, size, lo, hi, n: u32) -> (a, b: u32)
+
+// Whether span gives exactly the texels the sampler's wrap reaches from
+// every u in -1024..2047 (region modes: 0..1023 reach every result).
+@(private = "file")
+span_exact :: proc(span: Span, mode, size, lo, hi, n: u32) -> bool {
+	axis, _, _ := gs.probe_wrap(mode, size, lo, hi, n)
+	a, b := span(mode, size, lo, hi, n)
+	rmin, rmax := max(i32), min(i32)
+	for u in i32(-1024) ..< 2048 {
+		r := (min(max(u, axis[0]), axis[1]) & axis[2]) | axis[3]
+		rmin, rmax = min(rmin, r), max(rmax, r)
+	}
+	return rmin == i32(a) && rmax == i32(b)
+}
+
+@(private = "file")
+span_real :: proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+	_, a, b = gs.probe_wrap(mode, size, lo, hi, n)
+	return
+}
+
+// Wrong spans the check must catch.
+@(private = "file")
+MUTANTS := [?]Span {
+	// The old bound: any texel under 1024.
+	proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+		if mode >= 2 {return 0, 1023}
+		return span_real(mode, size, lo, hi, n)
+	},
+	// REGION_REPEAT from FIX &~ MASK.
+	proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+		if mode == 3 {return hi &~ lo, hi | lo}
+		return span_real(mode, size, lo, hi, n)
+	},
+	// REGION_REPEAT with MASK and FIX swapped.
+	proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+		if mode == 3 {return lo, lo | hi}
+		return span_real(mode, size, lo, hi, n)
+	},
+	// REGION_CLAMP unscaled at levels past 0.
+	proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+		if mode == 2 {return min(lo, hi), hi}
+		return span_real(mode, size, lo, hi, n)
+	},
+	// REGION_CLAMP as MIN..MAX when MIN > MAX.
+	proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+		if mode == 2 {return lo >> n, hi >> n}
+		return span_real(mode, size, lo, hi, n)
+	},
+	// One texel short.
+	proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+		a, b = span_real(mode, size, lo, hi, n)
+		return a, max(b, 1) - 1
+	},
+}
+
+// Every wrap mode over random and edge registers at levels 0..6; then
+// each mutant must miss somewhere.
+@(private = "file")
+region_spans :: proc() {
+	Case :: struct {mode, size, lo, hi, n: u32}
+	cases: [dynamic]Case
+	defer delete(cases)
+	edges := [?]u32{0, 1, 0x1f, 0x200, 0x3fe, 0x3ff}
+	for mode in u32(0) ..< 4 {
+		for lo in edges {for hi in edges {append(&cases, Case{mode, 1 << (lo & 7), lo, hi, hi & 7 % 7})}}
+		for _ in 0 ..< 300 {
+			append(&cases, Case{mode, 1 << u32(rndn(11)), u32(rndn(1024)), u32(rndn(1024)), u32(rndn(7))})
+		}
+	}
+	for c in cases {
+		if !span_exact(span_real, c.mode, c.size, c.lo, c.hi, c.n) {
+			a, b := span_real(c.mode, c.size, c.lo, c.hi, c.n)
+			fail("wrap mode %d size %d min %x max %x level %d: span %d..%d not exact", c.mode, c.size, c.lo, c.hi, c.n, a, b)
+		}
+	}
+	for m, i in MUTANTS {
+		caught := false
+		for c in cases {
+			if !span_exact(m, c.mode, c.size, c.lo, c.hi, c.n) {
+				caught = true
+				break
+			}
+		}
+		if !caught {fail("span mutant %d passes", i)}
 	}
 }
 
@@ -295,6 +391,7 @@ main :: proc() {
 		}
 		free_all(context.temp_allocator)
 	}
+	region_spans()
 	st := gs.band_stats
 	fmt.printfln("over %d trials x 4 runs: %d primitives on workers; joins: serial %d, raw %d, war %d, alias %d, xfer %d, read %d", TRIALS, st.jobs, st.serial, st.raw, st.war, st.alias, st.xfer, st.read)
 	floors := [?]u64{st.jobs, st.serial, st.raw, st.war, st.alias, st.xfer, st.read}

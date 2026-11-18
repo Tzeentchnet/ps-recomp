@@ -606,6 +606,18 @@ wrap_axis :: proc(mode, size, lo, hi, n: u32) -> [4]i32 {
 	return {min(i32), max(i32), i32(lo), i32(hi)}
 }
 
+// The texels [a, b] one axis's wrap (wrap_axis) reaches at level n: the
+// level for REPEAT and CLAMP, MIN..MAX scaled for REGION_CLAMP (MAX alone
+// when MIN > MAX), FIX..FIX | MASK for REGION_REPEAT.
+@(private)
+wrap_span :: proc(mode, size, lo, hi, n: u32) -> (a, b: u32) {
+	switch mode {
+	case 2: return min(lo >> n, hi >> n), hi >> n
+	case 3: return hi, hi | lo
+	}
+	return 0, max(size >> n, 1) - 1
+}
+
 // Fills t.wrap for levels 0..mxl from WMS, WMT, the size and CLAMP.
 @(private)
 tex_wrap :: proc(t: ^Tex) {

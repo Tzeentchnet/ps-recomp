@@ -243,10 +243,9 @@ band_ctx_new :: proc() {
 	if c.tme {
 		t := &c.tex
 		for n in 0 ..= min(t.mxl, 6) {
-			// Region modes reach any texel under 1024; the others stay in the level.
-			w := t.wms >= 2 ? 1024 : max(t.w >> n, 1)
-			h := t.wmt >= 2 ? 1024 : max(t.h >> n, 1)
-			page_rect(t.psm, t.mtbp[n], t.mtbw[n], 0, 0, w, h, &band.cr)
+			u0, u1 := wrap_span(t.wms, t.w, t.minu, t.maxu, n)
+			v0, v1 := wrap_span(t.wmt, t.h, t.minv, t.maxv, n)
+			page_rect(t.psm, t.mtbp[n], t.mtbw[n], u0, v0, u1 + 1, v1 + 1, &band.cr)
 		}
 	}
 	band.serial = !ok || pages_meet(&band.cr, &fw) || pages_meet(&band.cr, &zw) || pages_meet(&fw, &zw)

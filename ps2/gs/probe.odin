@@ -302,3 +302,10 @@ probe_tiles_fill :: proc(v: u32) {
 probe_tile :: proc(n, x, y: u32) -> ^[256]u32 {
 	return tile_at(&ctx_cur.tex, n, x, y, x, y)
 }
+
+// One axis's wrap (wrap_axis) as the sampler applies it, and the texel span
+// band_ctx_new takes it to reach (wrap_span), for tests/gs_band.
+probe_wrap :: proc(mode, size, lo, hi, n: u32) -> (axis: [4]i32, a, b: u32) {
+	a, b = wrap_span(mode, size, lo, hi, n)
+	return wrap_axis(mode, size, lo, hi, n), a, b
+}
