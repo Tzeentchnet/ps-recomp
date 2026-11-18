@@ -449,6 +449,12 @@ readback :: proc(dst: []u8) {
 	}
 }
 
+// Host-to-local pixels the software path wrote through transfer8 and
+// through transfer_px (PS_STATS).
+xfer_stats: struct {
+	px8, px: u64,
+}
+
 @(private)
 transfer_cpu :: proc(data: []u8) {
 	tc_write_rect(xfer.bp, xfer.bw, xfer.psm, xfer.x0, xfer.y0, xfer.w, xfer.h)
@@ -461,7 +467,11 @@ transfer_cpu :: proc(data: []u8) {
 	body := data[i:][:(len(data) - i) * 8 / int(bpp) * int(bpp) / 8]
 	if bpp == 32 {
 		transfer32(([^]u32)(raw_data(body))[:len(body) / 4])
+	} else if xfer.psm == PSMT8 {
+		xfer_stats.px8 += u64(len(body))
+		transfer8(body)
 	} else {
+		xfer_stats.px += u64(len(body)) * 8 / u64(bpp)
 		transfer_px(body, bpp)
 	}
 	for b in data[i + len(body):] {transfer_byte(b, bpp)}
@@ -507,6 +517,49 @@ transfer_px :: proc(data: []u8, bpp: u32) #no_bounds_check {
 			xfer.x = 0
 			xfer.y += 1
 			if xfer.y == xfer.h {
+				xfer.active = false
+				return
+			}
+		}
+	}
+}
+
+// Whole PSMT8 pixels: the texture upload path. addr8 split by what it
+// depends on: the block row base and the column table row once per row,
+// the block once per 16 pixels, so an aligned run of 16 is 16 table reads
+// and byte stores into one block.
+@(private)
+transfer8 :: proc(data: []u8) #no_bounds_check {
+	M :: 4 * VRAM_WORDS - 1
+	bp, bw := xfer.bp, xfer.bw
+	x0, y0, w, h := xfer.x0, xfer.y0, xfer.w, xfer.h
+	tx, ty := xfer.x, xfer.y
+	defer {xfer.x, xfer.y = tx, ty}
+	v8 := vram8()
+	for i := 0; i < len(data); {
+		y := (y0 + ty) & 2047
+		rb := bp + (y >> 6) * (bw >> 1) * 32
+		brow := &block32[(y >> 4) & 3]
+		col := &col8[y & 15]
+		for end := i + min(int(w - tx), len(data) - i); i < end; {
+			x := (x0 + tx) & 2047
+			blk := (rb + (x >> 7) * 32 + brow[(x >> 4) & 7]) << 8
+			// x & 15 == 0 keeps x + 15 inside both the block and the
+			// 2048 wrap.
+			if x & 15 == 0 && end - i >= 16 {
+				for k in 0 ..< 16 {v8[(blk + col[k]) & M] = data[i + k]}
+				i += 16
+				tx += 16
+			} else {
+				v8[(blk + col[x & 15]) & M] = data[i]
+				i += 1
+				tx += 1
+			}
+		}
+		if tx == w {
+			tx = 0
+			ty += 1
+			if ty == h {
 				xfer.active = false
 				return
 			}

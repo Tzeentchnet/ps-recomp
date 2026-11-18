@@ -382,6 +382,7 @@ print_stats :: proc() {
 	@(static) audio_total0: f64
 	@(static) audio_samples0: int
 	@(static) haz0: type_of(gs.band_stats)
+	@(static) xfer0: type_of(gs.xfer_stats)
 	now := time.tick_now()
 	tsc := cpu.prof_now()
 	rb := core.rb_stats().total
@@ -415,6 +416,10 @@ print_stats :: proc() {
 			wall - pace_ms - rb_ms - f64(cpu.prof_top - top0) * share, rb_ms)
 		for p in cpu.Prof {fmt.eprintf("  %v %.2f", p, f64(cpu.prof[p] - prof0[p]) * share)}
 		fmt.eprintfln("  pace %.2f", pace_ms)
+		if xs := gs.xfer_stats; xs != xfer0 {
+			fmt.eprintfln("stats: upload/frame  psmt8 %.0f px  transfer_px %.0f px",
+				f64(xs.px8 - xfer0.px8) / f64(STATS_FRAMES), f64(xs.px - xfer0.px) / f64(STATS_FRAMES))
+		}
 		if gs.haz_on {
 			st := gs.band_stats
 			per := 1 / f64(STATS_FRAMES)
@@ -425,6 +430,7 @@ print_stats :: proc() {
 		}
 	}
 	haz0 = gs.band_stats
+	xfer0 = gs.xfer_stats
 	t0, cyc0, idle0, spin0, tsc0, prof0 = now, cpu.state.cycles, kernel.idle_cycles, cpu.spin_cycles, tsc, cpu.prof
 	top0, pace0, rb0 = cpu.prof_top, stats_pace, rb
 	audio_total0, audio_samples0 = audio_speed_total, audio_speed_samples
