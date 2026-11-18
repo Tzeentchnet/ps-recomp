@@ -4701,8 +4701,9 @@ test_libsd :: proc() {
 	check(iop.iop_wake_ee == max(u64), "libsd: a stopped block has no wake")
 
 	// Voices: a voice transfer, the voice's parameters, key on, ENVX.
-	check(sd_call(17, 0, 0, b + adp, 0x5000, 32) == 32, "libsd: VoiceTrans writes")
-	check(sd_call(17, 0, 1, b + rd, 0x5000, 32) == 32 && mem_eq(b + rd, b + adp, 32), "libsd: VoiceTrans reads it back")
+	check(sd_call(17, 0, 0, b + adp, 0x5000, 32) == 64, "libsd: VoiceTrans writes, returning the size rounded up to 64 bytes")
+	check(sd_call(17, 0, 1, b + rd, 0x5000, 32) == 64 && mem_eq(b + rd, b + adp, 32), "libsd: VoiceTrans reads it back")
+	check(sd_call(17, 0, 0, b + adp, 0x5000, 0x40) == 0x40, "libsd: VoiceTrans of whole 64-byte blocks returns the size")
 	sd_call(9, 0x2040, 0x5000)
 	sd_call(5, 0x0200, 0x1000)
 	sd_call(5, 0x0000, 0x3fff)

@@ -73,9 +73,12 @@ libsd_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 	case 17: // sceSdVoiceTrans(channel, mode, iop address, spu address, size): done at once
 		size := r32(r[29] + 16)
 		if a1 & 3 > 1 {return 0, true}
-		n := sd_voice_trans(a1, a2, a3, size)
+		sd_voice_trans(a1, a2, a3, size)
 		if s.trans[a0 & 1].func != 0 {s.pending |= SD_PENDING_TRANS << (a0 & 1)}
-		return n, true
+		// Retail moves whole 64-byte blocks and returns the size rounded up
+		// to them, and callers check it: Jak II's OVERLORD takes less as a
+		// short transfer and retries it forever.
+		return (size + 63) &~ 63, true
 	case 18: // sceSdBlockTrans(channel, mode, iop address, size, start address)
 		v := sd_block_trans(a0, a1, a2, a3, r32(r[29] + 16))
 		if a1 & 3 != 2 {sd_block_arm(a0, s.trans[a0 & 1].func != 0)} // not a stop
