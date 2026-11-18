@@ -10,12 +10,18 @@
 // the one of lowest hash, and an IOP entry is an iop row; disc paths lose
 // their device and version; text is cut and made of its charset; rows of a
 // kind are sorted; a write before the end says running, and nothing is
-// written after the end.
+// written after the end. A registered kind (core.gamedata_kinds) keeps the
+// first cap rows its provider gives, sorted, and a cap row counts the cut;
+// the perf row's percentiles, longest frame and over counts are those of
+// the frames noted (gamedata_frame).
 //
 // With <gamedata.tsv> <learn file> <disc image>, a real run's file: every
 // load of a named disc file hashes to the disc's bytes there (or 0 when
 // short), every interp and smc row names a learn record with its hash (or
-// 0 when short), and every text field is of the charset and cut.
+// 0 when short), every learned row names a learn record with its hash,
+// every row of ps2's kinds (learned, refused, call, thread, sema) and
+// the perf and cap rows have their columns, and every text field is of
+// the charset and cut.
 //
 // Both ways, no 4 numeric words of a row in a row are 4 consecutive words
 // of the game's bytes (RAM, the loads' bytes and the learn records' words)
@@ -245,6 +251,12 @@ synthetic :: proc() {
 	}
 	core.gamedata_irx("LIB\tSD", 0x40000, 0x100, 0x1234)
 	core.gamedata_irx("LIB\tSD", 0x40000, 0x100, 0x1234)
+	append(&core.gamedata_kinds, core.Gamedata_Kind{"test", 2, proc(rows: ^[dynamic]string) {
+		append(rows, "test\t00200000\ta\t1\t9\t5", "test\t00100000\tb\t2\t7\t3", "test\t00300000\tc\t3\t0\t0")
+	}})
+	// 8 frames of 4.95 ms, then 20, 150 and 400 ms: p50 to its 100 us
+	// bucket's top, p95 the longest.
+	for ms, i in ([]f64{4.95, 4.95, 4.95, 4.95, 4.95, 4.95, 4.95, 4.95, 20, 150, 400}) {core.gamedata_frame(u64(100 + i), ms)}
 
 	core.gamedata_vblank(core.GAMEDATA_EVERY)
 	data, rerr := os.read_entire_file(path, context.allocator)
@@ -299,6 +311,15 @@ synthetic :: proc() {
 	}
 	r = find_row(rows, "irx", "LIB?SD", "00040000", "00000100", hex16(0x1234))
 	check(r != nil && n == 1, "irx row once")
+	n = 0
+	for row in rows {
+		if row[0] == "test" {n += 1}
+	}
+	check(n == 2 && find_row(rows, "test", "00100000", "b") != nil && find_row(rows, "test", "00200000", "a") != nil, "a registered kind keeps its first cap rows")
+	r = find_row(rows, "cap", "test")
+	check(r != nil && r[2] == "2" && r[3] == "3", "a cap row counts the cut")
+	r = find_row(rows, "perf")
+	check(r != nil && strings.join(r[1:], " ") == "11 5000 400000 400000 110 3 2 1", fmt.tprintf("perf row %v", r))
 	for i in 1 ..< len(rows) {
 		if rows[i][0] == rows[i - 1][0] {
 			check(strings.join(rows[i - 1], "\t") <= strings.join(rows[i], "\t"), fmt.tprintf("%s rows sorted", rows[i][0]))
@@ -323,6 +344,20 @@ synthetic :: proc() {
 end_field :: proc(rows: [][]string, i: int) -> string {
 	r := find_row(rows, "end")
 	return r != nil && i < len(r) ? r[i] : "<none>"
+}
+
+// The columns of ps2's kinds and of perf and cap, the kind's own counted.
+@(private = "file")
+columns :: proc(kind: string) -> (int, bool) {
+	switch kind {
+	case "learned": return 7, true
+	case "perf": return 9, true
+	case "refused", "cap": return 4, true
+	case "call": return 5, true
+	case "thread": return 6, true
+	case "sema": return 7, true
+	}
+	return 0, false
 }
 
 @(private = "file")
@@ -350,6 +385,7 @@ real :: proc(tsv, learn, image: string) {
 		return v
 	}
 	named, matched := 0, 0
+	counts := make(map[string]int)
 	for r in rows {
 		line := strings.join(r, " ")
 		switch r[0] {
@@ -388,8 +424,32 @@ real :: proc(tsv, learn, image: string) {
 			check(found, fmt.tprintf("row names a learn record: %s", line))
 			if r[0] == "interp" {check(int(num(r[7])) <= variants, fmt.tprintf("variants: %s", line))}
 		}
+		if cols, kind := columns(r[0]); kind {
+			counts[r[0]] += 1
+			check(len(r) == cols, fmt.tprintf("%d columns, want %d: %s", len(r), cols, line))
+			if len(r) != cols {continue}
+			switch r[0] {
+			case "learned":
+				entry, lo, words := u32(num(r[2], 16)), u32(num(r[3], 16)), int(num(r[4]))
+				found := false
+				for x in recs {
+					h := len(x.words) < core.GAMEDATA_SHORT_WORDS ? 0 : x.hash
+					found ||= x.cpu == .Ee && x.entry == entry && x.lo == lo && len(x.words) == words && r[5] == hex16(h)
+				}
+				check(found && (r[6] == "open" || r[6] == "-"), fmt.tprintf("learned row names a learn record: %s", line))
+			case "refused":
+				check(slice.contains([]string{"large", "smc", "smc_unknown", "not_lowered"}, r[3]), fmt.tprintf("refused reason: %s", line))
+			case "thread":
+				check(slice.contains([]string{"run", "ready", "wait", "suspend", "wait_suspend", "dormant", "deleted"}, r[5]), fmt.tprintf("thread status: %s", line))
+			case "sema":
+				check(r[4] == "live" || r[4] == "deleted", fmt.tprintf("sema status: %s", line))
+			}
+		}
 	}
-	fmt.printfln("gamedata: %d rows, %d loads of named files, %d match the disc, %d learn records", len(rows), named, matched, len(recs))
+	for k in ([]string{"learned", "call", "thread", "sema", "perf"}) {
+		check(counts[k] > 0, fmt.tprintf("no %s rows", k))
+	}
+	fmt.printfln("gamedata: %d rows, %d loads of named files, %d match the disc, %d learn records; learned %d refused %d call %d thread %d sema %d perf %d cap %d", len(rows), named, matched, len(recs), counts["learned"], counts["refused"], counts["call"], counts["thread"], counts["sema"], counts["perf"], counts["cap"])
 	check(check_fields(rows, refs[:]) == 0, "no field is game bytes")
 }
 

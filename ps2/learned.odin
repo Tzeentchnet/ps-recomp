@@ -19,6 +19,7 @@
 package ps2
 
 import "core:fmt"
+import "core:hash/xxhash"
 import "core:os"
 import "core:slice"
 
@@ -163,9 +164,10 @@ learned_at :: #force_inline proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 	return learned_search(pc)
 }
 
-// wasm32: the entries of the loaded blob's records that it holds no
-// function for: the compiler left them to the interpreter (code stored
-// into, too large, not lowered). Sorted; host state. The FLAT runner opens
+// The entries of the loaded blob's records that it holds no function for:
+// the compiler left them to the interpreter (code stored into, too large,
+// not lowered). Sorted; host state. Game data's refused rows name them
+// (natively made only with game data on). On wasm32 the FLAT runner opens
 // no LEARN run at one (interp_flat.odin): recording it again every run
 // would be all cost, since the next compile refuses it again. Made only at
 // load, so code loaded there later, which the compiler might take, is not
@@ -173,11 +175,15 @@ learned_at :: #force_inline proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 @(private = "file")
 learned_refused: []u32
 
-// wasm32: keep entries (a blob's records', in any order, repeats too) that
-// no loaded learned function starts at, as learned_refused.
+// Keep entries (a blob's records', in any order, repeats too) that no
+// loaded learned function starts at, as learned_refused.
 learned_refuse :: proc(entries: []u32) {
-	has := make(map[u32]struct{}, len(learned_steps), context.temp_allocator)
-	for &l in learned_steps {has[l.entry] = {}}
+	has := make(map[u32]struct{}, context.temp_allocator)
+	when ODIN_ARCH == .wasm32 {
+		for &l in learned_steps {has[l.entry] = {}}
+	} else {
+		for e in learned_fns {has[e] = {}}
+	}
 	out := make([dynamic]u32, core.long_allocator())
 	for e in entries {
 		if e not_in has {append(&out, e)}
@@ -286,4 +292,55 @@ learned_first :: proc(pc: u32) -> (int, bool) #no_bounds_check {
 		if pc - l.lo < 4 * u32(len(l.words)) {return k, l.entry == pc}
 	}
 	return 0, false
+}
+
+// Game data's learned rows (core/gamedata.odin): each loaded function, by
+// entry and lo.
+@(private)
+gamedata_learned_rows :: proc(rows: ^[dynamic]string) {
+	recs := core.gamedata_learn()
+	Fn :: struct {
+		entry: u32,
+		f:     ^Learned_Fn,
+	}
+	fns := make([dynamic]Fn, context.temp_allocator)
+	when ODIN_ARCH == .wasm32 {
+		for &l in learned_steps {append(&fns, Fn{l.entry, &l.f})}
+	} else {
+		for e, at in learned_fns {
+			for &l in at {append(&fns, Fn{e, &l})}
+		}
+	}
+	slice.sort_by(fns[:], proc(a, b: Fn) -> bool {
+		return a.entry < b.entry || a.entry == b.entry && a.f.lo < b.f.lo
+	})
+	for x in fns {
+		l := x.f
+		n := len(l.words)
+		h := xxhash.XXH3_64_default(slice.to_bytes(l.words))
+		open := false
+		for r in recs {
+			if r.cpu == .Ee && r.entry == x.entry && r.lo == l.lo && len(r.words) == n && r.hash == h && .Open in r.flags {open = true; break}
+		}
+		append(rows, fmt.tprintf("learned\tee\t%08x\t%08x\t%d\t%016x\t%s", x.entry, l.lo, n, core.gamedata_hash(h, n), open ? "open" : "-"))
+	}
+}
+
+// Game data's refused rows: each entry of learned_refused, with the
+// reasons its records give, by entry.
+@(private)
+gamedata_refused_rows :: proc(rows: ^[dynamic]string) {
+	recs := core.gamedata_learn()
+	for e in learned_refused {
+		why: bit_set[enum {Smc, Smc_Unknown, Large, Not_Lowered}]
+		for r in recs {
+			if r.cpu != .Ee || r.entry != e {continue}
+			if .Smc in r.flags {why += {.Smc}}
+			if .Smc_Unknown in r.flags {why += {.Smc_Unknown}}
+			if .Large in r.flags {why += {.Large}}
+			if r.flags & {.Smc, .Smc_Unknown, .Large} == {} {why += {.Not_Lowered}}
+		}
+		names := [?]string{"smc", "smc_unknown", "large", "not_lowered"}
+		for w in why {append(rows, fmt.tprintf("refused\tee\t%08x\t%s", e, names[int(w)]))}
+	}
 }

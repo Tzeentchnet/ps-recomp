@@ -277,7 +277,7 @@ vblank_frame :: proc() {
 	core.compat_vblank(u64(vblank), w > 0 && h > 0, mem.ram)
 	if w > 0 && h > 0 {
 		frame += 1
-		if stats {stats_frame()}
+		if stats || core.gamedata.on {stats_frame()}
 		core.input_script_frame(u64(frame), mem.ram)
 		snaptest_frame()
 		if rbtest[1] > 0 {rbtest_frame()}
@@ -345,7 +345,7 @@ vblank_frame :: proc() {
 		if late > length {last = now}
 	}
 	if d := time.tick_diff(now, last); d > 0 {time.sleep(d)}
-	if stats {stats_pace += time.tick_since(now)}
+	if stats || core.gamedata.on {stats_pace += time.tick_since(now)}
 }
 
 // STATS=1: every STATS_FRAMES presented frames, host frame rate and the
@@ -369,7 +369,11 @@ stats_frame :: proc() {
 	@(static) t0: time.Tick
 	@(static) pace0: time.Duration
 	now := time.tick_now()
-	if t0 != {} {stats_work[frame % STATS_FRAMES] = time.duration_milliseconds(time.tick_diff(t0, now) - (stats_pace - pace0))}
+	if t0 != {} {
+		w := time.duration_milliseconds(time.tick_diff(t0, now) - (stats_pace - pace0))
+		stats_work[frame % STATS_FRAMES] = w
+		core.gamedata_frame(u64(frame), w)
+	}
 	t0, pace0 = now, stats_pace
 }
 

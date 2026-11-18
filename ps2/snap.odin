@@ -45,6 +45,7 @@ init :: proc() {
 	iop.spu_snap()
 	core.snap_add(&cpu.unmapped_seen)
 	core.fatal_hook = proc(msg: string) {cpu.fatal("%s", msg)}
+	if core.gamedata.on {gamedata_register()}
 	// FLAT: run_events reaches a snapshot only at the top of the EE's run
 	// (a nested run's events check returns at once, cpu.in_interrupt), with
 	// the IOP between runs. Anything else would lose host frames.

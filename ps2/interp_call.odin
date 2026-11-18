@@ -146,6 +146,7 @@ interp_enter :: proc(entry: u32) {
 		cpu.fallback_ee_calls[entry] += 1
 	}
 	when core.COMPAT_COUNT {core.compat_entry(entry)}
+	if core.gamedata.on {gamedata_call(u32(cpu.state.r[31].d[0]), entry)}
 	if entry not_in interp_seen {
 		if interp_seen == nil {interp_seen = make(map[u32]bool, core.long_allocator())}
 		interp_seen[entry] = true

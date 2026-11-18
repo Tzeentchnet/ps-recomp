@@ -479,13 +479,15 @@ play :: proc(image: string) -> int {
 		}
 		if cnf.ps2 {learned_ee = learned_blob(dir, .Ee, !compat_child(), 0)}
 	}
+	// Game data (core/gamedata.odin), a PS2 game's: on the web always,
+	// natively with PS_GAMEDATA=1; PS_GAMEDATA=0 turns it off.
+	gd := core.env("GAMEDATA")
+	gamedata := cnf.ps2 && (gd == "1" || gd == "" && core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32)
 	// A wasm32 build's FLAT runner opens no LEARN run at an entry the blob
 	// was compiled from records of but has no function for (ps2
-	// learned_refuse).
+	// learned_refuse), and game data's refused rows name them.
 	learned_ee_entries: []u32
-	when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {
-		if learned_ee != "" {learned_ee_entries = learned_entries(dir, .Ee)}
-	}
+	if learned_ee != "" && (core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 || gamedata) {learned_ee_entries = learned_entries(dir, .Ee)}
 	learned_key = core.disc_path(dir, learned_files(learn_cpu).key)
 	learned_ee_key = core.disc_path(dir, learned_files(.Ee).key)
 	// A game's mods run native unless NATIVE=0 or MOD_NATIVE=0, which
@@ -517,9 +519,7 @@ play :: proc(image: string) -> int {
 			return 1
 		}
 	}
-	// Game data (core/gamedata.odin), a PS2 game's: on the web always,
-	// natively with PS_GAMEDATA=1; PS_GAMEDATA=0 turns it off.
-	if gd := core.env("GAMEDATA"); cnf.ps2 && (gd == "1" || gd == "" && core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32) {
+	if gamedata {
 		core.gamedata_init(core.disc_path(dir, .Gamedata, context.temp_allocator), learn_records(dir, learned_files(.Ee).records), id, cnf.serial)
 	}
 	// The picture a run ends on (a quit, a COMPAT run's last vblank), for

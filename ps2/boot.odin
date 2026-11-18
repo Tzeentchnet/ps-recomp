@@ -40,9 +40,10 @@ Boot :: struct {
 	// no function is registered while RAM holds their code.
 	learned_ee:        string,
 	learned_ee_failed: proc(),
-	// wasm32: the entries of the records learned_ee was compiled from. Those
-	// it holds no function for are left to the interpreter, which opens no
-	// LEARN run at them (learned_refuse).
+	// The entries of the records learned_ee was compiled from (wasm32, or
+	// natively with game data on, for its refused rows). Those it holds no
+	// function for are left to the interpreter, which opens no LEARN run at
+	// them under FLAT (learned_refuse).
 	learned_ee_entries: []u32,
 	// The directory the memory card directories go in (iop.mc_root); left
 	// empty, the runtime's.
@@ -156,7 +157,7 @@ boot :: proc(b: Boot) -> bool {
 	when !core.FLAT || core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {
 		if b.learned_ee != "" {
 			if load_learned(b.learned_ee) {
-				when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {learned_refuse(b.learned_ee_entries)}
+				if core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 || b.learned_ee_entries != nil {learned_refuse(b.learned_ee_entries)}
 			} else if b.learned_ee_failed != nil {
 				b.learned_ee_failed()
 			}

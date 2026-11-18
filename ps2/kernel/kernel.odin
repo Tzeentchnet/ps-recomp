@@ -123,6 +123,7 @@ kernel_init :: proc() {
 	k.threads[1] = t
 	k.thread_end = 2
 	k.current = t
+	if core.gamedata.on {gamedata_thread_new(t)}
 	k.next_handler = 1
 	k.osd_config = 1 << 16
 	switch core.env("DEBUG") {
@@ -532,6 +533,7 @@ create_thread :: proc(param: u32) -> i64 {
 	t.option = mem.rd32(param + 32)
 	k.threads[id] = t
 	k.thread_end = max(k.thread_end, id + 1)
+	if core.gamedata.on {gamedata_thread_new(t)}
 	return i64(id)
 }
 
@@ -880,6 +882,7 @@ create_sema :: proc(param: u32) -> i64 {
 		s.attr = mem.rd32(param + 16)
 		s.option = mem.rd32(param + 20)
 		k.semas[n] = s
+		if core.gamedata.on {gamedata_sema_new(s)}
 		return i64(n)
 	}
 	return KE_ERROR

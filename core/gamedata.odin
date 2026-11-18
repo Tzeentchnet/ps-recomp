@@ -38,6 +38,26 @@ package core
 //   sys       name, n, pc, ra, client: calls the HLE does not implement
 //   irx       name, base, size, hash: IOP modules loaded
 //   stretch   kind, from, to: the compat line's stretches
+//   learned   cpu (ee), entry, lo, words, hash, flags (the learn record's
+//             with that code: open, or none): the learned functions loaded,
+//             by entry and lo
+//   refused   cpu (ee), entry, reason: an entry of the learn records the
+//             loaded learned code has no function for, as large, smc,
+//             smc_unknown (core/learnfile learn_compilable) or not_lowered
+//             (left to the interpreter by the compiler)
+//   call      cpu (ee), ra, target, n: calls to code with no function in
+//             the call table, the interpreter's, by return address ($ra at the call, 8 past a jal's
+//             site) and target; most made first
+//   thread    id, entry, prio (initial), stack_size, status (run, ready,
+//             wait, suspend, wait_suspend, dormant, or deleted): the EE
+//             threads the run created, by id and entry
+//   sema      id, init, max, status (live, deleted), count, waiters (0s
+//             once deleted): the EE semaphores the run created, in order
+//   perf      frames, p50, p95, max (microseconds of host work, pacing left out, of
+//             a presented frame; p50 and p95 to GAMEDATA_PERF_STEP_US),
+//             worst (the frame of max), over_16ms, over_100ms, over_300ms
+//             (frames over 16.7, 100 and 300 ms)
+//   cap       kind, kept, n: a kind of row cut to its cap, kept of n
 //   end       result ("running" for a write before the end), frames,
 //             cycles, idle_cycles, cycles_per_insn, interp_insns,
 //             interp_other, load_other, shown, lit, ram_still_since,
@@ -54,7 +74,7 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 
-GAMEDATA_VERSION :: 1
+GAMEDATA_VERSION :: 2
 // The load rows kept; the rest count in end's load_other.
 GAMEDATA_LOADS :: 2048
 GAMEDATA_SHORT_WORDS :: 4
@@ -62,6 +82,24 @@ GAMEDATA_SHORT_BYTES :: 64
 GAMEDATA_TEXT :: 160
 // Vblanks between writes, so a run the player closes keeps what it saw.
 GAMEDATA_EVERY :: 600
+// perf's buckets: a frame's work to GAMEDATA_PERF_STEP_US, up to
+// GAMEDATA_PERF_BUCKETS of them, longer ones in the last.
+GAMEDATA_PERF_STEP_US :: 100
+GAMEDATA_PERF_BUCKETS :: 10000
+
+// A kind of row another package keeps (ps2's learned, refused, call,
+// thread, sema), written after stretch in the order registered:
+// rows appends them, the most telling first. The file keeps the first cap
+// and sorts them; a cap row counts the cut.
+Gamedata_Kind :: struct {
+	name: string,
+	cap:  int,
+	rows: proc(rows: ^[dynamic]string),
+}
+
+// Registered by the packages that keep them as they start (ps2.init),
+// before any write.
+gamedata_kinds: [dynamic]Gamedata_Kind
 
 Gamedata_Cpu :: enum u8 {
 	Ee,
@@ -116,6 +154,15 @@ gamedata: struct {
 	// The learn records last read, and the file's size then.
 	learn_data: []u8,
 	learn_size: i64,
+	// The presented frames' work, for perf: by GAMEDATA_PERF_STEP_US
+	// bucket, and the longest and its frame.
+	perf:       struct {
+		frames:    u64,
+		buckets:   []u32,
+		max_us:    u64,
+		worst:     u64,
+		over:      [3]u64, // 16.7, 100 and 300 ms
+	},
 }
 
 // Turn game data on for a run: write it to path, reading the learn records
@@ -224,7 +271,22 @@ gamedata_vblank :: proc(n: u64) {
 }
 
 // The learn records in gamedata.learn, read again when the file changed.
-@(private = "file")
+// Note a presented frame's work: frame its index, ms its host work.
+gamedata_frame :: proc(frame: u64, ms: f64) {
+	if !gamedata.on {return}
+	p := &gamedata.perf
+	if p.buckets == nil {p.buckets = make([]u32, GAMEDATA_PERF_BUCKETS, long_allocator())}
+	us := u64(max(ms, 0) * 1000)
+	p.buckets[min(us / GAMEDATA_PERF_STEP_US, GAMEDATA_PERF_BUCKETS - 1)] += 1
+	if p.frames == 0 || us > p.max_us {p.max_us, p.worst = us, frame}
+	p.frames += 1
+	for lim, i in ([3]f64{1000.0 / 60, 100, 300}) {
+		if ms > lim {p.over[i] += 1}
+	}
+}
+
+// The learn records at gamedata_init's learn, read again when the file's
+// size changed. Temp allocated, the words the cache's.
 gamedata_learn :: proc() -> []Learn_Record {
 	fi, err := os.stat(gamedata.learn, context.temp_allocator)
 	if size := fi.size; err == nil && size != gamedata.learn_size {
@@ -308,6 +370,30 @@ gamedata_write :: proc(fatal: string, end := true) {
 	for s in l.stretches {
 		append(&rows, fmt.tprintf("stretch\t%s\t%d\t%d", s.kind, s.from, s.to))
 	}
+	put(&b, &rows)
+	caps := make([dynamic]string, context.temp_allocator)
+	for k in gamedata_kinds {
+		k.rows(&rows)
+		if len(rows) > k.cap {
+			append(&caps, fmt.tprintf("cap\t%s\t%d\t%d", k.name, k.cap, len(rows)))
+			resize(&rows, k.cap)
+		}
+		put(&b, &rows)
+	}
+	if p := gamedata.perf; p.frames > 0 {
+		// The frame at rank n (1 the fastest), to its bucket's top.
+		at :: proc(buckets: []u32, n: u64) -> u64 {
+			seen: u64
+			for c, i in buckets {
+				seen += u64(c)
+				if seen >= n {return u64(i + 1) * GAMEDATA_PERF_STEP_US}
+			}
+			return 0
+		}
+		p50, p95 := at(p.buckets, (p.frames + 1) / 2), at(p.buckets, (p.frames * 95 + 99) / 100)
+		fmt.sbprintf(&b, "perf\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", p.frames, min(p50, p.max_us), min(p95, p.max_us), p.max_us, p.worst, p.over[0], p.over[1], p.over[2])
+	}
+	append(&rows, ..caps[:])
 	put(&b, &rows)
 	fmt.sbprintf(&b, "end\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", end ? l.result : "running", l.frames, l.cycles, l.idle_cycles, l.cycles_per_insn, l.interp_insns, l.interp_entries_other, gamedata.load_other, l.shown, l.lit, l.ram_still_since, int(l.fallback), gamedata_text(l.fatal))
 	if err := write_file_atomic(gamedata.path, b.buf[:]); err != nil {
