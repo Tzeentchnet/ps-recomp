@@ -122,9 +122,12 @@ load_psx_exe :: proc(o: Options) -> Image {
 	return {base = text, data = raw[0x800:min(0x800 + size, len(raw))], entry = u32le(raw, 0x10), name = name}
 }
 
-// A 32-bit little-endian MIPS ELF: every allocated section in one flat view,
-// NOBITS reading as zero. Sections at 0x01000000 and up (the EE's .vudata,
-// in VU memory) stay out of it.
+// A 32-bit little-endian MIPS ELF: every allocated section in the entry's
+// 16 MB of the address space in one flat view, NOBITS reading as zero. An
+// executable linked low keeps out the sections at 0x01000000 and up (the
+// EE's .vudata, in VU memory, and some games' extra data); one linked at
+// 0x01000000 (Gran Turismo 4) has all of its sections there. in_view says
+// which sections the view holds.
 load_elf :: proc(o: Options) -> Image {
 	raw, name := read_exe(o)
 	if len(raw) < 52 || string(raw[:4]) != "\x7fELF" {
@@ -162,7 +165,7 @@ load_elf :: proc(o: Options) -> Image {
 			s.data = raw[off:off + int(size)]
 		}
 		append(&sections, s)
-		if addr < 0x01000000 {
+		if addr >> 24 == img.entry >> 24 {
 			lo = min(lo, addr)
 			hi = max(hi, addr + size)
 		}
@@ -170,12 +173,17 @@ load_elf :: proc(o: Options) -> Image {
 	img.base = lo
 	img.data = make([]u8, hi - lo)
 	for s in sections {
-		if s.data != nil && s.addr < 0x01000000 {
+		if s.data != nil && in_view(img, s) {
 			copy(img.data[s.addr - lo:], s.data)
 		}
 	}
 	img.sections = sections[:]
 	return img
+}
+
+// True when s is in img's flat view (load_elf's rule: the entry's 16 MB).
+in_view :: proc(img: Image, s: Section) -> bool {
+	return s.addr >> 24 == img.entry >> 24
 }
 
 find_section :: proc(img: Image, name: string) -> ^Section {

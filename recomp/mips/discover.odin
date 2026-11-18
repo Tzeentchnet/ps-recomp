@@ -265,7 +265,7 @@ data_pointers :: proc(img: Image, lo, hi: u32, out: ^Set, pairs: ^[dynamic][2]u3
 		return
 	}
 	for s in img.sections {
-		if s.data != nil && s.addr < 0x01000000 && s.flags & SHF_EXEC == 0 {
+		if s.data != nil && in_view(img, s) && s.flags & SHF_EXEC == 0 {
 			scan(s.data, lo, hi, out, pairs)
 		}
 	}
@@ -279,7 +279,7 @@ data_pointers :: proc(img: Image, lo, hi: u32, out: ^Set, pairs: ^[dynamic][2]u3
 // for vtable_entries.
 mixed_words :: proc(img: Image, lo, hi: u32, out: ^Set, runs: ^[dynamic]Run = nil) {
 	for s in img.sections {
-		if s.data == nil || s.addr >= 0x01000000 || s.flags & SHF_EXEC == 0 || s.flags & SHF_WRITE == 0 {
+		if s.data == nil || !in_view(img, s) || s.flags & SHF_EXEC == 0 || s.flags & SHF_WRITE == 0 {
 			continue
 		}
 		run: [dynamic]u32
