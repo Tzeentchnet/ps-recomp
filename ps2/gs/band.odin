@@ -159,7 +159,9 @@ band_set :: proc(want: int) {
 	band.wout, band.rout, band.nmaps, band.spend = {}, {}, 0, false
 	for i in 0 ..< n {
 		w := new(Band_Worker)
-		w.tc = {gen = 1, clut = &w.clut, clut_gen = &w.clut_gen, last_key = TC_NO_TILE}
+		// Field by field: a literal of the whole Tc is a 4.8 MB constant the
+		// wasm build ships and copies over w.tc, which new left zeroed.
+		w.tc.gen, w.tc.clut, w.tc.clut_gen, w.tc.last_key = 1, &w.clut, &w.clut_gen, TC_NO_TILE
 		w.clut_gen = 1
 		w.ctx_seq, w.clut_seq = max(u64), max(u64)
 		w.id = u32(i)
