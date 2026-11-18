@@ -641,6 +641,8 @@ emit_func :: proc(e: ^Emitter, f: ^Func) {
 			put(&body, tab, "\tcpu.call(t)")
 			put(&body, tab, fmt.tprintf("\t%s", LEAVE))
 			put(&body, tab, "}")
+		case .Leave:
+			panic("Leave: lower's exact only")
 		case .Goto_Reg:
 			put(&body, tab, "pc = t")
 			put(&body, tab, "if c.cycles >= cpu.next_event {kernel.run_events()}")

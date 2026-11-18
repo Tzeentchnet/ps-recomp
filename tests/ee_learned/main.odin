@@ -12,8 +12,9 @@
 //   - A record stored into (.Smc, .Smc_Unknown) or too large (.Large) is not
 //     compiled (core.learn_compilable).
 //   - A blob of no functions loads, with no code to map.
-//   - A run wasm32 cannot lower (a SYSCALL in a delay slot) gets no span and
-//     is counted.
+//   - A run with a SYSCALL in a delay slot, which wasm32 leaves to the
+//     interpreter at the transfer (r5900.lower's exact), is lowered: it gets
+//     a span, and none is counted skipped.
 //   - A `jr $ra` whose delay slot writes $ra returns to $ra as it was before
 //     the slot, compiled as interpreted.
 package main
@@ -151,10 +152,11 @@ test_compilable :: proc() {
 	check(smc == 2, fmt.tprintf("stored into %d, want 2", smc))
 }
 
-// wasm32 cannot lower a SYSCALL in a delay slot (r5900.lower's exact): that
-// run gets no span and is counted, the loop beside it compiled.
+// wasm32 leaves a SYSCALL in a delay slot to the interpreter at the
+// transfer (r5900.lower's exact): that run gets a span beside the loop's,
+// and none is skipped.
 @(private = "file")
-test_wasm_skip :: proc() {
+test_wasm_slot :: proc() {
 	loop := CODE_LOOP
 	slot := [?]u32 {
 		0x03e00008, // jr ra
@@ -162,10 +164,10 @@ test_wasm_skip :: proc() {
 	}
 	blob, skipped := r5900.learned_blob({{LOOP, LOOP, loop[:]}, {LOOP + 0x100, LOOP + 0x100, slot[:]}}, .Wasm32)
 	defer delete(blob)
-	check(skipped == 1, fmt.tprintf("wasm32 skipped %d runs, want 1", skipped))
+	check(skipped == 0, fmt.tprintf("wasm32 skipped %d runs, want 0", skipped))
 	// The header's n_spans, its eighth field (recomp/native/blob.odin).
 	n_spans := len(blob) < 32 ? -1 : int(u32(blob[28]) | u32(blob[29]) << 8 | u32(blob[30]) << 16 | u32(blob[31]) << 24)
-	check(n_spans == 1, fmt.tprintf("wasm32 blob has %d spans, want 1", n_spans))
+	check(n_spans == 2, fmt.tprintf("wasm32 blob has %d spans, want 2", n_spans))
 }
 
 @(private = "file")
@@ -190,7 +192,7 @@ tmp: string
 game :: proc(_: rawptr) {
 	if !loaded {
 		test_compilable()
-		test_wasm_skip()
+		test_wasm_slot()
 		put_loop(CODE_LOOP[0])
 		v0, native_ran := run()
 		check(v0 == 15 && !native_ran, "interpreted loop")

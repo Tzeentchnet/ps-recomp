@@ -1765,6 +1765,11 @@ native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow:
 				native.call_leave(a, UNWINDING, "cpu.call", .A)
 				native.bind(a, skip)
 			}
+		case .Leave:
+			assert(wasm, "Leave: exact (wasm32) only")
+			native.mov_imm(a, .T, s.target)
+			exit(a, .None)
+			leaves = true
 		case .Goto_Reg:
 			if wasm {
 				// back: t <= the jr's pc, as flat_loop's .Jr sets it

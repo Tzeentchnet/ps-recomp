@@ -423,11 +423,16 @@ bad_insn :: proc(pc, w: u32) {
 }
 
 brk :: proc(pc, w: u32) {
+	if trap_hook != nil {
+		spin_dirty |= SPIN_SIDE
+		trap_hook(pc)
+		return
+	}
 	fatal("break %d at %08x", (w >> 6) & 0xfffff, pc)
 }
 
-// For tests only: with trap_hook set, a trap calls it in place of fatal and
-// the guest carries on past the trap.
+// For tests only: with trap_hook set, a trap or a BREAK calls it in place of
+// fatal and the guest carries on past it.
 trap_hook: proc(pc: u32)
 
 trap :: proc(pc: u32) {

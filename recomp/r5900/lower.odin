@@ -18,6 +18,7 @@ Step_Kind :: enum u8 {
 	Jump_Reg, // t := register `n`, up to the matching End
 	Call_Reg, // call the function at t, returning to `n`
 	Goto_Reg, // pc = t within the function, after running due events; `n`: the jr's pc
+	Leave,    // exact: leave to the interpreter at `target`, with nothing there run or charged
 	End,
 }
 
@@ -119,8 +120,11 @@ goto_ :: proc(l: ^Lowering, src, t: u32) {
 // exit leaves and where the interpreter's jumps land, and both go on in
 // native code there only if the block is an entry), a jump
 // out of the function as a Goto, and the address `jr $ra` jumps to read
-// before its delay slot. nil when exact cannot lower f: a SYSCALL, BREAK or
-// ERET in a delay slot.
+// before its delay slot. A control transfer whose delay slot is a SYSCALL,
+// BREAK or ERET is left to the interpreter at its pc (Leave), with its own
+// cycles not charged: a branch-likely's only when taken (the slot runs only
+// then), so the EE compilers' divide-by-zero trap, `beql rX, zero; break 7`,
+// stays native while the divisor is not 0.
 lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false) -> []Step {
 	pcs := make([dynamic]u32, 0, len(f.insns), context.temp_allocator)
 	for a in f.insns {append(&pcs, a)}
@@ -178,13 +182,20 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false)
 			if has_delay(d) {
 				if !quiet {fmt.eprintfln("warning %s: branch in delay slot at %s", hexu(f.entry), hexu(pc + 4))}
 			} else {
-				if exact && d.kind == .Sys {return nil}
 				slot_op = true
 				if !exact {l.pending += 1}
 			}
 		}
 		skip[pc + 4] = true
 		ret := pc + 8
+		interp_slot := exact && slot_op && d.kind == .Sys
+		if interp_slot {
+			// The interpreter runs the transfer and its slot from pc, as
+			// though no native code had run: its own cycles (charged just
+			// above) are taken back to after the leave.
+			assert(l.steps[len(l.steps) - 1].kind == .Cycles, "the transfer's cycles")
+			pop(&l.steps)
+		}
 		delay :: proc(l: ^Lowering, d: Insn, slot_op: bool) {
 			if slot_op {
 				if l.exact {put(l, {kind = .Cycles, n = u32(l.cycles)})} else if l.each && !batches(d) {flush(l)}
@@ -205,64 +216,78 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false)
 			}
 		}
 
-		#partial switch i.kind {
-		case .Branch:
+		if interp_slot && i.kind == .Branch && i.likely {
+			// Taken: left at pc. Not taken: charged, linked, on at pc + 8.
 			put(&l, {kind = .Branch, i = i})
+			put(&l, {kind = .If_Taken})
+			put(&l, {kind = .Leave, target = pc})
+			put(&l, {kind = .End})
+			put(&l, {kind = .End})
+			charge(&l)
 			if i.link {put(&l, {kind = .Link, n = 31, target = ret})}
-			if i.likely {
-				// delay slot only when taken; the branch and everything
-				// before it count on both paths
-				if slot_op && !exact {l.pending -= 1}
-				flush(&l)
-				if slot_op && !exact {l.pending += 1}
-				put(&l, {kind = .If_Taken})
-				delay(&l, d, slot_op)
-				taken(&l, i)
-			} else {
-				delay(&l, d, slot_op)
-				put(&l, {kind = .If_Taken})
-				taken(&l, i)
-			}
-			put(&l, {kind = .End})
-			put(&l, {kind = .End})
-			if branch_always(i) && !i.link {l.open_case = false}
-		case .Jump:
-			delay(&l, d, slot_op)
-			goto_(&l, pc, i.target)
+		} else if interp_slot {
+			put(&l, {kind = .Leave, target = pc})
 			l.open_case = false
-		case .Call:
-			put(&l, {kind = .Link, n = 31, target = ret})
-			delay(&l, d, slot_op)
-			if i.target != ret {put(&l, {kind = .Call, target = i.target, n = ret})}
-		case .Jalr:
-			put(&l, {kind = .Jump_Reg, n = u32(i.rs)})
-			if i.rd != 0 {put(&l, {kind = .Link, n = u32(i.rd), target = ret})}
-			delay(&l, d, slot_op)
-			put(&l, {kind = .Call_Reg, n = ret})
-			put(&l, {kind = .End})
-		case .Jr:
-			if i.rs == 31 && exact {
-				put(&l, {kind = .Jump_Reg, n = 31})
-				delay(&l, d, slot_op)
-				put(&l, {kind = .Return})
+		} else {
+			#partial switch i.kind {
+			case .Branch:
+				put(&l, {kind = .Branch, i = i})
+				if i.link {put(&l, {kind = .Link, n = 31, target = ret})}
+				if i.likely {
+					// delay slot only when taken; the branch and everything
+					// before it count on both paths
+					if slot_op && !exact {l.pending -= 1}
+					flush(&l)
+					if slot_op && !exact {l.pending += 1}
+					put(&l, {kind = .If_Taken})
+					delay(&l, d, slot_op)
+					taken(&l, i)
+				} else {
+					delay(&l, d, slot_op)
+					put(&l, {kind = .If_Taken})
+					taken(&l, i)
+				}
 				put(&l, {kind = .End})
-			} else if i.rs == 31 && each && slot_op && may_write(d, 31) {
-				// Learned code's return goes where the interpreter's does
-				// (ps2 learned_jr_to): to $ra as it was before the slot.
-				put(&l, {kind = .Jump_Reg, n = 31})
-				delay(&l, d, slot_op)
-				put(&l, {kind = .Return, n = pc, check = true})
 				put(&l, {kind = .End})
-			} else if i.rs == 31 {
+				if branch_always(i) && !i.link {l.open_case = false}
+			case .Jump:
 				delay(&l, d, slot_op)
-				put(&l, {kind = .Return, n = pc})
-			} else {
+				goto_(&l, pc, i.target)
+				l.open_case = false
+			case .Call:
+				put(&l, {kind = .Link, n = 31, target = ret})
+				delay(&l, d, slot_op)
+				if i.target != ret {put(&l, {kind = .Call, target = i.target, n = ret})}
+			case .Jalr:
 				put(&l, {kind = .Jump_Reg, n = u32(i.rs)})
+				if i.rd != 0 {put(&l, {kind = .Link, n = u32(i.rd), target = ret})}
 				delay(&l, d, slot_op)
-				put(&l, {kind = .Goto_Reg, n = pc})
+				put(&l, {kind = .Call_Reg, n = ret})
 				put(&l, {kind = .End})
+			case .Jr:
+				if i.rs == 31 && exact {
+					put(&l, {kind = .Jump_Reg, n = 31})
+					delay(&l, d, slot_op)
+					put(&l, {kind = .Return})
+					put(&l, {kind = .End})
+				} else if i.rs == 31 && each && slot_op && may_write(d, 31) {
+					// Learned code's return goes where the interpreter's does
+					// (ps2 learned_jr_to): to $ra as it was before the slot.
+					put(&l, {kind = .Jump_Reg, n = 31})
+					delay(&l, d, slot_op)
+					put(&l, {kind = .Return, n = pc, check = true})
+					put(&l, {kind = .End})
+				} else if i.rs == 31 {
+					delay(&l, d, slot_op)
+					put(&l, {kind = .Return, n = pc})
+				} else {
+					put(&l, {kind = .Jump_Reg, n = u32(i.rs)})
+					delay(&l, d, slot_op)
+					put(&l, {kind = .Goto_Reg, n = pc})
+					put(&l, {kind = .End})
+				}
+				l.open_case = false
 			}
-			l.open_case = false
 		}
 
 		if (pc + 4) in f.labels && has_d {

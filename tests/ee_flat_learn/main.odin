@@ -19,6 +19,12 @@
 //     interpreter (ps2.learned_refuse) opens no run, at a lookup miss or
 //     an interpreted call: each run there would be recorded again, and
 //     refused again.
+//   - A transfer whose delay slot is a BREAK or SYSCALL is left to the
+//     interpreter at its pc; a branch-likely's only when taken. D is the EE
+//     compilers' divide-by-zero trap (`beql a1, zero; break 7`), S a
+//     `beql a0, zero` with a SYSCALL slot. Each runs learned as it runs
+//     interpreted, on both paths: v0, the cycles, and the BREAK's pc
+//     (cpu.trap_hook). The leave opens no run.
 //   - The report finds no run left open.
 //
 // Its files are in the WASI shim's in-memory directory, gone at the exit.
@@ -74,6 +80,10 @@ SP :: u32(0x001ff000)
 //   R:  addiu v0, v0, 16; jr ra; nop. A record's entry with no function.
 //   A7: j K + 4; nop.
 //   K:  addiu v0, v0, 32; addiu v0, v0, 64; jr ra; nop. Learned, one block.
+//   D:  div zero, a0, a1; beql a1, zero, D + 12; break 7; addiu v0, v0, 32;
+//       jr ra; nop. Learned.
+//   S:  addiu v1, zero, 0x2f; beql a0, zero, S + 12; syscall (GetThreadId);
+//       addiu v0, v0, 64; jr ra; nop. Learned.
 @(private = "file")
 A1 :: u32(0x00100000)
 @(private = "file")
@@ -102,6 +112,10 @@ R :: u32(0x00114000)
 A7 :: u32(0x00100600)
 @(private = "file")
 K :: u32(0x00115000)
+@(private = "file")
+D :: u32(0x00116000)
+@(private = "file")
+S :: u32(0x00117000)
 
 @(private = "file")
 NOP :: u32(0)
@@ -129,16 +143,41 @@ put :: proc(at: u32, words: []u32) {
 }
 
 // Call entry from the host as a game's host call does (cpu.call, which
-// runs a nested flat run under FLAT): v0 as it returns, and whether
-// learned code ran.
+// runs a nested flat run under FLAT) with a0 and a1: v0 as it returns, and
+// whether learned code ran.
 @(private = "file")
-call :: proc(entry: u32) -> (u32, bool) {
+call :: proc(entry: u32, a0: u32 = 0, a1: u32 = 0) -> (u32, bool) {
 	cpu.state.r = {}
 	cpu.state.r[29].d[0], cpu.state.r[31].d[0] = u64(SP), u64(RA)
+	cpu.state.r[4].d[0], cpu.state.r[5].d[0] = u64(a0), u64(a1)
 	calls := cpu.learned_calls
 	cpu.call(entry)
 	return u32(cpu.state.r[2].d[0]), cpu.learned_calls != calls
 }
+
+// cpu.trap_hook here: the pc of the last BREAK run, 0 for none.
+@(private = "file")
+broke: u32
+
+// What a call of a slot case leaves: v0, the BREAK's pc, the cycles it took.
+@(private = "file")
+Slot_Run :: struct {
+	v0, broke: u32,
+	cycles:    u64,
+}
+
+@(private = "file")
+slot_run :: proc(entry, a0, a1: u32) -> (Slot_Run, bool) {
+	broke = 0
+	at := cpu.state.cycles
+	v0, ran := call(entry, a0, a1)
+	return {v0, broke, cpu.state.cycles - at}, ran
+}
+
+// The slot cases, each an entry and its a0 and a1: D with a divisor and
+// without, S with a0 not 0 (the SYSCALL skipped) and 0.
+@(private = "file")
+SLOT_CASES := [4][3]u32{{D, 7, 3}, {D, 7, 0}, {S, 1, 0}, {S, 0, 0}}
 
 @(private = "file")
 Want :: struct {
@@ -198,6 +237,16 @@ main :: proc() {
 	put(A7, {j(K + 4), NOP})
 	k := [?]u32{addiu_v0(2, 32), addiu_v0(2, 64), JR_RA, NOP}
 	put(K, k[:])
+	dz := [?]u32{0x0085001a, 0x50a00001, 0x0007000d, addiu_v0(2, 32), JR_RA, NOP} // div zero, a0, a1; beql a1, zero, +1; break 7
+	sc := [?]u32{0x2403002f, 0x50800001, 0x0000000c, addiu_v0(2, 64), JR_RA, NOP} // addiu v1, zero, 0x2f; beql a0, zero, +1; syscall
+	put(D, dz[:])
+	put(S, sc[:])
+	cpu.trap_hook = proc(pc: u32) {broke = pc}
+	// The slot cases interpreted, before learning is on: no records.
+	want_slot: [len(SLOT_CASES)]Slot_Run
+	for c, i in SLOT_CASES {want_slot[i], _ = slot_run(c[0], c[1], c[2])}
+	check(want_slot[0].broke == 0 && want_slot[1].broke == D + 8, fmt.tprintf("interpreted D: BREAK at %08x and %08x, want none and %08x", want_slot[0].broke, want_slot[1].broke, D + 8))
+	check(want_slot[2].v0 == 64, fmt.tprintf("interpreted S: v0 %d, want 64", want_slot[2].v0))
 	core.learn_cpu(.Ee, &cpu.state.cycles, cpu.CYCLES_PER_INSN, proc(a: u32) -> u32 {return mem.rd32(a)}, mem.RAM_SIZE, false)
 	check(core.learn_open_path(PATH, {.Ee}), "open")
 
@@ -205,7 +254,7 @@ main :: proc() {
 	check(v0 == 6 && !ran, fmt.tprintf("A1: v0 %d, learned code ran %v; want 6, none", v0, ran))
 	check_file({{A1, 8}, {B, 3}}, "an interpreted call")
 
-	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}}, .Wasm32)
+	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}, {D, D, dz[:]}, {S, S, sc[:]}}, .Wasm32)
 	check(skipped == 0, fmt.tprintf("%d runs not lowered", skipped))
 	check(os.write_entire_file(BLOB, blob) == nil, "write the blob")
 	check(ps2.load_learned(BLOB), "load the blob")
@@ -236,8 +285,15 @@ main :: proc() {
 	check(v0 == 64, fmt.tprintf("A7: v0 %d, want 64", v0))
 	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "a jump into a learned function of one block past its entry")
 
+	for c, i in SLOT_CASES {
+		got, native_ran := slot_run(c[0], c[1], c[2])
+		w := want_slot[i]
+		check(native_ran && got == w, fmt.tprintf("learned %08x(%d, %d): v0 %d, BREAK at %08x, %d cycles, learned code ran %v; want v0 %d, BREAK at %08x, %d cycles, ran", c[0], c[1], c[2], got.v0, got.broke, got.cycles, native_ran, w.v0, w.broke, w.cycles))
+	}
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "a leave to the interpreter at a delay slot's transfer")
+
 	core.learn_report()
 	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "the report")
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; the report finds none open")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; the report finds none open")
 }
