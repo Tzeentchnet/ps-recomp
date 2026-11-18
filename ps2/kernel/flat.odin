@@ -57,6 +57,19 @@ Flat_Ctx :: struct {
 	// emulated heap, so a snapshot holds them with the rest of the machine.
 	ret:   []u32,
 	sp:    []u32,
+	// LEARN (core/learn.odin): the frame of the interpreted run of the
+	// function at each depth, index d the one at depth d (flat_learn_top),
+	// so its len reaches one past the depth. Grown only while LEARN is on,
+	// and on the emulated heap too: a handle a snapshot put back whose run
+	// ended since fails core.learn_frame's check.
+	learn: []Flat_Learn,
+}
+
+// A run's LEARN frame: its handle (core.learn_handle, 0 for none) and the
+// entry it began from, which core.learn_frame checks.
+Flat_Learn :: struct {
+	entry: u32,
+	slot:  u16,
 }
 
 // Emulated state: a snapshot holds it with the rest of the machine.
@@ -105,6 +118,8 @@ flat_drop: proc(ret: []u32)
 flat_start :: proc(t: ^Thread, entry: u32, end: Flat_End) {
 	x := &flat.ee[t.id]
 	if flat_drop != nil {flat_drop(x.ret[:x.depth])}
+	// Runs never returned from, as a coroutine's that is never resumed.
+	if len(x.learn) > 0 {flat_learn_end(x, 0, true)}
 	x.pc = entry
 	x.depth = 0
 	x.enter = true
@@ -152,6 +167,40 @@ flat_push :: proc(x: ^Flat_Ctx, ret, t: u32) {
 	cpu.flat_max_depth = max(cpu.flat_max_depth, x.depth)
 	x.pc = t
 	x.enter = true
+}
+
+// The LEARN frame of the function x runs now, or nil.
+flat_learn_top :: #force_inline proc(x: ^Flat_Ctx) -> ^core.Learn_Frame {
+	if int(x.depth) >= len(x.learn) {return nil}
+	l := x.learn[x.depth]
+	return core.learn_frame(l.slot, l.entry)
+}
+
+// An interpreted run of the EE's from entry begins at x's depth, in place of
+// any frame left there.
+flat_learn_begin :: proc(x: ^Flat_Ctx, entry: u32) {
+	if int(x.depth) >= len(x.learn) {
+		n := max(2 * len(x.learn), FLAT_DEPTH_MIN, int(x.depth) + 1)
+		learn, err := make([]Flat_Learn, n, core.emu_allocator())
+		if err != nil {cpu.fatal("flat: %d LEARN frames not allocated", n)}
+		copy(learn, x.learn)
+		delete(x.learn, core.emu_allocator())
+		x.learn = learn
+	}
+	flat_learn_end(x, x.depth)
+	x.learn[x.depth] = {entry, core.learn_handle(core.learn_begin(.Ee, entry))}
+}
+
+// The runs at depths from to x.depth, innermost first, returned (core.learn_end),
+// or with cut jumped away for good (core.learn_cut).
+flat_learn_end :: proc(x: ^Flat_Ctx, from: u32, cut := false) {
+	for d := min(int(x.depth), len(x.learn) - 1); d >= int(from); d -= 1 {
+		l := &x.learn[d]
+		if f := core.learn_frame(l.slot, l.entry); f != nil {
+			if cut {core.learn_cut(f)} else {core.learn_end(f)}
+		}
+		l^ = {}
+	}
 }
 
 @(private = "file")

@@ -450,11 +450,12 @@ play :: proc(image: string) -> int {
 	learned_on := !native_off && learn_env != "0"
 	when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {
 		learned_on = native != "" && core.env("LEARN") != "0"
-		// It records a PS1 game's runs where it runs learned code: with no
+		// It records a game's runs where it runs learned code: with no
 		// blob every function is interpreted, and its records would be
-		// the whole game's, not the code a default build interprets. A PS2
-		// game's EE it does not record yet.
-		learn_env = core.env("LEARN") if learned_on && !cnf.ps2 else "0"
+		// the whole game's, not the code a default build interprets. Of a
+		// PS2 game's it records the EE's only, for the same reason: the
+		// IOP runs no learned code here.
+		learn_env = core.env("LEARN") if learned_on else "0"
 	}
 	learned, learned_ee: string
 	if learned_on {
@@ -481,6 +482,7 @@ play :: proc(image: string) -> int {
 	learning := false // the runs are recorded
 	if learn_env == "1" || learn_env == "" {
 		cpus := ~core.Learn_Cpus{} if learn_env == "1" else {.Iop, .Ee} if cnf.ps2 else {.Psx}
+		when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {if cnf.ps2 && learn_env == "" {cpus = {.Ee}}}
 		learn := core.disc_path(dir, .Learn)
 		opened := false
 		if err := os.make_directory_all(learn); err != nil && !(err == .Exist && os.is_dir(learn)) {

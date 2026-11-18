@@ -13,6 +13,8 @@ package ps2
 
 import "core:fmt"
 
+import "ps:core"
+
 import cpu "cpu"
 import kernel "kernel"
 import mem "mem"
@@ -21,14 +23,14 @@ import r5900 "r5900"
 // Run the console threads, from the current one's run. Never returns: a
 // thread's run ends in a switch to another, or fatally.
 flat_run :: proc() -> ! {
-	flat_loop()
+	if core.learn_on(.Ee) {flat_loop(true)} else {flat_loop(false)}
 	cpu.fatal("the EE threads' run ended")
 }
 
 // cpu.interp_hook under FLAT: run the guest code at entry until it returns.
 flat_call :: proc(entry: u32) {
 	kernel.flat_nest_push(entry)
-	flat_loop()
+	if core.learn_on(.Ee) {flat_loop(true)} else {flat_loop(false)}
 	kernel.flat_nest_pop()
 }
 
@@ -38,13 +40,18 @@ flat_call :: proc(entry: u32) {
 // The pc is kept in the run (x.pc) before each syscall and events check:
 // one may switch threads, or load a snapshot. After it, flat_reload picks
 // up the run that is current then (flat_resume).
+//
+// With L (LEARN on for the EE), each interpreted run is noted as
+// interp_call's is: lf is the frame of the function the run is in
+// (kernel.flat_learn_top), nil when none is noted.
 @(private = "file")
-flat_loop :: proc() {
+flat_loop :: proc($L: bool) {
 	c := &cpu.state
-	x, pc, ok := flat_resume()
+	x, pc, lf, ok := flat_resume(L)
 	if !ok {return}
 	for {
 		i := r5900.decode(pc, mem.rd32(pc))
+		when L {if lf != nil {learn_note(lf, i)}}
 		c.cycles += cpu.CYCLES_PER_INSN
 		when mem.MOD_PROBE {if mem.mod_ram_has(pc) {mem.mod_probe.interp += 1}}
 		ret := pc + 8
@@ -56,87 +63,96 @@ flat_loop :: proc() {
 			x.pc = pc + 4
 			if i.op == .ERET {
 				exec_insn(i)
-				if !flat_return(x, false, 0) {return}
-				if x, pc, ok = flat_resume(); !ok {return}
+				if !flat_return(x, L, false, 0) {return}
+				if x, pc, lf, ok = flat_resume(L); !ok {return}
 				continue
 			}
 			flat_sys(i)
-			if x, pc, ok = flat_resume(); !ok {return}
+			if x, pc, lf, ok = flat_resume(L); !ok {return}
 		case .Bad:
 			cpu.bad_insn(pc, i.w)
 		case .Branch:
 			taken := branch_taken(i)
 			if i.link {c.r[31].d[0] = u64(ret)}
-			if !i.likely || taken {delay_slot(pc + 4, nil)}
+			if !i.likely || taken {delay_slot(pc + 4, lf)}
 			if !taken {
 				pc = ret
 			} else if i.link && i.target != ret {
 				flat_enter(x, ret, i.target)
-					if x, pc, ok = flat_resume(); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else if i.link {
 				pc = ret
-			} else if flat_mod_tail(x, i.target) {
-					if x, pc, ok = flat_resume(); !ok {return}
+			} else if flat_mod_tail(x, L, i.target) {
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else if flat_goto(x, pc, i.target) {
-				if x, pc, ok = flat_resume(); !ok {return}
+				if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else {
 				pc = i.target
 				if flat_native_at(pc) {
 					x.pc = pc
-					if x, pc, ok = flat_resume(); !ok {return}
+					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 				}
 			}
 		case .Jump:
-			delay_slot(pc + 4, nil)
-			if flat_mod_tail(x, i.target) {
-					if x, pc, ok = flat_resume(); !ok {return}
+			delay_slot(pc + 4, lf)
+			if flat_mod_tail(x, L, i.target) {
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else if flat_goto(x, pc, i.target) {
-					if x, pc, ok = flat_resume(); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else {
 				pc = i.target
 				if flat_native_at(pc) {
 					x.pc = pc
-					if x, pc, ok = flat_resume(); !ok {return}
+					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 				}
 			}
 		case .Call:
 			c.r[31].d[0] = u64(ret)
-			delay_slot(pc + 4, nil)
+			delay_slot(pc + 4, lf)
 			if i.target == ret {
 				pc = ret
 				continue
 			}
 			flat_enter(x, ret, i.target)
-			if x, pc, ok = flat_resume(); !ok {return}
+			if x, pc, lf, ok = flat_resume(L); !ok {return}
 		case .Jalr:
 			t := u32(c.r[i.rs].d[0])
 			if i.rd != 0 {c.r[i.rd].d[0] = u64(ret)}
-			delay_slot(pc + 4, nil)
+			delay_slot(pc + 4, lf)
 			if t == ret {
 				pc = ret
 				continue
 			}
 			flat_enter(x, ret, t)
-			if x, pc, ok = flat_resume(); !ok {return}
+			if x, pc, lf, ok = flat_resume(L); !ok {return}
 		case .Jr:
 			t := u32(c.r[i.rs].d[0])
-			delay_slot(pc + 4, nil)
-			if i.rs == 31 && !flat_unwind(x, t) {
-				if !flat_return(x, true, t) {return}
-				if x, pc, ok = flat_resume(); !ok {return}
+			delay_slot(pc + 4, lf)
+			if i.rs == 31 && !flat_unwind(x, L, t) {
+				if !flat_return(x, L, true, t) {return}
+				if x, pc, lf, ok = flat_resume(L); !ok {return}
 				continue
 			}
 			if i.rs == 31 {
-				// No call returns to t: a jump there, as interp_body's.
-				if flat_mod_tail(x, t) {
-					if x, pc, ok = flat_resume(); !ok {return}
+				// No call returns to t: a jump there, as interp_body's,
+				// which ends the run for LEARN, so none of the code there is
+				// noted in it.
+				when L {
+					kernel.flat_learn_end(x, x.depth, true)
+					lf = nil
+				}
+				if flat_mod_tail(x, L, t) {
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 				} else if flat_goto(x, pc, t) {
-					if x, pc, ok = flat_resume(); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 				} else {
 					pc = t
 					if flat_native_at(pc) {
 						x.pc = pc
-						if x, pc, ok = flat_resume(); !ok {return}
+						when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
+						if x, pc, lf, ok = flat_resume(L); !ok {return}
 					}
 				}
 				continue
@@ -146,20 +162,21 @@ flat_loop :: proc() {
 			// leaves the second to the thread's resume (x.back). A tail call
 			// into a hooked function owes its entry instead (x.enter).
 			x.pc = t
-			tail := flat_mod_tail(x, t)
+			tail := flat_mod_tail(x, L, t)
 			if c.cycles >= cpu.next_event {
 				x.back = t <= pc && !tail
 				kernel.flat_sync()
 				kernel.run_events()
 				kernel.flat_commit()
-					if x, pc, ok = flat_resume(); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else if tail {
-					if x, pc, ok = flat_resume(); !ok {return}
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 			} else {
 				pc = t
 				if flat_native_at(pc) {
 					x.pc = pc
-					if x, pc, ok = flat_resume(); !ok {return}
+					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
+					if x, pc, lf, ok = flat_resume(L); !ok {return}
 				}
 			}
 		}
@@ -182,17 +199,26 @@ Wasm_Func :: #type proc(pc: u32)
 // to do, and leaves the rest to here: due events, a call, a return, a
 // SYSCALL, ERET, or a jump out of its blocks (to other native code, or to
 // interpret).
+//
+// With L, also the LEARN frame of the run's function (flat_loop). Native
+// code entered where a run is noted cuts it: the function goes on in code
+// the record cannot hold (a return to an entry of its own). Interpreting
+// from where native code jumped out (.None) begins a run there, as
+// learned_goto does.
 @(private = "file")
-flat_resume :: proc() -> (x: ^kernel.Flat_Ctx, pc: u32, ok: bool) {
-	x, pc = flat_reload()
+flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_Frame, ok: bool) {
+	x, pc = flat_reload(L)
 	when ODIN_ARCH == .wasm32 {
-		for flat_native_on {
+		left := false
+		native: for flat_native_on {
 			f := flat_lookup(pc)
 			learned_ran()
 			if f == nil {break}
+			when L {kernel.flat_learn_end(x, x.depth, true)}
 			e := &cpu.native_exit
 			when mem.MOD_PROBE {mem.mod_probe.enters[int(mem.mod_ram_has(pc))] += 1}
 			(cast(Wasm_Func)rawptr(f))(pc)
+			left = e.reason == .None
 			// The frames of calls made in-line whose callee left (cpu.wasm_pend).
 			for cpu.wasm_npending > 0 {
 				cpu.wasm_npending -= 1
@@ -209,11 +235,11 @@ flat_resume :: proc() -> (x: ^kernel.Flat_Ctx, pc: u32, ok: bool) {
 						mem.mod_probe.left[int(in_mod)] += 1
 						if in_mod && mem.mod_func_words(pc) == 0 {mem.mod_probe.mid += 1}
 					}
-					return x, pc, true
+					break native
 				}
 				// A jump into a hooked function reaches its chain, as the
 				// interpreter's does (flat_mod_tail sets x.pc).
-				if !flat_mod_tail(x, e.pc) {x.pc = e.pc}
+				if !flat_mod_tail(x, L, e.pc) {x.pc = e.pc}
 			case .Events:
 				x.pc = e.pc
 				x.back = e.back != 0
@@ -229,18 +255,22 @@ flat_resume :: proc() -> (x: ^kernel.Flat_Ctx, pc: u32, ok: bool) {
 				}
 			case .Return:
 				// Native code's `jr $ra` returns, whatever it jumps to.
-				flat_unwind(x, e.pc)
-				flat_return(x, true, e.pc) or_return
+				flat_unwind(x, L, e.pc)
+				if !flat_return(x, L, true, e.pc) {return}
 			case .Sys:
 				x.pc = e.pc
 				flat_sys(r5900.decode(e.pc - 4, mem.rd32(e.pc - 4)))
 			case .Eret:
-				flat_return(x, false, 0) or_return
+				if !flat_return(x, L, false, 0) {return}
 			}
-			x, pc = flat_reload()
+			x, pc = flat_reload(L)
+		}
+		when L {
+			if left && kernel.flat_learn_top(x) == nil {kernel.flat_learn_begin(x, pc)}
 		}
 	}
-	return x, pc, true
+	when L {lf = kernel.flat_learn_top(x)}
+	return x, pc, lf, true
 }
 
 // wasm32: native code at t, which a taken jump that checked nothing goes
@@ -275,12 +305,15 @@ flat_sys :: proc(i: r5900.Insn) {
 
 // The run that is current now, and its pc, after the checks it owes: a
 // call's on entry (interp_call), or a backward jump's events check. Each
-// may switch to another run, which may owe its own.
+// may switch to another run, which may owe its own. With L, an
+// interpreted call's run is noted from after its events check, as
+// interp_call's is.
 @(private = "file")
-flat_reload :: proc() -> (^kernel.Flat_Ctx, u32) {
+flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32) {
 	for {
 		x := kernel.flat_ctx()
 		check := false
+		begin := false
 		if x.enter {
 			x.enter = false
 			if x.depth == 0 {x.ra, x.ra_sp = u32(cpu.state.r[31].d[0]), u32(cpu.state.r[29].d[0])}
@@ -294,7 +327,10 @@ flat_reload :: proc() -> (^kernel.Flat_Ctx, u32) {
 			}
 			// Native code at the entry is not interpreted, and traces its
 			// own entry (flat_resume runs it next).
-			if !flat_native_at(x.pc) {interp_enter(x.pc)}
+			if !flat_native_at(x.pc) {
+				interp_enter(x.pc)
+				begin = L
+			}
 			check = true
 		} else if x.back {
 			x.back = false
@@ -304,8 +340,10 @@ flat_reload :: proc() -> (^kernel.Flat_Ctx, u32) {
 			kernel.flat_sync()
 			kernel.run_events()
 			kernel.flat_commit()
+			when L {if begin {kernel.flat_learn_begin(x, x.pc)}}
 			continue
 		}
+		when L {if begin {kernel.flat_learn_begin(x, x.pc)}}
 		return x, x.pc
 	}
 }
@@ -322,10 +360,12 @@ flat_enter :: #force_inline proc(x: ^kernel.Flat_Ctx, ret, t: u32) {
 
 // A jump from x to t that goto_pc takes as a tail call into a hooked
 // function's chain (mod_flat_tail): the run goes on at t, whose entry is
-// owed (flat_reload).
+// owed (flat_reload). With L, the run's LEARN frame ends, as goto_pc's tail
+// call returns from it.
 @(private = "file")
-flat_mod_tail :: #force_inline proc(x: ^kernel.Flat_Ctx, t: u32) -> bool {
+flat_mod_tail :: #force_inline proc(x: ^kernel.Flat_Ctx, $L: bool, t: u32) -> bool {
 	if !cpu.mod_on || !mod_flat_tail(x, t) {return false}
+	when L {kernel.flat_learn_end(x, x.depth)}
 	cpu.spin_dirty |= cpu.SPIN_SIDE
 	x.pc, x.enter = t, true
 	return true
@@ -353,15 +393,17 @@ flat_goto :: #force_inline proc(x: ^kernel.Flat_Ctx, pc, t: u32) -> bool {
 // false for a nested run, which returns to the host. A return address
 // marked by a hooked call (FLAT_MOD_MARK) runs its after hooks first
 // (mod_flat_return), and may end the run. A `jr $ra` to an outer call's
-// return address has unwound to it first (flat_unwind).
+// return address has unwound to it first (flat_unwind). With L, the
+// returning function's LEARN frame ends.
 @(private = "file")
-flat_return :: proc(x: ^kernel.Flat_Ctx, jr: bool, ra: u32) -> bool {
+flat_return :: proc(x: ^kernel.Flat_Ctx, $L: bool, jr: bool, ra: u32) -> bool {
 	if x.depth > 0 {
+		when L {kernel.flat_learn_end(x, x.depth)}
 		x.depth -= 1
 		ret := x.ret[x.depth]
 		for ret & FLAT_MOD_MARK != 0 {
 			again: bool
-			if ret, again = mod_flat_return(ret); again {return flat_end(x)}
+			if ret, again = mod_flat_return(ret); again {return flat_end(x, L)}
 		}
 		x.pc = ret &~ kernel.FLAT_HOST_TAIL
 		when mem.MOD_PROBE {if mem.mod_ram_has(x.pc) {mem.mod_probe.returns += 1}}
@@ -371,7 +413,7 @@ flat_return :: proc(x: ^kernel.Flat_Ctx, jr: bool, ra: u32) -> bool {
 		}
 		return true
 	}
-	return flat_end(x)
+	return flat_end(x, L)
 }
 
 // The longjmps shown so far, each kind once under PS_DEBUG (a search past
@@ -388,9 +430,10 @@ flat_unwind_shown: bit_set[enum {Done, Host, Max, Jump, Under}]
 // another sp is no match. The search goes on into the runs x is nested in
 // (the host's, kernel.flat.nest, then the thread's), each one past host
 // code. Else the return pops the innermost as before, except when no call
-// matches: true, a jump there.
+// matches: true, a jump there. With L, the LEARN frames of the calls
+// dropped end, as each returns in interp_body's unwind.
 @(private = "file")
-flat_unwind :: proc(x: ^kernel.Flat_Ctx, ra: u32) -> bool {
+flat_unwind :: proc(x: ^kernel.Flat_Ctx, $L: bool, ra: u32) -> bool {
 	MARKS :: kernel.FLAT_HOST_TAIL | FLAT_MOD_MARK
 	sp := u32(cpu.state.r[29].d[0])
 	if x.depth > 0 {
@@ -437,6 +480,7 @@ flat_unwind :: proc(x: ^kernel.Flat_Ctx, ra: u32) -> bool {
 				flat_unwind_shown += {.Done}
 				fmt.eprintfln("ee: jr $ra to %08x: unwound to the call %d out", ra, n)
 			}
+			when L {kernel.flat_learn_end(x, u32(k) + 2)}
 			x.depth = u32(k) + 1
 			return false
 		}
@@ -455,9 +499,11 @@ flat_unwind :: proc(x: ^kernel.Flat_Ctx, ra: u32) -> bool {
 	return true
 }
 
-// The end of run x, at depth 0: false for a nested run.
+// The end of run x, at depth 0: false for a nested run. With L, the LEARN
+// frames left in it end.
 @(private = "file")
-flat_end :: proc(x: ^kernel.Flat_Ctx) -> bool {
+flat_end :: proc(x: ^kernel.Flat_Ctx, $L: bool) -> bool {
+	when L {kernel.flat_learn_end(x, 0)}
 	switch x.end {
 	case .Call:
 		return false
