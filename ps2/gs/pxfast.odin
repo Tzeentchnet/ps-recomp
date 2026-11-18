@@ -4,8 +4,7 @@
 // other context takes the generic `pixel`.
 //
 // A fast proc covers a context with the depth test on, no PABE, no FBA,
-// COLCLAMP on, an alpha test that does not fail to AFAIL ZB_ONLY, and frame
-// and Z formats with rows (row_init). It takes the rows already at y: the
+// COLCLAMP on, and frame and Z formats with rows (row_init). It takes the rows already at y: the
 // rasteriser seeks them once per row (ctx_seek), where `pixel` seeks them
 // itself.
 package ps2_gs
@@ -18,7 +17,7 @@ Pixel_Proc :: #type proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lo
 // One fast context. tfx is -1 for no texture mapping; bl is ALPHA's
 // A, B, C and D (its low byte), 0xff for no blending; fbmsk is FBMSK != 0;
 // atst is TEST's ATST, tested against the context's AREF, and afail its
-// AFAIL (0 KEEP, 1 FB_ONLY, 3 RGB_ONLY); no alpha test, or ATST ALWAYS, is
+// AFAIL (0 KEEP, 1 FB_ONLY, 2 ZB_ONLY, 3 RGB_ONLY); no alpha test, or ATST ALWAYS, is
 // atst 1 with afail 0. fge is PRIM's FGE; date is 0 for no destination
 // alpha test, 1 for DATM 0, 2 for DATM 1.
 Px_Fast :: struct {
@@ -42,7 +41,10 @@ Px_Fast :: struct {
 // Then the generic contexts drawing most pixels of two more titles' scenes
 // (SWGS-PX-1): seven of one, eight of the other, and the first's
 // destination alpha test. The last nine cover another title's full-screen
-// menu layers and star field.
+// menu layers and star field. The last four are another title's scene
+// passes, 99.3 % of its generic pixels (SWGS-PX-2): a Z-only pass (ATST
+// NEVER to ZB_ONLY), two frame-only passes (ATST NEVER to FB_ONLY) and a
+// CT24 textured layer.
 PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x68, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
@@ -85,6 +87,10 @@ PX_FAST :: [?]Px_Fast {
 	{tfx = -1, tcc = false, ztst = 3, zmsk = true, zpsm = PSMZ32, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = true, ztst = 2, zmsk = true, zpsm = PSMZ32, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = false, ztst = 3, zmsk = false, zpsm = PSMZ32, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 1, zmsk = false, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 2, fge = false, date = 0},
+	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = false, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 1, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 1, zmsk = false, zpsm = PSMZ24, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 0, afail = 1, fge = false, date = 0},
 }
 
 // PX_FAST's procs, in its order.
@@ -92,7 +98,7 @@ PX_FAST :: [?]Px_Fast {
 px_procs := [len(PX_FAST)]Pixel_Proc {
 	px_0, px_1, px_2, px_3, px_4, px_5, px_6, px_7, px_8, px_9, px_10, px_11, px_12, px_13, px_14, px_15, px_16,
 	px_17, px_18, px_19, px_20, px_21, px_22, px_23, px_24, px_25, px_26, px_27, px_28, px_29, px_30, px_31,
-	px_32, px_33, px_34, px_35, px_36, px_37, px_38, px_39, px_40,
+	px_32, px_33, px_34, px_35, px_36, px_37, px_38, px_39, px_40, px_41, px_42, px_43, px_44,
 }
 
 @(private)
@@ -180,6 +186,15 @@ px_39 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fog
 px_40 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 40)}
 
 @(private)
+px_41 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 41)}
+@(private)
+px_42 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 42)}
+@(private)
+px_43 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 43)}
+@(private)
+px_44 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 44)}
+
+@(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
 	F :: PX_FAST
 	pixel_fast(c, x, zf, col, u, v, lod, fogf,
@@ -200,7 +215,6 @@ px_pick :: proc(c: ^Ctx) -> Pixel_Proc {
 	if !c.frow.ok || !c.zrow.ok {return pixel}
 	atst, afail: u32 = 1, 0
 	if c.ate && c.atst != 1 {
-		if c.afail == 2 {return pixel} // ZB_ONLY
 		atst, afail = c.atst, c.afail
 	}
 	k := Px_Fast {
@@ -260,7 +274,7 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) #no_bounds_check {
 	#assert(FPSM == PSMCT32 || FPSM == PSMCT24)
 	#assert(ZTST >= 1)
-	#assert(ATST <= 7 && (AFAIL == 0 || AFAIL == 1 || AFAIL == 3))
+	#assert(ATST <= 7 && AFAIL <= 3)
 	#assert(ATST != 1 || AFAIL == 0)
 	#assert(DATE <= 2)
 	px := u32(x)
@@ -303,12 +317,13 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	D :: (BL >> 6) & 3
 	BLEND :: BL != 0xff
 	// A pixel failing the alpha test: KEEP writes neither frame nor Z,
-	// FB_ONLY and RGB_ONLY no Z, and RGB_ONLY keeps the frame's alpha.
-	// `pass` exists only where one of these reads it.
-	ZWRITE :: !ZMSK && !(ATST == 0 && AFAIL != 0) // ATST NEVER always fails
-	FAIL_Z :: ATST != 1 && AFAIL != 0 && ZWRITE
+	// FB_ONLY and RGB_ONLY no Z, ZB_ONLY no frame, and RGB_ONLY keeps the
+	// frame's alpha. `pass` exists only where one of these reads it.
+	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // ATST NEVER always fails
+	FAIL_Z :: ATST != 1 && (AFAIL == 1 || AFAIL == 3) && ZWRITE
+	FAIL_F :: ATST != 1 && AFAIL == 2
 	FAIL_A :: ATST != 1 && AFAIL == 3
-	when ATST != 1 && (AFAIL == 0 || FAIL_Z || FAIL_A) {
+	when ATST != 1 && (AFAIL == 0 || FAIL_Z || FAIL_F || FAIL_A) {
 		pass := px_atst(ATST, u32(src.a), c.aref)
 		when AFAIL == 0 {if !pass {return}}
 	}
@@ -335,6 +350,7 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 			row_write_w(&c.zrow, za, z, ZWIDE)
 		}
 	}
+	when FAIL_F {if !pass {return}}
 
 	when UNPACK {
 		dst := expand(dst_raw)
