@@ -12,6 +12,9 @@
 //   - A jump into learned code where it has no block is interpreted, and
 //     opens no run: the pc is no entry. Before the fix every such pc began
 //     a run, cut when native code ran next, and a game wrote one at each.
+//   - The same for a function of one block (K): its code is entered at
+//     its entry alone, and leaves at any other pc with nothing run. Before
+//     the fix it ran from the entry wherever it was entered.
 //   - An entry the blob's records hold but the compiler left to the
 //     interpreter (ps2.learned_refuse) opens no run, at a lookup miss or
 //     an interpreted call: each run there would be recorded again, and
@@ -69,6 +72,8 @@ SP :: u32(0x001ff000)
 //   A6: PUSH; jal R; nop; lw ra, 0(sp); jr ra; POP.
 //   N2: j R; nop. Learned.
 //   R:  addiu v0, v0, 16; jr ra; nop. A record's entry with no function.
+//   A7: j K + 4; nop.
+//   K:  addiu v0, v0, 32; addiu v0, v0, 64; jr ra; nop. Learned, one block.
 @(private = "file")
 A1 :: u32(0x00100000)
 @(private = "file")
@@ -93,6 +98,10 @@ A6 :: u32(0x00100500)
 N2 :: u32(0x00113000)
 @(private = "file")
 R :: u32(0x00114000)
+@(private = "file")
+A7 :: u32(0x00100600)
+@(private = "file")
+K :: u32(0x00115000)
 
 @(private = "file")
 NOP :: u32(0)
@@ -186,6 +195,9 @@ main :: proc() {
 	n2 := [?]u32{j(R), NOP}
 	put(N2, n2[:])
 	put(R, {addiu_v0(2, 16), JR_RA, NOP})
+	put(A7, {j(K + 4), NOP})
+	k := [?]u32{addiu_v0(2, 32), addiu_v0(2, 64), JR_RA, NOP}
+	put(K, k[:])
 	core.learn_cpu(.Ee, &cpu.state.cycles, cpu.CYCLES_PER_INSN, proc(a: u32) -> u32 {return mem.rd32(a)}, mem.RAM_SIZE, false)
 	check(core.learn_open_path(PATH, {.Ee}), "open")
 
@@ -193,7 +205,7 @@ main :: proc() {
 	check(v0 == 6 && !ran, fmt.tprintf("A1: v0 %d, learned code ran %v; want 6, none", v0, ran))
 	check_file({{A1, 8}, {B, 3}}, "an interpreted call")
 
-	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}}, .Wasm32)
+	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}}, .Wasm32)
 	check(skipped == 0, fmt.tprintf("%d runs not lowered", skipped))
 	check(os.write_entire_file(BLOB, blob) == nil, "write the blob")
 	check(ps2.load_learned(BLOB), "load the blob")
@@ -220,8 +232,12 @@ main :: proc() {
 	check(v0 == 16, fmt.tprintf("A6: v0 %d, want 16", v0))
 	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {B, 3}, {M, 3}}, "an interpreted call to a refused entry")
 
+	v0, _ = call(A7)
+	check(v0 == 64, fmt.tprintf("A7: v0 %d, want 64", v0))
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "a jump into a learned function of one block past its entry")
+
 	core.learn_report()
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {B, 3}, {M, 3}}, "the report")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "the report")
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none; an entry left to the interpreter opens none; the report finds none open")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; the report finds none open")
 }

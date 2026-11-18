@@ -1636,12 +1636,16 @@ native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow:
 			seen[s.target] = true
 			append(&fs, native.Blob_Func{s.target, at})
 		}
-		// The entry search misses only a pc no block starts at, and the
-		// miss leaves with None at that pc, where the runner would enter
-		// again: every pc entered at is a block.
+		// Every entry is a block. The runner enters at any pc in the
+		// function's span (learned code: ps2 learned_search), so the code
+		// finds the block of the pc it is entered at; a pc no block starts
+		// at leaves with None there, with nothing run, and is interpreted.
 		for b in fs {assert(b.addr in labels, "wasm32 entry without a block")}
 		if len(fs) == 1 {
-			go(a, f, labels, f.entry, learned)
+			// One entry: one compare, into its block on a hit.
+			native.entry_pc(a, .T)
+			native.br_cmp_imm(a, .Eq, .T, f.entry, labels[f.entry])
+			exit(a, .None)
 		} else {
 			// t = the pc entered at, found among the blocks.
 			native.entry_pc(a, .T)
