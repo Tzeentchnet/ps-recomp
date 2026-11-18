@@ -11,6 +11,8 @@
 // gave, sets IDLE, then stores 1 at done (in the module's memory) and
 // notifies it, which is what the module waits on to free the stack.
 
+import { monotonicNs } from "./wasi.js";
+
 const CTL_WORDS = 8;
 const IDLE = 0;
 const CLAIMED = 1;
@@ -64,7 +66,8 @@ export class Bands {
 // A pool Worker: instantiates the module on the shared memory, calls
 // ready(), then runs every spawn given to it, forever. Its imports other
 // than the memory are never called by band_entry, except fd_write for an
-// assertion's message, which goes to log; the rest throw.
+// assertion's message, which goes to log, and clock_time_get, which reads
+// the monotonic clock the main thread reads; the rest throw.
 export async function bandWorker({ module, memory, ctl, id }, ready, log) {
 	const imports = { env: { memory } };
 	for (const { module: m, name, kind } of WebAssembly.Module.imports(module)) {
@@ -86,6 +89,12 @@ export async function bandWorker({ module, memory, ctl, id }, ready, log) {
 				total += len;
 			}
 			dv.setUint32(nWritten, total, true);
+			return 0;
+		};
+	}
+	if (wasi?.clock_time_get) {
+		wasi.clock_time_get = (_id, _precision, out) => {
+			new DataView(memory.buffer).setBigUint64(out, monotonicNs(), true);
 			return 0;
 		};
 	}

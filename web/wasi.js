@@ -9,18 +9,26 @@
 // leading "/" from paths and preopen names alike, so "/disc/x" is "disc/x"
 // in the preopen. One preopen, not one per directory: core:os indexes past
 // the end of a path that equals a preopen's name (match_preopen), and
-// make_directory_all("/data/x") reaches "/data" itself. Clocks are performance.now() and Date.now(); poll_oneoff takes clock
-// subscriptions only and blocks the thread until the deadline, which a Worker
-// or Node may do. Rights are not checked: Odin's
-// core:os opens read-only files without the fd_seek right that fd_pread
-// needs. A 64 KiB block cache sits in front of each reader, so sector-sized
-// reads do not each reach the reader. One instance per run: proc_exit throws.
+// make_directory_all("/data/x") reaches "/data" itself. Clocks are
+// performance.timeOrigin + performance.now() (one base on every thread) and
+// Date.now(); poll_oneoff takes clock subscriptions only and blocks the
+// thread until the deadline, which a Worker or Node may do. Rights are not
+// checked: Odin's core:os opens read-only files without the fd_seek right
+// that fd_pread needs. A 64 KiB block cache sits in front of each reader,
+// so sector-sized reads do not each reach the reader. One instance per run:
+// proc_exit throws.
 
 const ERR = {
 	SUCCESS: 0, ACCES: 2, BADF: 8, BUSY: 10, EXIST: 20, INVAL: 28, ISDIR: 31, NOENT: 44,
 	NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, NOTSUP: 58, ROFS: 69, SPIPE: 70,
 	NOTCAPABLE: 76,
 };
+// Monotonic nanoseconds on a base every thread shares: performance.now()
+// alone counts from each Worker's own start.
+export function monotonicNs() {
+	return BigInt(Math.round((performance.timeOrigin + performance.now()) * 1e6));
+}
+
 const CLOCK = { REALTIME: 0, MONOTONIC: 1, PROCESS_CPUTIME: 2, THREAD_CPUTIME: 3 };
 const EVENTTYPE_CLOCK = 0;
 const SUBCLOCK_ABSTIME = 1;
@@ -271,7 +279,7 @@ export class Wasi {
 			case CLOCK.MONOTONIC:
 			case CLOCK.PROCESS_CPUTIME:
 			case CLOCK.THREAD_CPUTIME:
-				return BigInt(Math.round(performance.now() * 1e6));
+				return monotonicNs();
 		}
 		return null;
 	}
