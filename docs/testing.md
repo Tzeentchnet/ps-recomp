@@ -587,10 +587,11 @@ makes each blob stale, so it is dropped. A `COMMIT=test` build finds only
 a native blob whose key names `test`.
 
 A native PS1 run compiles the same sets in a child of the player
-(`play --learned-midload`, docs/porting.md). tests/play checks it on the
-built-in disc (`midlearn`): one compile, waited for, loads its record and
-leaves no temporary file; with `PS_MIDLOAD_FAIL=1` the child exits 1, the
-run counts the failure and goes on.
+(`play --learned-midload`, docs/porting.md), and so does a native PS2
+run for its EE. tests/play checks it on built-in discs (`midlearn`,
+`midlearn_ee`): one compile, waited for, loads its record and leaves no
+temporary file; with `PS_MIDLOAD_FAIL=1` the child exits 1, the run
+counts the failure and goes on.
 
 A headless PS2 game never presents, so its present count stays 0. To count
 presents, run it with `PS_HEADLESS=0 node tests/wasi/play.mjs ...`: slower,

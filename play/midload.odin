@@ -1,6 +1,6 @@
-// Loading code a run makes while it runs: one job per run, the PS2's VU
-// microprograms on a native build (midload_vu.odin) or a PS1 game's learned
-// functions (midload_learned.odin). This file is the policy both
+// Loading code a run makes while it runs: the PS2's VU microprograms on a
+// native build (midload_vu.odin), and a PS1 game's or a PS2 game's EE's
+// learned functions (midload_learned.odin). This file is the policy they
 // share; each job has only its own start and done steps.
 //
 // Once what the job loads from (the VU captures, the LEARN records) has
@@ -15,9 +15,10 @@
 // the same code, and a wait mid-session would stall it. MIDLOAD=0 turns it
 // off. The mode is said once at the start.
 //
-// One job is in flight at most. One still running after MIDLOAD_DEADLINE
-// is stopped, and a stopped or failed one counts as a failed load; one that
-// cannot be stopped or waited for may still run, so none other starts.
+// One job of each kind is in flight at most, each counted on its own. One
+// still running after MIDLOAD_DEADLINE is stopped, and a stopped or failed
+// one counts as a failed load; one that cannot be stopped or waited for may
+// still run, so none other of its kind starts.
 package play
 
 import "core:fmt"
@@ -69,22 +70,35 @@ Midload_Job :: struct {
 	report:     proc(fails: int),
 }
 
+// A job's state. One job of each kind may be in flight at once, so each
+// has its own; vblanks counts for all.
 @(private = "file")
 Midload :: struct {
 	job:     Midload_Job,
 	wait:    bool, // MIDLOAD_WAIT=1, DUMP or SHOT
 	running: bool,
 	started: time.Tick, // when the job started
-	stuck:   bool, // a job could not be stopped or waited for, or none can start: none other starts
+	stuck:   bool, // a job could not be stopped or waited for, or none can start: none other of its kind starts
 	count:   u64, // job.grown() at the last vblank
 	pending: bool, // grown since the last job started
 	quiet:   int, // vblanks since it last grew
 	fails:   int, // jobs that failed or were stopped
-	vblanks: u64, // vblanks since boot, for the log
 }
 
+// The kinds of job a run can take on: a PS2 game's VU microprograms and its
+// EE's learned functions.
 @(private = "file")
-ml: Midload
+MIDLOAD_JOBS :: 2
+
+@(private = "file")
+mls: [MIDLOAD_JOBS]Midload
+
+@(private = "file")
+n_mls: int
+
+// The vblanks since boot, for the log.
+@(private = "file")
+ml_vblanks: u64
 
 // Whether MIDLOAD=0 turns mid-run loading off.
 @(private)
@@ -93,7 +107,7 @@ midload_off :: proc() -> bool {
 }
 
 // Take on job for the run, unless netplay or rollback runs: false then,
-// after a message, and the boot hooks nothing. Says the mode.
+// after a message, and the boot hooks nothing for it. Says the mode.
 @(private)
 midload_begin :: proc(job: Midload_Job) -> bool {
 	for name in ([?]string{"NET_PEER", "SNAPTEST", "RBTEST"}) {
@@ -102,6 +116,7 @@ midload_begin :: proc(job: Midload_Job) -> bool {
 			return false
 		}
 	}
+	assert(n_mls < MIDLOAD_JOBS, "play: more mid-run jobs than MIDLOAD_JOBS")
 	why := ""
 	for name in ([?]string{"MIDLOAD_WAIT", "DUMP", "SHOT"}) {
 		v, set := core.env_lookup(name)
@@ -110,8 +125,9 @@ midload_begin :: proc(job: Midload_Job) -> bool {
 			break
 		}
 	}
-	ml = {job = job, wait = why != ""}
-	if ml.wait {
+	mls[n_mls] = {job = job, wait = why != ""}
+	n_mls += 1
+	if why != "" {
 		fmt.eprintfln("play: mid-run %s loading on, each %s waited for (%s%s)", job.what, job.noun, core.ENV_PREFIX, why)
 	} else {
 		fmt.eprintfln("play: mid-run %s loading on, %ss in the background", job.what, job.noun)
@@ -120,12 +136,17 @@ midload_begin :: proc(job: Midload_Job) -> bool {
 	return true
 }
 
-// Boot.vblank: take a finished job's code, then start a job once what it
-// loads from has been quiet MIDLOAD_FRAMES vblanks.
+// Boot.vblank: for each job, take a finished one's code, then start one
+// once what it loads from has been quiet MIDLOAD_FRAMES vblanks.
 midload_vblank :: proc() {
-	ml.vblanks += 1
+	ml_vblanks += 1
+	for &ml in mls[:n_mls] {midload_step(&ml)}
+}
+
+@(private = "file")
+midload_step :: proc(ml: ^Midload) {
 	if ml.stuck {return}
-	if ml.running {midload_poll(0)}
+	if ml.running {midload_poll(ml, 0)}
 	if n := ml.job.grown(); n != ml.count {
 		ml.count = n
 		ml.pending = true
@@ -139,44 +160,46 @@ midload_vblank :: proc() {
 	case .Started:
 		ml.running = true
 		ml.started = time.tick_now()
-		if ml.wait {midload_poll(MIDLOAD_DEADLINE)}
+		if ml.wait {midload_poll(ml, MIDLOAD_DEADLINE)}
 	case .Not:
 	case .Off:
 		ml.stuck = true
 	}
 }
 
-// Boot.quit: stop a job still running, clean up after it, and say what was
-// loaded.
+// Boot.quit: stop the jobs still running, clean up after them, and say what
+// was loaded.
 midload_quit :: proc() {
 	core.fatal_cleanup = nil
-	midload_end(true)
-	ml.job.report(ml.fails)
+	for &ml in mls[:n_mls] {
+		midload_end(&ml, true)
+		ml.job.report(ml.fails)
+	}
 }
 
-// midload_end at a fatal error (core.fatal_cleanup).
+// midload_end of every job at a fatal error (core.fatal_cleanup).
 @(private = "file")
 midload_cleanup :: proc() {
-	midload_end(true)
+	for &ml in mls[:n_mls] {midload_end(&ml, true)}
 }
 
 @(private = "file")
-midload_end :: proc(quit: bool) {
-	if ml.running {midload_stop(quit)}
+midload_end :: proc(ml: ^Midload, quit: bool) {
+	if ml.running {midload_stop(ml, quit)}
 	ml.job.cleanup()
 }
 
 // Poll the job for up to timeout; stop it when it has run past
 // MIDLOAD_DEADLINE or cannot be waited for, a failed load.
 @(private = "file")
-midload_poll :: proc(timeout: time.Duration) {
+midload_poll :: proc(ml: ^Midload, timeout: time.Duration) {
 	switch ml.job.poll(timeout) {
 	case .Running:
 		if time.tick_since(ml.started) < MIDLOAD_DEADLINE {return}
 		fmt.eprintfln("play: mid-run %s %s took over %.0f s, stopped", ml.job.what, ml.job.noun, time.duration_seconds(MIDLOAD_DEADLINE))
 	case .Done:
 		ml.running = false
-		fmt.eprintfln("play: mid-run %s %s done at vblank %d", ml.job.what, ml.job.noun, ml.vblanks)
+		fmt.eprintfln("play: mid-run %s %s done at vblank %d", ml.job.what, ml.job.noun, ml_vblanks)
 		return
 	case .Failed:
 		ml.running = false
@@ -184,13 +207,14 @@ midload_poll :: proc(timeout: time.Duration) {
 		return
 	case .Lost:
 	}
-	midload_end(false)
+	midload_end(ml, false)
 	ml.fails += 1
 }
 
-// End the running job. One that may still run lets no other start (stuck).
+// End the running job. One that may still run lets no other of its kind
+// start (stuck).
 @(private = "file")
-midload_stop :: proc(quit: bool) {
+midload_stop :: proc(ml: ^Midload, quit: bool) {
 	ml.running = false
 	if !ml.job.stop(quit) {ml.stuck = true}
 }

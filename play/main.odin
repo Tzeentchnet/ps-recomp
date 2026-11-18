@@ -31,9 +31,9 @@
 // stored learned blob is not for these records, this build and blob
 // format (always, for a dev build), and loaded beside the native blob.
 // Code that is not in RAM as it was recorded is interpreted, and learned.
-// A PS1 game's run loads what it records as it goes (midload.odin),
-// compiled in a child (`play --learned-midload <records> <out>`, then the
-// run's pid).
+// A PS1 game's run, and a PS2 game's EE in a native build, loads what it
+// records as it goes (midload_learned.odin), compiled in a child (`play
+// --learned-midload <psx | ee> <records> <out>`, then the run's pid).
 //
 // A game's mods (the disc directory's mods directory: psx/mods.odin for a
 // PS1 game, ps2/mod.odin for a PS2 game's EE) run their functions as native
@@ -86,9 +86,9 @@ run :: proc(args: []string) -> int {
 	case len(args) == 7 && args[1] == "--convert-vu":
 		if !midload_child(args[1], args[6]) {return 1}
 		return convert(args[2], args[3], args[4], args[5], vu_only = true)
-	case len(args) == 5 && args[1] == "--learned-midload":
-		if !midload_child(args[1], args[4]) {return 1}
-		return compile_learned(.Psx, args[2], args[3])
+	case len(args) == 6 && args[1] == "--learned-midload" && (args[2] == "psx" || args[2] == "ee"):
+		if !midload_child(args[1], args[5]) {return 1}
+		return compile_learned(.Psx if args[2] == "psx" else .Ee, args[3], args[4])
 	case (len(args) == 5 || len(args) == 6) && args[1] == "--learned" && (args[2] == "psx" || args[2] == "iop" || args[2] == "ee"):
 		return compile_learned(.Psx if args[2] == "psx" else .Iop if args[2] == "iop" else .Ee, args[3], args[4], args[5] if len(args) == 6 else "")
 	case len(args) == 5 && args[1] == "--mods" && (args[2] == "psx" || args[2] == "ee"):
@@ -154,7 +154,7 @@ learned_key: string
 learned_failed :: proc() {
 	os.remove(learned_key)
 	fmt.eprintln("play: the stored learned code would not load; it is compiled again next run")
-	midlearn_uncover()
+	midlearn_uncover(.Psx)
 }
 
 // The same for a PS2 game's EE learned blob.
@@ -165,6 +165,7 @@ learned_ee_key: string
 learned_ee_failed :: proc() {
 	os.remove(learned_ee_key)
 	fmt.eprintln("play: the stored learned EE code would not load; it is compiled again next run")
+	midlearn_uncover(.Ee)
 }
 
 // The same for the mods blob.
@@ -550,7 +551,11 @@ play :: proc(image: string) -> int {
 			mods_native        = mods_native,
 			mods_native_failed = mods_native_refused,
 		}
-		if midload_init(image, native, capture) {
+		// The VU programs it captures, and the EE code it records, are
+		// loaded as they are made (midload_vu.odin, midload_learned.odin).
+		vu := midload_init(image, native, capture)
+		ee := learned_on && learning && midlearn_init(dir, learn_records(dir, learned_files(.Ee).records), .Ee, learned_ee != "")
+		if vu || ee {
 			b.vblank = midload_vblank
 			b.quit = midload_quit
 		}
@@ -578,7 +583,7 @@ play :: proc(image: string) -> int {
 	}
 	// The PS1 code it records is loaded as it is compiled
 	// (midload_learned.odin).
-	if learned_on && learning && midlearn_init(dir, learn_records(dir, learned_files(.Psx).records), learned != "") {
+	if learned_on && learning && midlearn_init(dir, learn_records(dir, learned_files(.Psx).records), .Psx, learned != "") {
 		b.vblank = midload_vblank
 		b.quit = midload_quit
 	}

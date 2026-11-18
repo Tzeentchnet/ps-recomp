@@ -1,5 +1,5 @@
-// The mid-run load of a PS1 game's learned functions (midload.odin has the
-// policy).
+// The mid-run load of a PS1 game's learned functions, or a PS2 game's EE's
+// (midload.odin has the policy).
 //
 // A PS1 run records the code it interprets (core/learn.odin); the next run
 // compiles the records to a learned blob and runs them native
@@ -11,7 +11,7 @@
 // compiles in a worker of its own (`play --learned psx <records> <out>
 // <interp>`, through the "system:ps_learn" imports: web/learn.js,
 // midload_learned_wasi.odin); a native build in a child of this executable
-// (`play --learned-midload <records> <out> <parent pid>`,
+// (`play --learned-midload <psx | ee> <records> <out> <parent pid>`,
 // midload_learned_native.odin). Nothing is stored: the next run compiles its
 // own set, by its own key (learned_blob), as it would have.
 //
@@ -31,17 +31,24 @@
 // with is dropped as stale. A native build leaves nothing to the interpreter
 // (learned_interp), so its loads are never stale.
 //
-// On only in a build that runs a PS1 game's learned code and records its
-// runs (play), unless MIDLOAD=0; the host has the say on whether it can
-// compile (one that cannot says so once, and none starts).
+// A PS2 game's EE's go the same way, in a native build only: a wasm32 build
+// records no EE runs. The EE's blob is loaded at a vblank, on the EE thread
+// (ps2.Boot.vblank), the only thread that looks learned EE functions up.
+// The IOP's are not loaded mid-run: the IOP runs on a thread of its own.
+//
+// On only in a build that runs the game's learned code and records its runs
+// (play), unless MIDLOAD=0; the host has the say on whether it can compile
+// (one that cannot says so once, and none starts).
 package play
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:time"
 import "ps:core"
 import "ps:recomp/native"
 import psxnative "ps:psx/native"
+import "ps:ps2"
 
 // The most records one compile takes: the lod set the first measured load
 // had (480 records, 14.5 ms on the play thread; bof4's 28 took 3.7 ms,
@@ -50,6 +57,7 @@ MIDLEARN_RECORDS :: 480
 
 @(private)
 Midload_Learned :: struct {
+	cpu:     core.Learn_Cpu, // .Psx, or a PS2 game's .Ee
 	dir:     string,
 	records:   string, // the LEARN file
 	stored:    []native.Blob_Interp, // the stored blob's interp list (psx_stored_interp)
@@ -72,14 +80,18 @@ Midload_Learned :: struct {
 @(private)
 mlrn: Midload_Learned
 
-// Set up loading the learned functions of the records file records (in the
-// disc directory dir) mid-run; startup: whether a stored learned blob was
-// loaded at the boot, compiled from the file as it is now. False when it is
-// off (the comment above), and the boot then hooks nothing.
-midlearn_init :: proc(dir, records: string, startup: bool) -> bool {
+// Set up loading cpu's learned functions of the records file records (in
+// the disc directory dir) mid-run; startup: whether a stored learned blob
+// was loaded at the boot, compiled from the file as it is now. False when
+// it is off (the comment above), and the boot then hooks nothing for it.
+midlearn_init :: proc(dir, records: string, cpu: core.Learn_Cpu, startup: bool) -> bool {
+	assert(cpu == .Psx || cpu == .Ee, "play: mid-run learned loading is for the PS1 or the EE")
 	if midload_off() {return false}
+	when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 {
+		if cpu != .Psx {return false}
+	}
 	job := Midload_Job {
-		what    = "learned",
+		what    = "learned" if cpu == .Psx else "learned EE",
 		noun    = "compile",
 		grown   = midlearn_grown,
 		start   = midlearn_start,
@@ -103,9 +115,12 @@ midlearn_init :: proc(dir, records: string, startup: bool) -> bool {
 		delete(stored)
 		return false
 	}
+	// Both live for the run; the boot frees the temporary memory they may
+	// be in.
 	mlrn = {
-		dir     = dir,
-		records = records,
+		cpu     = cpu,
+		dir     = strings.clone(dir),
+		records = strings.clone(records),
 		stored  = stored,
 	}
 	if startup {
@@ -113,17 +128,17 @@ midlearn_init :: proc(dir, records: string, startup: bool) -> bool {
 		if err == nil {
 			recs, _ := core.learn_read(data, context.temp_allocator)
 			for r in recs {
-				if r.cpu == .Psx {mlrn.covered[core.learn_key(r)] = true}
+				if r.cpu == cpu {mlrn.covered[core.learn_key(r)] = true}
 			}
 		}
 	}
 	return true
 }
 
-// The stored learned blob would not load (learned_failed): none of its
+// cpu's stored learned blob would not load (learned_failed): none of its
 // records are covered.
-midlearn_uncover :: proc() {
-	clear(&mlrn.covered)
+midlearn_uncover :: proc(cpu: core.Learn_Cpu) {
+	if mlrn.cpu == cpu {clear(&mlrn.covered)}
 }
 
 // What the compile leaves to the interpreter (learned_interp): in a wasm32
@@ -140,19 +155,19 @@ midlearn_interp :: proc() -> []native.Blob_Interp {
 
 @(private = "file")
 midlearn_grown :: proc() -> u64 {
-	return core.learn_count(.Psx) + mlrn.rounds
+	return core.learn_count(mlrn.cpu) + mlrn.rounds
 }
 
 @(private = "file")
 midlearn_report :: proc(fails: int) {
-	fmt.eprintfln("play: mid-run learned loads: %d (%d records), %d stale, %d failed", mlrn.loads, mlrn.recs, mlrn.stale, fails)
+	fmt.eprintfln("play: mid-run %s loads: %d (%d records), %d stale, %d failed", "learned" if mlrn.cpu == .Psx else "learned EE", mlrn.loads, mlrn.recs, mlrn.stale, fails)
 }
 
 // Start compiling the records no loaded blob covers, the first
 // MIDLEARN_RECORDS of them.
 @(private = "file")
 midlearn_start :: proc() -> Midload_Start {
-	count := core.learn_count(.Psx)
+	count := core.learn_count(mlrn.cpu)
 	if mlrn.oversized != 0 && count <= mlrn.oversized {return .Not}
 	data, err := os.read_entire_file(mlrn.records, context.temp_allocator)
 	if err != nil {
@@ -166,7 +181,7 @@ midlearn_start :: proc() -> Midload_Start {
 	kept := make([dynamic]core.Learn_Record, context.temp_allocator)
 	more := false
 	for r in recs {
-		if r.cpu != .Psx || core.learn_key(r) in mlrn.covered {continue}
+		if r.cpu != mlrn.cpu || core.learn_key(r) in mlrn.covered {continue}
 		if len(kept) == MIDLEARN_RECORDS {
 			more = true
 			break
@@ -175,7 +190,7 @@ midlearn_start :: proc() -> Midload_Start {
 	}
 	if len(kept) == 0 {return .Not}
 	interp := midlearn_interp()
-	set, _ := learned_set(kept[:], .Psx, interp)
+	set, _ := learned_set(kept[:], mlrn.cpu, interp)
 	midlearn_cleanup()
 	for r in kept {
 		at := len(mlrn.stream)
@@ -208,7 +223,7 @@ midlearn_take :: proc(blob: []u8, start: time.Tick) -> Midload_Poll {
 		}
 	}
 	recs, _ := core.learn_read(mlrn.stream[:], context.temp_allocator)
-	if set, _ := learned_set(recs[:], .Psx, interp); set != mlrn.set {
+	if set, _ := learned_set(recs[:], mlrn.cpu, interp); set != mlrn.set {
 		mlrn.stale += 1
 		fmt.eprintln("play: mid-run learned load dropped: a thread switch made known since its compile started changes what it may run")
 		return .Done
@@ -217,12 +232,18 @@ midlearn_take :: proc(blob: []u8, start: time.Tick) -> Midload_Poll {
 		// MIDLEARN_CHECK=1: the worker's blob against the same compile in
 		// this process (tests/wasi).
 		if core.env("MIDLEARN_CHECK") == "1" {
-			here, ok := learned_compile_here(.Psx, mlrn.stream[:], mlrn.interp)
+			here, ok := learned_compile_here(mlrn.cpu, mlrn.stream[:], mlrn.interp)
 			fmt.eprintfln("play: mid-run learned check: worker blob %s (%d bytes, here %d)", "same" if ok && string(here) == string(blob) else "differs", len(blob), len(here))
 			delete(here)
 		}
 	}
-	if !psxnative.load_learned_blob(blob, "the mid-run learned code") {return .Failed}
+	loaded: bool
+	if mlrn.cpu == .Psx {
+		loaded = psxnative.load_learned_blob(blob, "the mid-run learned code")
+	} else {
+		loaded = ps2.load_learned_blob(blob, "the mid-run learned EE code")
+	}
+	if !loaded {return .Failed}
 	for k in mlrn.keys {mlrn.covered[k] = true}
 	if mlrn.more {mlrn.rounds += 1}
 	mlrn.loads += 1

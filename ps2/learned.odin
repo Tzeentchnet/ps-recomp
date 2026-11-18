@@ -60,16 +60,23 @@ learned_find :: proc(entry: u32) -> cpu.Func_Proc #no_bounds_check {
 // when the blob cannot be used; none of it is then registered. Its code and
 // pool are never freed.
 load_learned :: proc(path: string) -> bool {
-	if mem.ram_base == nil {
-		fmt.eprintln("learned: load_learned comes after init, which maps RAM")
-		return false
-	}
 	blob, err := os.read_entire_file(path, context.allocator)
 	if err != nil {
 		fmt.eprintfln("learned: %s: %v", path, err)
 		return false
 	}
 	defer delete(blob)
+	return load_learned_blob(blob, path)
+}
+
+// load_learned of a blob in memory, which it does not keep; name stands
+// for it in the messages. On the EE thread only: learned_find reads the
+// table it adds to without a lock (play's mid-run load is at a vblank).
+load_learned_blob :: proc(blob: []u8, name: string) -> bool {
+	if mem.ram_base == nil {
+		fmt.eprintln("learned: load_learned comes after init, which maps RAM")
+		return false
+	}
 	code, msg := core.native_load(blob, native_imports())
 	if msg == "" && (len(code.funcs) != 0 || len(code.ovls) != 0) {
 		msg = "not a learned blob"
@@ -86,7 +93,7 @@ load_learned :: proc(path: string) -> bool {
 		}
 	}
 	if msg != "" {
-		fmt.eprintfln("learned: %s: %s", path, msg)
+		fmt.eprintfln("learned: %s: %s", name, msg)
 		if code.base != 0 {core.native_free(&code)}
 		return false
 	}
@@ -103,7 +110,7 @@ load_learned :: proc(path: string) -> bool {
 		}
 	}
 	cpu.learned_loaded += len(code.spans)
-	fmt.eprintfln("learned: %d EE functions from %s", len(code.spans), path)
+	fmt.eprintfln("learned: %d EE functions from %s", len(code.spans), name)
 	delete(code.funcs)
 	delete(code.ovls)
 	delete(code.spans)

@@ -1,7 +1,7 @@
 #+build !wasi
 // A native build's mid-run learned compile (midload_learned.odin): a child
-// of this executable (`play --learned-midload <records> <out> <parent
-// pid>`) compiles the records from one temporary file into another
+// of this executable (`play --learned-midload <psx | ee> <records> <out>
+// <parent pid>`) compiles the records from one temporary file into another
 // (ps-learn-<run pid>-*), both removed once the blob is loaded, at exit and
 // on a fatal error (core.fatal_cleanup). On Linux the child dies with the
 // run (midload_child), and a run removes the temporary files of runs that
@@ -57,7 +57,7 @@ midlearn_host_start :: proc() -> Midload_Start {
 	}
 	ppid := fmt.tprint(os.get_pid())
 	err: os.Error
-	mln.child, err = os.process_start({command = {mln.self, "--learned-midload", mln.records, mln.out, ppid}, stdout = os.stderr, stderr = os.stderr})
+	mln.child, err = os.process_start({command = {mln.self, "--learned-midload", learned_files(mlrn.cpu).name, mln.records, mln.out, ppid}, stdout = os.stderr, stderr = os.stderr})
 	if err != nil {
 		fmt.eprintln("play: mid-run learned compile: cannot start the child:", err)
 		midlearn_cleanup()

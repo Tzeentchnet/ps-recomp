@@ -475,11 +475,13 @@ Linux it dies with its run, and a run removes the temporary files
 removing theirs.
 
 A PS1 game's run that records its code and runs learned code loads its
-new records the same way (play/midload_learned.odin): once they have
-stopped growing for 300 frames, the records no loaded blob covers, at
-most 480 per compile, go to a child (`play --learned-midload <records>
+new records the same way (play/midload_learned.odin), and so does a PS2
+game's EE in a native build, beside its VU job: once they have stopped
+growing for 300 frames, the records no loaded blob covers, at most 480
+per compile, go to a child (`play --learned-midload <psx | ee> <records>
 <out> <run pid>`) through a temporary file (`ps-learn-<pid>-*` in
-`TMPDIR`), and the run loads the blob the child writes. Nothing is
+`TMPDIR`), and the run loads the blob the child writes. A PS2 game's IOP
+code is not loaded mid-run; its next run compiles it. Nothing is
 stored; the next run compiles its own set as before. The same switches
 apply: `PS_MIDLOAD=0`, `PS_MIDLOAD_WAIT=1`, a `PS_DUMP` or `PS_SHOT` run
 waits, and netplay and rollback runs never load mid-run. Only Linux is
