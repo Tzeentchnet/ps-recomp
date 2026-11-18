@@ -2222,6 +2222,12 @@ test_padman :: proc() {
 	cmd(buf[:], 0x0d, 0)
 	check(w[3] == 1, "padman 0x0d: 1 slot while libmtap has not opened the tap")
 	mw := ([^]u32)(&buf)
+	for port in u32(0) ..< 2 {
+		for &b in buf {b = 0}
+		mw[0] = port
+		iop.sif.servers[0x80000900](3, buf[:], 128)
+		check(mw[1] == (1 if port == 0 else 0), "mtapman 3: GetConnection, a tap in pad port 0 only")
+	}
 	for &b in buf {b = 0}
 	mw[0] = 2
 	iop.sif.servers[0x80000900](1, buf[:], 128)
@@ -2230,6 +2236,9 @@ test_padman :: proc() {
 	cmd(buf[:], 0x0d, 1)
 	check(w[3] == 1, "padman 0x0d: port 1, 1 slot")
 	iop.pads[1].connected = false
+	for &b in buf {b = 0}
+	iop.sif.servers[0x80000900](3, buf[:], 128)
+	check(mw[1] == 0, "mtapman 3: GetConnection, no tap")
 	for &b in buf {b = 0}
 	mw[0] = 2
 	iop.sif.servers[0x80000900](2, buf[:], 128)

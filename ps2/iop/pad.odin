@@ -288,6 +288,8 @@ mtap_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 	case 1, 2: // PortOpen, PortClose {port} -> w[1]
 		if w[0] < 4 {mtap.open[w[0]] = fno == 1}
 		w[1] = 1
+	case 3: // GetConnection {port} -> w[1]: 1 while a multitap is in that pad port
+		w[1] = 1 if w[0] == 0 && tap_present() else 0
 	case 5: w[0] = 0x310 // version; libmtap wants 0x31x
 	case 6: // connection table address {_, addr}
 		mtap.status = w[1]
