@@ -668,7 +668,7 @@ block_audio :: proc() {
 	block_audio_half(0, 1000)
 	block_audio_half(1, 2000)
 	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_SIZE, 0)
-	iop.sd_block_arm(0)
+	iop.sd_block_arm(0, true)
 
 	// The initial half is already captured: replacing its source before the
 	// crossing must not replace samples waiting to play.
@@ -691,7 +691,7 @@ block_audio :: proc() {
 	// follows the requested offset through the wrap.
 	for chunk in u32(0) ..< 4 {block_audio_chunk(chunk, i16(1000 + chunk * 1000))}
 	iop.sd_block_trans(0, 0x13, BLOCK_BASE, BLOCK_AUDIO_SIZE, BLOCK_BASE + 1024)
-	iop.sd_block_arm(0)
+	iop.sd_block_arm(0, true)
 	out := mix(1024)
 	check(block_audio_is(out[:256 * 2], 2000), "offset block audio starts at the requested ADMA chunk")
 	check(block_audio_is(out[256 * 2:512 * 2], 3000), "offset block audio continues after its start")
@@ -704,7 +704,7 @@ block_audio :: proc() {
 		block_audio_chunk(chunk, i16(500 + chunk * 100))
 	}
 	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_LARGE, 0)
-	iop.sd_block_arm(0)
+	iop.sd_block_arm(0, true)
 	out = mix(BLOCK_AUDIO_LARGE / 4)
 	large_ok := true
 	for chunk in 0 ..< BLOCK_AUDIO_LARGE / 1024 {
@@ -721,7 +721,7 @@ block_audio :: proc() {
 	block_audio_half(0, 5000)
 	block_audio_half(1, 6000)
 	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_SIZE, 0)
-	iop.sd_block_arm(0)
+	iop.sd_block_arm(0, true)
 	iop.sd_block_refilled(0, generation)
 	out = mix(1025)
 	check(block_audio_is(out[:512 * 2], 5000), "replacement block audio starts with its first half")
@@ -758,7 +758,7 @@ game :: proc(_: rawptr) {
 	iop.sd_core_param(0x0f00, 0)
 	iop.sd_core_param(0x1000, 0x1000)
 	iop.sd_block_trans(0, 0x10, BLOCK_BASE, BLOCK_AUDIO_SIZE, 0)
-	iop.sd_block_arm(0)
+	iop.sd_block_arm(0, true)
 	mix(37)
 	iop.spu_voice_on(0, 7, key(SNAP))
 	core.snap_op, core.snap_target = .Save, &snap

@@ -78,7 +78,7 @@ libsd_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 		return n, true
 	case 18: // sceSdBlockTrans(channel, mode, iop address, size, start address)
 		v := sd_block_trans(a0, a1, a2, a3, r32(r[29] + 16))
-		if a1 & 3 != 2 {sd_block_arm(a0)} // not a stop
+		if a1 & 3 != 2 {sd_block_arm(a0, s.trans[a0 & 1].func != 0)} // not a stop
 		iop_wake_set()
 		return v, true
 	case 19: // sceSdVoiceTransStatus(channel, flag): always done

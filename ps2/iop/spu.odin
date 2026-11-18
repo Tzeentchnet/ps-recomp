@@ -1158,13 +1158,15 @@ sd_block_drop :: proc(freed: []Sys_Block) {
 }
 
 // Makes channel's block transfer, just started by sd_block_trans, libsd's:
-// it plays, and its first half-buffer crossing is set.
-sd_block_arm :: proc(channel: u32) {
+// it plays, and its first half-buffer crossing is set. With no handler to
+// refill it (refills false) a looping buffer never changes, so all of its
+// future samples are there to play now.
+sd_block_arm :: proc(channel: u32, refills: bool) {
 	b := &spu.block[channel & 1]
 	b.play = true
 	half := u64(b.size / 2)
 	b.next = half == 0 ? max(u64) : (u64(b.start) / half + 1) * half - u64(b.start)
-	b.audio_available = b.loop ? u64(b.size) : u64(b.size - b.start)
+	b.audio_available = !b.loop ? u64(b.size - b.start) : refills ? u64(b.size) : max(u64)
 	sd_block_audio_fill(b)
 }
 
@@ -1192,6 +1194,7 @@ sd_block_cross :: proc(channel: u32, now: u64) -> (crossed: bool, generation: u6
 sd_block_refilled :: proc(channel: u32, generation: u64) {
 	b := &spu.block[channel & 1]
 	if !b.on || !b.play || !b.loop || b.generation != generation {return}
+	if b.audio_available == max(u64) {return} // armed with no handler: it all plays already
 	b.audio_available += u64(b.size / 2)
 	sd_block_audio_fill(b)
 }
