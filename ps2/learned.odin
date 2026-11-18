@@ -150,6 +150,7 @@ learned_steps_add :: proc(code: ^core.Native_Code) {
 		for w in r.pc / 4 ..< r.pc / 4 + r.n_words {learned_marks[w / 64] |= 1 << (w % 64)}
 	}
 	slice.sort_by(learned_steps[:], proc(a, b: Learned_Step) -> bool {return a.lo < b.lo})
+	learned_entry_cache = {}
 	flat_native_on = true
 }
 
@@ -223,4 +224,66 @@ learned_search :: proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 	}
 	cpu.learned_stale += 1
 	return nil
+}
+
+// wasm32: the learned code the FLAT runner would run for a call to pc,
+// else nil: the in-line call routine's lookup of a call the call table
+// holds no code for (recomp/r5900 WASM_CALL), which runs it in place of a
+// trip through the runner. Its words are compared on every call, as the
+// runner's lookup of an entry compares them (learned_ran). The cache keeps,
+// for a pc, the first function learned_search looks at there, when pc is
+// its entry: the search compares its words first and returns it when RAM
+// holds them, whatever RAM holds elsewhere, so a hit whose words match is
+// the search's answer, and the cache saves the search and not the compare.
+// A hit whose words do not match goes on to the search, which looks past
+// it. Spans that hold other functions whole (a function learned again with
+// more of its code, or one holding a callee in-line) cover many entries,
+// so the search's first function is cached, not only a sole one. The
+// function as the routine calls it: its table index, 0 for none.
+learned_entry :: proc(pc: u32) -> uintptr #no_bounds_check {
+	c := &learned_entry_cache[pc >> 2 & (len(learned_entry_cache) - 1)]
+	if pc == c.pc && c.ok {
+		l := &learned_steps[c.k]
+		n := len(l.words)
+		cpu.learned_words += u64(n)
+		if string(mem.ram[l.lo:][:4 * n]) == string(([^]u8)(raw_data(l.words))[:4 * n]) {
+			l.epoch = cpu.learned_epoch
+			cpu.learned_calls += 1
+			return uintptr(rawptr(l.fn))
+		}
+	}
+	// Compared now, and again at the runner's next lookup: code runs
+	// between them.
+	learned_ran()
+	fn := learned_at(pc)
+	learned_ran()
+	k, ok := learned_first(pc)
+	c^ = {pc, k, ok}
+	return uintptr(rawptr(fn))
+}
+
+// wasm32: learned_entry's cache, by pc: the pc, and the index in
+// learned_steps of the first function learned_search looks at there, ok
+// when pc is its entry. Host state, made again at a load.
+@(private = "file")
+learned_entry_cache: [64]struct {
+	pc: u32,
+	k:  int,
+	ok: bool,
+}
+
+// wasm32: the index of the first learned function learned_search looks at
+// for pc (the one with the highest lo whose words hold pc), and whether pc
+// is its entry.
+@(private = "file")
+learned_first :: proc(pc: u32) -> (int, bool) #no_bounds_check {
+	k, _ := slice.binary_search_by(learned_steps[:], pc + 1, proc(l: Learned_Step, t: u32) -> slice.Ordering {
+		return l.lo < t ? .Less : .Greater
+	})
+	for k -= 1; k >= 0; k -= 1 {
+		l := &learned_steps[k]
+		if pc - l.lo >= 4 * learned_most {break}
+		if pc - l.lo < 4 * u32(len(l.words)) {return k, l.entry == pc}
+	}
+	return 0, false
 }

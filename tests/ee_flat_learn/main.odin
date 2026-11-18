@@ -25,6 +25,12 @@
 //     `beql a0, zero` with a SYSCALL slot. Each runs learned as it runs
 //     interpreted, on both paths: v0, the cycles, and the BREAK's pc
 //     (cpu.trap_hook). The leave opens no run.
+//   - Learned code's call to learned code (C calls E) is made in place by
+//     the in-line call routine (ps2.learned_entry), with no trip through
+//     the runner, twice. E's words stored over make the call fall to the
+//     runner, which interprets E and records it; E's words put back run
+//     it in place again. A lookup that skipped the compare would run the
+//     old E, and give v0 129 for 257.
 //   - The report finds no run left open.
 //
 // Its files are in the WASI shim's in-memory directory, gone at the exit.
@@ -116,6 +122,13 @@ K :: u32(0x00115000)
 D :: u32(0x00116000)
 @(private = "file")
 S :: u32(0x00117000)
+
+@(private = "file")
+A8 :: u32(0x00100700)
+@(private = "file")
+C :: u32(0x00118000)
+@(private = "file")
+E :: u32(0x00119000)
 
 @(private = "file")
 NOP :: u32(0)
@@ -241,6 +254,11 @@ main :: proc() {
 	sc := [?]u32{0x2403002f, 0x50800001, 0x0000000c, addiu_v0(2, 64), JR_RA, NOP} // addiu v1, zero, 0x2f; beql a0, zero, +1; syscall
 	put(D, dz[:])
 	put(S, sc[:])
+	put(A8, {PUSH_1, PUSH_2, jal(C), NOP, LOAD_RA, JR_RA, POP})
+	cc := [?]u32{PUSH_1, PUSH_2, jal(E), NOP, LOAD_RA, addiu_v0(2, 1), JR_RA, POP}
+	ee := [?]u32{addiu_v0(2, 128), JR_RA, NOP}
+	put(C, cc[:])
+	put(E, ee[:])
 	cpu.trap_hook = proc(pc: u32) {broke = pc}
 	// The slot cases interpreted, before learning is on: no records.
 	want_slot: [len(SLOT_CASES)]Slot_Run
@@ -254,7 +272,7 @@ main :: proc() {
 	check(v0 == 6 && !ran, fmt.tprintf("A1: v0 %d, learned code ran %v; want 6, none", v0, ran))
 	check_file({{A1, 8}, {B, 3}}, "an interpreted call")
 
-	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}, {D, D, dz[:]}, {S, S, sc[:]}}, .Wasm32)
+	blob, skipped := r5900.learned_blob({{L, L, l[:]}, {N, N, n[:]}, {N2, N2, n2[:]}, {K, K, k[:]}, {D, D, dz[:]}, {S, S, sc[:]}, {C, C, cc[:]}, {E, E, ee[:]}}, .Wasm32)
 	check(skipped == 0, fmt.tprintf("%d runs not lowered", skipped))
 	check(os.write_entire_file(BLOB, blob) == nil, "write the blob")
 	check(ps2.load_learned(BLOB), "load the blob")
@@ -285,15 +303,37 @@ main :: proc() {
 	check(v0 == 64, fmt.tprintf("A7: v0 %d, want 64", v0))
 	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "a jump into a learned function of one block past its entry")
 
+	for pass in 0 ..< 2 {
+		fast, nils, calls := cpu.wasm_fast_calls, cpu.wasm_fall_nil, cpu.learned_calls
+		v0, ran = call(A8)
+		check(v0 == 129 && ran && cpu.wasm_fast_calls - fast == 1 && cpu.wasm_fall_nil == nils && cpu.learned_calls - calls == 2, fmt.tprintf("A8 pass %d: v0 %d, ran %v, %d in place, %d fell for no code, %d learned calls; want 129, ran, 1, 0, 2", pass, v0, ran, cpu.wasm_fast_calls - fast, cpu.wasm_fall_nil - nils, cpu.learned_calls - calls))
+	}
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {B, 3}, {M, 3}}, "learned code's call to learned code")
+	e2 := [?]u32{addiu_v0(2, 256), JR_RA, NOP}
+	put(E, e2[:])
+	{
+		fast, nils, stale := cpu.wasm_fast_calls, cpu.wasm_fall_nil, cpu.learned_stale
+		v0, ran = call(A8)
+		check(v0 == 257 && ran && cpu.wasm_fast_calls == fast && cpu.wasm_fall_nil - nils == 1 && cpu.learned_stale > stale, fmt.tprintf("A8, E stored over: v0 %d, ran %v, %d in place, %d fell for no code, %d interpreted; want 257, ran, 0, 1, some", v0, ran, cpu.wasm_fast_calls - fast, cpu.wasm_fall_nil - nils, cpu.learned_stale - stale))
+	}
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {B, 3}, {M, 3}, {E, 3}}, "learned code's call to learned code stored over")
+	put(E, ee[:])
+	{
+		fast := cpu.wasm_fast_calls
+		v0, ran = call(A8)
+		check(v0 == 129 && ran && cpu.wasm_fast_calls - fast == 1, fmt.tprintf("A8, E put back: v0 %d, ran %v, %d in place; want 129, ran, 1", v0, ran, cpu.wasm_fast_calls - fast))
+	}
+	put(E, e2[:]) // the words E's record holds, for the checks below
+
 	for c, i in SLOT_CASES {
 		got, native_ran := slot_run(c[0], c[1], c[2])
 		w := want_slot[i]
 		check(native_ran && got == w, fmt.tprintf("learned %08x(%d, %d): v0 %d, BREAK at %08x, %d cycles, learned code ran %v; want v0 %d, BREAK at %08x, %d cycles, ran", c[0], c[1], c[2], got.v0, got.broke, got.cycles, native_ran, w.v0, w.broke, w.cycles))
 	}
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "a leave to the interpreter at a delay slot's transfer")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {B, 3}, {M, 3}, {E, 3}}, "a leave to the interpreter at a delay slot's transfer")
 
 	core.learn_report()
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {B, 3}, {M, 3}}, "the report")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {B, 3}, {M, 3}, {E, 3}}, "the report")
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; the report finds none open")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words; the report finds none open")
 }

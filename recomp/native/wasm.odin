@@ -72,6 +72,7 @@ Wasm_Call :: struct {
 	exit_pc, exit_arg:      u32,
 	exit_call, exit_return: u32, // its reasons
 	pend:                   string, // runtime procedure (link, sp): a frame left
+	resolve:                string, // runtime procedure (t) -> fn, or "": native code at t the call table holds none for, else 0
 	pending:                string, // import: the u32 count of frames left; a fast return needs 0
 	fast, returns:          string, // imports: u64 counters of calls and returns made
 	fall:                   [4]string, // imports: u64 counters of calls left for events, a mod, the depth, no code
@@ -1391,6 +1392,18 @@ wasm_emit_call :: proc(a: ^Asm, c: Wasm_Call) {
 	emit8(a, I32_GE_U)
 	wa_call_fall(a, c.fall[2])
 	wa_table_slot(a, H_FN, H_T, H_D, H_OK, imp(a, c.table), imp(a, c.text_lo))
+	if c.resolve != "" {
+		wa_get(a, H_FN)
+		emit8(a, I32_EQZ, OP_IF, VOID)
+		wa_get(a, H_T)
+		wa_get(a, H_CTX)
+		wa_global(a, imp(a, c.resolve))
+		emit8(a, OP_CALL_INDIRECT)
+		wa_uleb(&a.code, u64(wa_type(a, {I32, I32}, I32)))
+		emit8(a, 0x00)
+		wa_set(a, H_FN)
+		emit8(a, OP_END)
+	}
 	wa_get(a, H_FN)
 	emit8(a, I32_EQZ)
 	wa_call_fall(a, c.fall[3])

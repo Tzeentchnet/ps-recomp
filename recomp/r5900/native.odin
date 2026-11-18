@@ -53,6 +53,7 @@ EE_SIGS := [?]native.Sig {
 	{"ps2.wr32", 2, false},
 	{"cpu.call", 1, false},
 	{"cpu.wasm_pend", 2, false}, // wasm32 only
+	{"ps2.learned_entry", 1, true}, // wasm32 only
 	{"cpu.jump_unknown", 2, false},
 	{"cpu.bad_insn", 2, false},
 	{"cpu.brk", 2, false},
@@ -1510,7 +1511,8 @@ WASM_CALL_MAX :: 64
 
 // wasm32: the shared routine of the in-line calls (native.inline_call):
 // the FLAT runner's entry checks (no events due, no mods, native code at
-// the target in the call table, under WASM_CALL_MAX deep) and its return
+// the target: in the call table, else learned code the runner would run
+// there (ps2.learned_entry), under WASM_CALL_MAX deep) and its return
 // check (a `jr $ra` to the link with the caller's sp, as flat_return
 // makes, with no frame left from deeper in); a callee leaving any other
 // way leaves its frame (cpu.wasm_pend).
@@ -1531,6 +1533,7 @@ WASM_CALL := native.Wasm_Call {
 	exit_call   = u32(Exit.Call),
 	exit_return = u32(Exit.Return),
 	pend        = "cpu.wasm_pend",
+	resolve     = "ps2.learned_entry",
 	pending     = "cpu.wasm_npending",
 	fast        = "cpu.wasm_fast_calls",
 	returns     = "cpu.flat_returns",
