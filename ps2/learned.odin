@@ -64,7 +64,7 @@ learned_find :: proc(entry: u32) -> cpu.Func_Proc #no_bounds_check {
 		hit^ = {entry | 1, learned_fns[entry][:]}
 	}
 	if len(hit.fns) == 0 {return nil}
-	for &l in hit.fns {
+	for &l, i in hit.fns {
 		if l.clean == mem.code_writes {
 			cpu.learned_calls += 1
 			return l.fn
@@ -75,7 +75,11 @@ learned_find :: proc(entry: u32) -> cpu.Func_Proc #no_bounds_check {
 			mem.code_arm(l.lo, 4 * u32(n))
 			l.clean = mem.code_writes
 			cpu.learned_calls += 1
-			return l.fn
+			fn := l.fn
+			// The version RAM holds goes first, so the next call takes it
+			// on the clean test without comparing the others.
+			if i != 0 {hit.fns[0], hit.fns[i] = hit.fns[i], hit.fns[0]}
+			return fn
 		}
 	}
 	cpu.learned_stale += 1
