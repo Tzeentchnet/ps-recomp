@@ -132,6 +132,13 @@ one with WebGL2 on each animation frame, `web/present.js`).
 one that cannot (GitHub Pages) the page registers `web/sw.js`, a service
 worker that adds the headers, and reloads once. WebKitGTK isolates a page
 through the service worker; whether Safari does is not verified.
+The service worker also keeps the build's own files (the pages, their
+scripts, both .wasm and commit.txt) in a cache named for the build's
+commit, so once a page has loaded, it loads again with no network, and a
+stored disc plays offline. Each navigation checks commit.txt with the
+network (2 s at most); a newer deployed build is served from the network
+at once and replaces the cache. A build from a tree with changes caches
+nothing.
 
 The page keeps two things in the origin private file system (OPFS),
 `web/readers.js`. A disc that is started is copied there, so it can be

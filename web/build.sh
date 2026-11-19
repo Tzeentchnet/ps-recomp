@@ -4,9 +4,10 @@
 # commit.txt (the ps-recomp commit, shown on the pages). Serve the out dir
 # from any static host; .wasm must be served as application/wasm. The play
 # page needs cross-origin isolation: a host that cannot send the headers
-# gets them through sw.js. With binaryen's wasm-opt on PATH, each .wasm is
-# also run through wasm-opt -O3 (about 14% smaller, same output); without
-# it the step is skipped.
+# gets them through sw.js, which also caches the build for offline play.
+# With binaryen's wasm-opt on PATH, each .wasm is also run through
+# wasm-opt -O3 (about 14% smaller, same output); without it the step is
+# skipped.
 # -source-code-locations:filename keeps only the file name in panic and
 # assert locations (`emit.odin(4:2) runtime assertion: ...`), so the build
 # does not depend on the checkout path: two checkouts give the same bytes.
@@ -59,8 +60,18 @@ for p in recomp play; do
 		echo "build.sh: no wasm-opt, $p.wasm left unoptimized" >&2
 	fi
 done
-for f in index.html page.css page.js worker.js readers.js wasi.js \
-	play.html play.js play-worker.js band.js band-worker.js learn.js native.js sdl.js net.js keys.js layout.js present.js audio.js sw.js; do
+files="index.html page.css page.js worker.js readers.js wasi.js
+	play.html play.js play-worker.js band.js band-worker.js learn.js native.js sdl.js net.js keys.js layout.js present.js audio.js"
+for f in $files; do
 	cp "$root/web/$f" "$out/$f"
 done
 printf '%s\n' "$commit" > "$out/commit.txt"
+# sw.js caches the build's files for offline play, under the commit: it
+# gets COMMIT and SHELL (every file above, the two .wasm and commit.txt)
+# written at its top, so each build's sw.js differs and is installed anew.
+{
+	printf 'const COMMIT = "%s";\nconst SHELL = [' "$commit"
+	for f in $files recomp.wasm play.wasm commit.txt; do printf '"%s", ' "$f"; done
+	printf '];\n'
+	cat "$root/web/sw.js"
+} > "$out/sw.js"
