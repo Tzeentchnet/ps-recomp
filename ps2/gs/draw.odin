@@ -474,6 +474,19 @@ sprite_stuv :: #force_inline proc "contextless" (s: ^Sprite, x: i32, vv, tt: f32
 	return {s.sa + (s.sb - s.sa) * fx, tt, s.ua + (s.ub - s.ua) * fx, vv}
 }
 
+// tex_at of sprite_stuv for pixels x .. x+3 of the row sprite_row gave vv,
+// tt for: the same operations lane by lane, so each lane is the scalar
+// result, and the row's texel V and the sprite's LOD, the same for all.
+@(private)
+sprite_tex4 :: #force_inline proc(m: Tex_Map, s: ^Sprite, x: i32, vv, tt, q: f32) -> (u: #simd[4]f32, v: f32, lod: i32) {
+	V :: #force_inline proc "contextless" (f: f32) -> #simd[4]f32 {return {f, f, f, f}}
+	fx := (#simd[4]f32{f32(x), f32(x + 1), f32(x + 2), f32(x + 3)} - V(s.x0)) / V(s.x1 - s.x0)
+	if m.fst {return V(s.ua) + V(s.ub - s.ua) * fx, vv, tex_lod(m, 1)}
+	d := q != 0 ? q : 1
+	sc := transmute([4]f32)m.sc
+	return (V(s.sa) + V(s.sb - s.sa) * fx) / V(d) * V(sc[0]), tt / d * sc[1], tex_lod(m, q)
+}
+
 @(private)
 draw_sprite :: proc(c: ^Ctx, a, b: ^Vertex) {
 	s, ok := sprite_span(c, a, b)
@@ -511,13 +524,26 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 	} else {
 		q := b.q
 	}
+	when FAST {when TME {
+		// Four pixels' texel U in one vector: one divide chain per four.
+		for x0 := s.px0; x0 <= s.px1; x0 += 4 {
+			u4, v, lod := sprite_tex4(tm, &s, x0, vv, tt, q)
+			u := transmute([4]f32)u4
+			for i in 0 ..< min(4, s.px1 - x0 + 1) {
+				x := x0 + i32(i)
+				zok, zv, za := px_zinst(c, x, z, N)
+				if !zok {continue}
+				px_shade_inst(c, x, zv, za, col, u[i], v, lod, fog, N)
+			}
+		}
+		return
+	}}
 	for x in s.px0 ..= s.px1 {
 		u, v: f32
 		lod: i32
 		when FAST {
 			zok, zv, za := px_zinst(c, x, z, N)
 			if !zok {continue}
-			when TME {u, v, lod = tex_at(tm, sprite_stuv(&s, x, vv, tt), q)}
 			px_shade_inst(c, x, zv, za, col, u, v, lod, fog, N)
 		} else {
 			u, v, lod = sprite_tex(c, &s, x, vv, tt, q)
