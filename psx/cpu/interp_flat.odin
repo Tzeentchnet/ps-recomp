@@ -168,6 +168,15 @@ when core.FLAT {
 
 	// Let go of x's shadow stack.
 	flat_free :: proc(x: ^Flat_Ctx) {
+		// The runs still on x never return: each is written as .Open and
+		// its LEARN frame is free again. Record i's callee began at the
+		// start the next record saved, the top one's at x.start.
+		for i in 0 ..< x.depth {
+			f := x.frames[i]
+			if f.host || f.kind == .Cont {continue}
+			entry := i + 1 < x.depth ? x.frames[i + 1].start : x.start
+			if lf := core.learn_frame(f.slot, entry); lf != nil {core.learn_cut(lf)}
+		}
 		delete(x.frames, flat_allocator())
 		x.frames = nil
 	}

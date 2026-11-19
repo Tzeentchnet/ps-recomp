@@ -80,6 +80,9 @@ Learn_Frame :: struct {
 	stored:   bool, // a folded store reached its range (learn_fold)
 	epoch:    u32, // its stamp, Learn_Space.epoch when it began
 	changed:  bool, // a fetch saw another word than an earlier one there
+	// The coroutine the run began on, nil under FLAT: discarding it
+	// (co_kill) ends the run as .Open (learn_co_gone).
+	co:       rawptr,
 }
 
 // A RAM word's last fetch: the word, and the stamp of the latest run begun
@@ -352,6 +355,7 @@ learn_begin :: proc(cpu: Learn_Cpu, entry: u32) -> ^Learn_Frame {
 	s.begin_seq = s.seq
 	f := &learn.pool[k]
 	f^ = {cpu = cpu, slot = k, entry = entry, lo = entry, hi = entry, log_at = s.seq, epoch = s.epoch}
+	when !FLAT {f.co = co_current}
 	return f
 }
 
@@ -484,6 +488,21 @@ learn_cut :: proc(f: ^Learn_Frame) {
 	s := &learn.space[f.cpu]
 	learn_write(s, f, learn_smc(s, f) + {.Open})
 	learn_free(f)
+}
+
+// co is being discarded (co_kill): the runs begun on it never return. Each
+// is written as .Open, as learn_cut does, and its frame is free again;
+// otherwise the frames of every killed thread or handler stay in use until
+// none is left, and from then on no run is noted.
+learn_co_gone :: proc(co: rawptr) {
+	if !learn.pooled || learn_held.on {
+		return // in a probe's branch: learn_release puts the frames back
+	}
+	for k in 0 ..< LEARN_LIVE_MAX {
+		if learn.used[k] && learn.pool[k].co == co {
+			learn_cut(&learn.pool[k])
+		}
+	}
 }
 
 @(private = "file")

@@ -17,7 +17,8 @@
 // before it, and still see a word changed between two fetches after it; a
 // range over
 // LEARN_SPAN_MAX is .Large with no words; a run begun with every frame in
-// use is not noted; a run still in progress at the report is written
+// use is not noted; a run on a coroutine that is discarded is written
+// .Open and its frame is free again; a run still in progress at the report is written
 // .Open; a record's words copied from RAM (learn_cpu's ram) are those
 // read word by word, through RAM's mirrors and for a range that crosses
 // RAM's end or lies outside it; and a reader drops a truncated record, one whose words do not
@@ -90,6 +91,15 @@ check_recs :: proc(recs: []core.Learn_Record, want: []Want, what: string) {
 		}
 		check(ok, fmt.tprintf("%s: record %d is %v %v %08x %08x n %d", what, i, r.cpu, r.flags, r.entry, r.lo, len(r.words)))
 	}
+}
+
+// A coroutine's body: one run begun, then back to the main thread for good.
+@(private = "file")
+co_run_one :: proc(_: rawptr) {
+	f := core.learn_begin(.Ee, 0x6200)
+	core.learn_fetch(f, 0x6200, word(0x6200))
+	core.co_switch(&core.co_main_thread)
+	unreachable()
 }
 
 main :: proc() {
@@ -188,6 +198,27 @@ main :: proc() {
 			core.learn_fetch(f, 0x6000, word(0x6000))
 		}
 		check(core.learn_begin(.Ee, 0x6100) == nil, "pool: full")
+		for f in live {core.learn_end(f)}
+	}
+	// A run on a coroutine that is discarded (co_kill) never returns: it is
+	// written .Open as the coroutine goes, and its frame is free again, so
+	// a pool it filled takes the next run.
+	{
+		live: [core.LEARN_LIVE_MAX - 1]^core.Learn_Frame
+		for &f in live {
+			f = core.learn_begin(.Ee, 0x6000)
+			core.learn_fetch(f, 0x6000, word(0x6000))
+		}
+		co := core.co_create(co_run_one, nil)
+		core.co_switch(co)
+		check(core.learn_begin(.Ee, 0x6100) == nil, "kill: full while the coroutine lives")
+		core.co_kill(co)
+		g := core.learn_begin(.Ee, 0x6100)
+		check(g != nil, "kill: its frame is free again")
+		if g != nil {
+			core.learn_fetch(g, 0x6100, word(0x6100))
+			core.learn_end(g)
+		}
 		for f in live {core.learn_end(f)}
 	}
 	// A compat probe's branches (learn_hold to learn_release): a run in
@@ -311,6 +342,8 @@ main :: proc() {
 		{.Psx, {.Smc}, 0xa000, 0xa000, 2},
 		{.Ee, {}, 0x8004, 0x8004, 3},
 		{.Ee, {}, 0x6000, 0x6000, 1},
+		{.Ee, {.Open}, 0x6200, 0x6200, 1},
+		{.Ee, {}, 0x6100, 0x6100, 1},
 		{.Ee, {}, 0xb000, 0xb000, 2},
 		{.Psx, {.Smc}, 0xc000, 0xc000, 1},
 		{.Psx, {}, 0xc004, 0xc000, 2},

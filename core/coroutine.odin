@@ -103,6 +103,7 @@ when !FLAT {
 	// Discard a coroutine that is not running, with its stack.
 	co_kill :: proc(co: ^Coroutine, allocator := context.allocator) {
 		assert(co != co_current, "co_kill on the running coroutine")
+		learn_co_gone(co)
 		co_free(co)
 		free(co, allocator)
 	}

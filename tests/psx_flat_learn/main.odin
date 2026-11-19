@@ -12,7 +12,9 @@
 //     (cpu.flat_interp: an entry, or inside a range) is not written.
 //   - A run that never returns (its flat run stopped and never resumed) is
 //     written .Open at the report, the caller with the words it fetched and
-//     the callee begun at the stop with its entry alone.
+//     the callee begun at the stop with its entry alone. One whose flat
+//     run is dropped (flat_free, as a killed thread's is) is written so
+//     as it is dropped.
 //
 // The directory is removed at the end whether the test passes or fails.
 package main
@@ -130,7 +132,7 @@ main :: proc() {
 	if failed != 0 {
 		os.exit(1)
 	}
-	fmt.println("ok psx_flat_learn: a run on the shadow stack stays open across a stop and is written once when it returns, a store made meanwhile marking it; a run that never returns is written .Open at the report; code left to the interpreter is not written")
+	fmt.println("ok psx_flat_learn: a run on the shadow stack stays open across a stop and is written once when it returns, a store made meanwhile marking it; a run that never returns is written .Open at the report, or as its flat run is dropped; code left to the interpreter is not written")
 }
 
 @(private = "file")
@@ -179,6 +181,16 @@ run :: proc(path: string) {
 		cpu.flat_interp = nil
 	}
 	check_file(path, {{F, {}, 6}, {F, {.Smc}, 6}, {G, {}, 3}, {H, {}, 6}}, "left to the interpreter")
+
+	// A stopped run whose flat run is dropped never returns: the caller
+	// and the callee begun at the stop are written .Open as it goes.
+	{
+		w: cpu.Flat_Ctx
+		stop_at = G
+		check(!start(&w, K), "K stops at G's entry, to be dropped")
+		when core.FLAT {cpu.flat_free(&w)}
+		check_file(path, {{F, {}, 6}, {F, {.Smc}, 6}, {G, {}, 3}, {G, {.Open}, 1}, {H, {}, 6}, {K, {.Open}, 3}}, "dropped")
+	}
 
 	stop_at = G
 	check(!start(&z, K), "K stops at G's entry")
