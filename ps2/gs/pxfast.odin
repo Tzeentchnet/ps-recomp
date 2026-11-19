@@ -602,16 +602,19 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	#assert(ATST != 1 || AFAIL == 0)
 	#assert(DATE <= 2)
 	px := u32(x)
-	when ZMSK && ZTST >= 2 {
-		ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
+	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // ATST NEVER always fails
+	// The depth test first: a pixel failing it writes nothing, whatever
+	// its color, so it samples no texture. Z is written after the alpha test.
+	ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
+	when ZTST >= 2 || ZWRITE {
 		ZMAX :: 0xffffffff when ZPSM == PSMZ32 else 0xffffff when ZPSM == PSMZ24 else 0xffff
 		z := min(u32(min(zf, 4294967295.0)), u32(ZMAX))
 		za := row_addr_w(&c.zrow, px, ZWIDE)
-		when ZTST == 2 {
-			if z < row_read_w(&c.zrow, za, ZWIDE) {return}
-		} else {
-			if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
-		}
+	}
+	when ZTST == 2 {
+		if z < row_read_w(&c.zrow, za, ZWIDE) {return}
+	} else when ZTST == 3 {
+		if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
 	}
 	// The color steps run on all four channels at once, each lane with the
 	// integer operations `pixel` does on that channel: RGB selects lanes
@@ -643,7 +646,6 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	// A pixel failing the alpha test: KEEP writes neither frame nor Z,
 	// FB_ONLY and RGB_ONLY no Z, ZB_ONLY no frame, and RGB_ONLY keeps the
 	// frame's alpha. `pass` exists only where one of these reads it.
-	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // ATST NEVER always fails
 	FAIL_Z :: ATST != 1 && (AFAIL == 1 || AFAIL == 3) && ZWRITE
 	FAIL_F :: ATST != 1 && AFAIL == 2
 	FAIL_A :: ATST != 1 && AFAIL == 3
@@ -658,21 +660,10 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	when DST {dst_raw := row_read_w(&c.frow, fa, true)} // `when` opens no scope
 	when DATE != 0 {if (dst_raw & 0x80000000 != 0) != (DATE == 2) {return}}
 
-	when !(ZMSK && ZTST >= 2) && (ZTST >= 2 || ZWRITE) {
-		ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
-		ZMAX :: 0xffffffff when ZPSM == PSMZ32 else 0xffffff when ZPSM == PSMZ24 else 0xffff
-		z := min(u32(min(zf, 4294967295.0)), u32(ZMAX))
-		za := row_addr_w(&c.zrow, px, ZWIDE)
-		when ZTST == 2 {
-			if z < row_read_w(&c.zrow, za, ZWIDE) {return}
-		} else when ZTST == 3 {
-			if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
-		}
-		when FAIL_Z {
-			if pass {row_write_w(&c.zrow, za, z, ZWIDE)}
-		} else when ZWRITE {
-			row_write_w(&c.zrow, za, z, ZWIDE)
-		}
+	when FAIL_Z {
+		if pass {row_write_w(&c.zrow, za, z, ZWIDE)}
+	} else when ZWRITE {
+		row_write_w(&c.zrow, za, z, ZWIDE)
 	}
 	when FAIL_F {if !pass {return}}
 
