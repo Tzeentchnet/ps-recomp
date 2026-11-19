@@ -11,7 +11,8 @@
 // one page under two formats or widths (alias), host-to-local and
 // local-to-local transfers and CLUT loads over drawn pages, local-to-host
 // readback, and scissors past the buffer width. Each cause's count has a
-// floor.
+// floor. A frame sampled in place through T8H, T4HL or T4HH under an FBMSK
+// keeping the bits read draws on workers; one changing them, serially.
 //
 // The texel span a context's texture reads (band_ctx_new) is checked
 // against the sampler's wrap brute force: every result in the span, both
@@ -65,6 +66,9 @@ put :: proc(reg: u8, v: u64) {append(&steps, Step{reg = reg, v = v})}
 FRAME_PSM := [?]u64{0x00, 0x01, 0x02, 0x0a, 0x30, 0x31, 0x32, 0x3a}
 @(private = "file")
 Z_PSM := [?]u64{0x0, 0x1, 0x2, 0xa}
+// T8H, T4HL, T4HH: textures reading only the upper byte of each word.
+@(private = "file")
+H_PSM := [?]u64{0x1b, 0x24, 0x2c}
 @(private = "file")
 TEX_PSM := [?]u64{0x00, 0x01, 0x02, 0x0a, 0x13, 0x14, 0x1b, 0x24, 0x2c}
 
@@ -298,6 +302,36 @@ chain :: proc() {
 	sprite(1, 1, 0, 64)
 }
 
+// A frame sampled in place as T8H, T4HL or T4HH (Okami's f300 glow pass):
+// context 0 draws CT32 page f under FBMSK mask in 32 x 128 sprite strips,
+// bilinear, each strip reading texels of rows other bands draw. FBMSK
+// ff000000 keeps the bits the texture reads, so the strips go to workers;
+// FBMSK 0 changes them, so they draw serially.
+@(private = "file")
+in_place :: proc(mask: u64, psm: u64 = 0x1b) {
+	f := frame_page()
+	put(0x4c, f | 4 << 16 | mask << 32)
+	put(0x4e, 144 | 1 << 32)
+	put(0x40, 255 << 16 | 127 << 48)
+	put(0x47, 0)
+	put(0x4a, 0)
+	put(0x18, 0)
+	// TBW 4, 256 x 128, CT32 CLUT on a texture page, load; clamp; bilinear.
+	put(0x06, f * 32 | 4 << 14 | psm << 20 | 8 << 26 | 7 << 30 | 1 << 34 | 1 << 35 | (240 + rndn(3) * 24) * 32 << 37 | 1 << 61)
+	put(0x08, 1 | 1 << 2)
+	put(0x14, 1 << 5 | 1 << 6)
+	for k in u64(0) ..< 8 {
+		put(0x00, 6 | 1 << 4 | 1 << 8)
+		put(0x01, rnd() & 0xffffffff)
+		// Texels a few pixels off the strip, so taps cross strips and bands.
+		d := rndn(16)
+		put(0x03, (32 * k + d) << 4 | 8 | rndn(8) << 20)
+		put(0x05, 32 * k << 4)
+		put(0x03, (32 * k + 32 + d) << 4 | 8 | (120 + rndn(8)) << 20)
+		put(0x05, (32 * k + 32) << 4 | 128 << 20)
+	}
+}
+
 @(private = "file")
 build :: proc() {
 	for s in steps {delete(s.data)}
@@ -313,6 +347,7 @@ build :: proc() {
 		case 0: context_regs(u8(rndn(2)))
 		case 1: transfer()
 		case 2: chain()
+		case 3: in_place(rndn(2) == 0 ? 0xff000000 : rnd() & 0xffffffff, H_PSM[rndn(len(H_PSM))])
 		case: prim()
 		}
 	}
@@ -390,6 +425,27 @@ main :: proc() {
 			if mem.compare(got_back[:], ref_back[:]) != 0 {fail("trial %d, %d bands (lazy %v): readback differs", t, n, gs.band_lazy)}
 		}
 		free_all(context.temp_allocator)
+	}
+	// The in-place stream alone: on workers under FBMSK ff000000, serially
+	// (all 8 strips, 4 bands) under FBMSK 0; both bit equal to 1 band.
+	for mask in ([?]u64{0xff000000, 0}) {
+		for &v in gs.vram {v = u32(rnd())}
+		for r, i in regions {copy(saved[i], r)}
+		saved_regs = gs.state.regs
+		for s in steps {delete(s.data)}
+		clear(&steps)
+		put(0x1a, 1)
+		in_place(mask)
+		run(1, &ref_back)
+		ref = gs.vram
+		gs.band_lazy, gs.band_skew = true, 2000
+		before := gs.band_stats
+		run(4, &got_back)
+		got = gs.vram
+		if got != ref {fail("in place, FBMSK %08x: 4 bands differ from 1", mask)}
+		serial, jobs := gs.band_stats.serial - before.serial, gs.band_stats.jobs - before.jobs
+		want := mask == 0 ? u64(8) : 0
+		if serial != want || jobs != 8 - want {fail("in place, FBMSK %08x: %d serial, %d on workers, want %d serial", mask, serial, jobs, want)}
 	}
 	region_spans()
 	st := gs.band_stats

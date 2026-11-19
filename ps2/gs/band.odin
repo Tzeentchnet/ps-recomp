@@ -116,17 +116,21 @@ band: struct {
 	nctx, nclut:  u64, // snapshots pushed
 	clut_src:     u64, // the clut_gen the last CLUT snapshot copied
 	ctx_dirty:    bool, // ctx_cur differs from the last snapshot
-	// Since the last join: pages written, pages read, and mappings reached.
+	// Since the last join: pages written, pages read, and mappings reached;
+	// wbits and rbits are the union of the word bits written and read
+	// (word_bits) over all of those pages.
 	wout, rout:   Page_Set,
+	wbits, rbits: u32,
 	maps:         [BAND_MAPS]Band_Map,
 	nmaps:        int,
 	// Pages the producer wrote drawing serially, not yet sent to workers.
 	spages:       Page_Set,
 	spend:        bool,
-	// The current context: drawn serially, its texture's pages, and its
-	// frame and Z scissor pages.
+	// The current context: drawn serially, its texture's pages, the word
+	// bits its texture reads and its frame writes.
 	serial:       bool,
 	cr:           Page_Set,
+	crbits, fbits: u32,
 	wake:         sync.Futex, // bumped when a sleeping worker has work
 	sleepers:     u32,
 	pfut:         sync.Futex, // bumped when a worker finishes while the producer waits
@@ -169,6 +173,7 @@ band_set :: proc(want: int) {
 	band.ctx_dirty = true
 	band.clut_src = 0
 	band.wout, band.rout, band.nmaps, band.spend = {}, {}, 0, false
+	band.wbits, band.rbits = 0, 0
 	for i in 0 ..< n {
 		w := new(Band_Worker)
 		// Field by field: a literal of the whole Tc is a 4.8 MB constant the
@@ -240,6 +245,7 @@ band_join :: proc() {
 	band_wait(band.next)
 	band.base = band.next
 	band.wout, band.rout, band.nmaps = {}, {}, 0
+	band.wbits, band.rbits = 0, 0
 }
 
 // The context changed (draw): its snapshot is pushed with its next job.
@@ -265,7 +271,38 @@ band_ctx_new :: proc() {
 			page_rect(t.psm, t.mtbp[n], t.mtbw[n], u0, v0, u1 + 1, v1 + 1, &band.cr)
 		}
 	}
-	band.serial = !ok || pages_meet(&band.cr, &fw) || pages_meet(&band.cr, &zw) || pages_meet(&fw, &zw)
+	band.crbits = c.tme ? tex_bits(c.tex.psm) : 0
+	band.fbits = frame_bits(c.fpsm, c.fbmsk)
+	// A texture on the frame's pages is no hazard when it reads none of the
+	// bits the frame writes (T8H under FBMSK ff000000): a masked pixel's
+	// single 32-bit store puts back the bits it keeps as it read them, so a
+	// worker reading them meanwhile sees the same value. Z writes every bit.
+	tex_frame := pages_meet(&band.cr, &fw) && band.crbits & band.fbits != 0
+	band.serial = !ok || tex_frame || pages_meet(&band.cr, &zw) || pages_meet(&fw, &zw)
+}
+
+// The bits of each 32-bit word a texture of format psm reads: T8H, T4HL
+// and T4HH the upper byte or one of its nibbles, any other all of them.
+@(private)
+tex_bits :: proc(psm: u32) -> u32 {
+	switch psm {
+	case PSMT8H: return 0xff000000
+	case PSMT4HL: return 0x0f000000
+	case PSMT4HH: return 0xf0000000
+	}
+	return 0xffffffff
+}
+
+// The bits of each 32-bit word a frame of format psm under FBMSK fbmsk
+// changes: CT32 the unmasked ones, CT24 those of its low 24, any other
+// format all of them (a 16-bit pixel's mask is not per word bit).
+@(private)
+frame_bits :: proc(psm, fbmsk: u32) -> u32 {
+	switch psm {
+	case PSMCT32: return ~fbmsk
+	case PSMCT24: return ~fbmsk & 0x00ffffff
+	}
+	return 0xffffffff
 }
 
 // Adds the pages of [x0, x1) x [y0, y1) of a frame or Z buffer to out;
@@ -306,11 +343,13 @@ band_draw :: proc(c: ^Ctx, kind: u64) #no_bounds_check {
 		raster(c, kind, &queue)
 		return
 	}
+	// Bits this primitive changes: its frame's, every bit with Z written.
+	wbits := zwrite ? 0xffffffff : band.fbits
 	if band.base != band.next {
-		if pages_meet(&band.cr, &band.wout) {
+		if pages_meet(&band.cr, &band.wout) && band.crbits & band.wbits != 0 {
 			band_stats.raw += 1
 			band_join()
-		} else if pages_meet(&wp, &band.rout) {
+		} else if pages_meet(&wp, &band.rout) && wbits & band.rbits != 0 {
 			band_stats.war += 1
 			band_join()
 		} else if any && (band_alias(c.fpsm, c.fbp, c.fbw, &fp) || zuse && band_alias(c.zpsm, c.zbp, c.fbw, &zp)) {
@@ -323,8 +362,13 @@ band_draw :: proc(c: ^Ctx, kind: u64) #no_bounds_check {
 		if zuse {band_map(c.zpsm, c.zbp, c.fbw, &zp)}
 	}
 	for w, i in band.cr {band.rout[i] |= w}
-	if c.z_read && !zwrite {for w, i in zp {band.rout[i] |= w}}
+	band.rbits |= band.crbits
+	if c.z_read && !zwrite {
+		for w, i in zp {band.rout[i] |= w}
+		band.rbits = 0xffffffff
+	}
 	for w, i in wp {band.wout[i] |= w}
+	band.wbits |= wbits
 	if band.spend {
 		j := band_slot(BAND_PAGES)
 		j.pages = band.spages
