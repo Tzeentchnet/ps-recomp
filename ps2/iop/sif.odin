@@ -630,6 +630,11 @@ fileio_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 		result = -EBADF
 	case 4: // SEEK {hdr, fd, offset, whence, slot}
 		result = fileio_seek(w[3], i32(w[4]), w[5])
+	case 23: // DEVCTL {hdr, name[0x400], cmd, ...}: only the disc drive is
+		// a device here, and no DEV9 (network adapter, HDD) is attached.
+		name := string(cstring(&buf[0x0c]))
+		if strings.has_prefix(name, "cdrom") {return false}
+		result = -ENODEV
 	case 12: // GETSTAT {hdr, EE stat buffer, name[0x100]}
 		result = fileio_getstat(string(cstring(&buf[0x10])), stat[:])
 		extra[0] = w[3]
