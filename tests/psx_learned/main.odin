@@ -237,7 +237,7 @@ main :: proc() {
 	if failed != 0 {
 		os.exit(1)
 	}
-	fmt.println("ok psx_learned: open runs compiled and stored-into code not; failed loads register nothing; learned code runs native only while RAM holds its words, and leaves what the interpreter does; a callee's jr $ra to a label the caller or the callee put in $ra goes on there, and one past the caller returns; the first function for the same code wins; the recompiler writes the compilable runs as learned functions; wasm32 leaves runs that may switch threads to the interpreter")
+	fmt.println("ok psx_learned: open runs compiled and stored-into code not; failed loads register nothing; learned code runs native only while RAM holds its words, and leaves what the interpreter does; a callee's jr $ra to a label the caller or the callee put in $ra goes on there, and one past the caller returns; a jump over words a learned run never ran goes on in its frame; the first function for the same code wins; the recompiler writes the compilable runs as learned functions; wasm32 leaves runs that may switch threads to the interpreter")
 }
 
 // A `j` out of a function (a tail call) when $ra holds a label of the
@@ -333,6 +333,31 @@ TAIL_HOP :: TAIL + 0x260
 TAIL_LOAD :: TAIL + 0x280
 @(private = "file")
 TAIL_SAVE :: TAIL + 0x2c0
+// A learned run made from the words the interpreter saw, whose `j` goes
+// over words it never ran to a label it never reached, after a `jal` left
+// $ra stale: the label's code restores $ra and returns for this function
+// (cpu.tail_call runs it in this frame), v0 = 1 + 40, not a call that runs
+// every outer return as a jump.
+@(private = "file")
+TAIL_GAP :: TAIL + 0x300
+@(private = "file")
+TAIL_GAP_LBL :: TAIL_GAP + 0x20
+@(rodata, private = "file")
+CODE_TAIL_GAP := [?]u32 {
+	0x27bdfff8, // addiu sp, sp, -8
+	0xafbf0000, // sw ra, 0(sp)
+	0x0c000000 | (TAIL_CALLEE >> 2) & 0x3ffffff, // jal TAIL_CALLEE
+	0x00000000,
+	0x08000000 | (TAIL_GAP_LBL >> 2) & 0x3ffffff, // j TAIL_GAP_LBL
+	0x00000000,
+	0x00000000, // never run
+	0x00000000, // never run
+	0x8fbf0000, // TAIL_GAP_LBL: lw ra, 0(sp)
+	0x27bd0008, // addiu sp, sp, 8
+	0x03e00008, // jr ra
+	0x24420028, // addiu v0, v0, 40
+}
+
 @(rodata, private = "file")
 CODE_TAIL_OUTER := [?]u32 {
 	0x03e04021, // addu t0, ra, zero
@@ -413,6 +438,14 @@ test_tail_call :: proc(tmp: string) {
 	check(psx_native.load_learned(write(tmp, "tail_out.bin", blob({{TAIL_OUTER, TAIL_OUTER, outer[:]}, {TAIL_MID, TAIL_MID, mid[:]}, {TAIL_HOP, TAIL_HOP, hop[:]}, {TAIL_LOAD, TAIL_LOAD, load[:]}}))), "load the callee that loads its caller's $ra")
 	got, native_ran = run(TAIL_OUTER, 0, 0)
 	check(native_ran && same(got, want_out), fmt.tprintf("learned callee that loads its caller's $ra: v0 %d, want %d", got.r[2], want_out.r[2]))
+
+	gap := CODE_TAIL_GAP
+	put(TAIL_GAP, gap[:])
+	want_gap, _ := run(TAIL_GAP, 0, 0)
+	check(want_gap.r[2] == 41, fmt.tprintf("interpreted jump over unrun words: v0 %d, want 41", want_gap.r[2]))
+	check(psx_native.load_learned(write(tmp, "tail_gap.bin", blob({{TAIL_GAP, TAIL_GAP, gap[:6]}}))), "load the run that jumps over words it never ran")
+	got, native_ran = run(TAIL_GAP, 0, 0)
+	check(native_ran && same(got, want_gap), fmt.tprintf("learned jump over unrun words: v0 %d, want %d", got.r[2], want_gap.r[2]))
 }
 
 // words at LOOP as one recompiled function.

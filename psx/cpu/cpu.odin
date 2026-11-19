@@ -223,19 +223,23 @@ call :: proc(addr: u32) {
 // this code goes on in a host frame under this one, so it returns. It
 // returns too when $ra is frame_ret (a true tail call; it may be a pc in
 // this code when the function called itself).
-// A fall past this code's end where no function starts is no tail call:
-// the function goes on past the words it was made from (a learned run that
-// never went further). It goes on there in this frame, as jump_unknown runs
-// it, so its `jr $ra` returns to this code's caller. As a call it would
-// take the $ra of the last call made as its frame_ret, and run every outer
-// return after it as a jump.
+// A jump at or past this code's start where no function starts goes on in
+// this frame, as jump_unknown runs it: a learned run is made from the words
+// the interpreter saw, so its function may go on past them (a fall past its
+// end, or a `j` over words it never ran to a label it never reached), and
+// its `jr $ra` then returns to this code's caller. As a call it would take
+// the $ra of the last call made as its frame_ret, and run every outer
+// return after it as a jump, until a thread's top returned to ra 0 and
+// code ran from address 0. A routine that returns to a label of this code
+// comes back the same way: run there, its `jr $ra` to the label either
+// goes on in the interpreter or (learned code) returns with $ra the label.
 tail_call :: proc(addr, start, end: u32) -> u32 {
 	e := state.r[31]
-	if addr == end && !has_func(addr) {
+	if addr >= start && !has_func(addr) {
 		jump_unknown(start, addr)
-		return 1
+	} else {
+		call(addr)
 	}
-	call(addr)
 	ra := state.r[31]
 	if e == frame_ret || ra == frame_ret || ra - start >= end - start {return 1}
 	return ra
