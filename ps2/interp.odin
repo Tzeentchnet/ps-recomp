@@ -264,10 +264,73 @@ exec_insn :: proc(i: r5900.Insn) #no_bounds_check {
 	if write_rd && i.rd != 0 {c.r[i.rd] = d}
 }
 
+// The hottest base instructions of an interpreted run (Okami's op histogram,
+// PLAN INTERP-FAST: these are 87% of it), with exec_base's semantics. The
+// interpreter loops inline them through exec_fast, which skips exec_insn's
+// and exec_base's calls and switches; exec_base runs them through here too,
+// so each has one definition. A load to $zero does no access, as the Odin
+// backend.
+@(private)
+exec_hot :: #force_inline proc(i: r5900.Insn) -> bool #no_bounds_check {
+	c := &cpu.state
+	rs, rt, rd, sa := i.rs, i.rt, i.rd, i.sa
+	s, t := c.r[rs].d[0], c.r[rt].d[0]
+	s32, t32 := u32(s), u32(t)
+	simm := u64(i64(r5900.sx16(i.imm)))
+	imm := u64(i.imm)
+	addr := s32 + u32(simm)
+	set :: #force_inline proc(c: ^cpu.Cpu, n: u8, v: u64) {if n != 0 {c.r[n].d[0] = v}}
+	sx :: cpu.sx32
+	#partial switch i.op {
+	case .LB, .LBU, .LHU, .LW, .LD, .LQ:
+		if rt == 0 {return true}
+	}
+	#partial switch i.op {
+	case .SLL:    set(c, rd, sx(t32 << sa))
+	case .SRL:    set(c, rd, sx(t32 >> sa))
+	case .SRA:    set(c, rd, sx(u32(i32(t32) >> sa)))
+	case .ADD, .ADDU:   set(c, rd, sx(s32 + t32))
+	case .DADD, .DADDU: set(c, rd, s + t)
+	case .AND:  set(c, rd, s & t)
+	case .OR:   set(c, rd, s | t)
+	case .SLT:  set(c, rd, i64(s) < i64(t) ? 1 : 0)
+	case .SLTU: set(c, rd, s < t ? 1 : 0)
+	case .ADDI, .ADDIU:   set(c, rt, sx(s32 + u32(simm)))
+	case .ANDI:  set(c, rt, s & imm)
+	case .ORI:   set(c, rt, s | imm)
+	case .LUI:   set(c, rt, sx(u32(i.imm) << 16))
+	case .LB:  set(c, rt, u64(i64(i8(mem.rd8(addr)))))
+	case .LBU: set(c, rt, u64(mem.rd8(addr)))
+	case .LHU: set(c, rt, u64(mem.rd16(addr)))
+	case .LW:  set(c, rt, sx(mem.rd32(addr)))
+	case .LD:  set(c, rt, mem.rd64(addr))
+	case .LQ:  c.r[rt].q = mem.rd128(addr)
+	case .SB:  mem.wr8(addr, u8(t))
+	case .SW:  mem.wr32(addr, t32)
+	case .SD:  mem.wr64(addr, t)
+	case .SQ:  mem.wr128(addr, rt == 0 ? 0 : c.r[rt].q)
+	case: return false
+	}
+	return true
+}
+
+// One instruction of an interpreter loop: the hot ones inline, the rest
+// through exec_insn.
+@(private)
+exec_fast :: #force_inline proc(i: r5900.Insn) {
+	if exec_hot(i) {
+		when cpu.FALLBACK_COUNT {cpu.fallback_ee[i.op] += 1}
+		when core.COMPAT_COUNT {core.compat.interp_insns += 1}
+	} else {
+		exec_insn(i)
+	}
+}
+
 // The instructions the Odin backend inlines (recomp/r5900/emit.odin
 // emit_op), with the same semantics, for native code that leaves them here.
 @(private)
 exec_base :: proc(i: r5900.Insn) #no_bounds_check {
+	if exec_hot(i) {return}
 	c := &cpu.state
 	rs, rt, rd, sa := i.rs, i.rt, i.rd, i.sa
 	fs, ft, fd := rd, rt, sa // COP1 field names
@@ -284,9 +347,6 @@ exec_base :: proc(i: r5900.Insn) #no_bounds_check {
 		if rt == 0 {return} // no access, as the Odin backend
 	}
 	#partial switch i.op {
-	case .SLL:    set(c, rd, sx(t32 << sa))
-	case .SRL:    set(c, rd, sx(t32 >> sa))
-	case .SRA:    set(c, rd, sx(u32(i32(t32) >> sa)))
 	case .SLLV:   set(c, rd, sx(t32 << (s32 & 31)))
 	case .SRLV:   set(c, rd, sx(t32 >> (s32 & 31)))
 	case .SRAV:   set(c, rd, sx(u32(i32(t32) >> (s32 & 31))))
@@ -315,37 +375,17 @@ exec_base :: proc(i: r5900.Insn) #no_bounds_check {
 	case .DIVU:   cpu.divu(s32, t32, 0)
 	case .DIV1:   cpu.div(s32, t32, 1)
 	case .DIVU1:  cpu.divu(s32, t32, 1)
-	case .ADD, .ADDU:   set(c, rd, sx(s32 + t32))
 	case .SUB, .SUBU:   set(c, rd, sx(s32 - t32))
-	case .DADD, .DADDU: set(c, rd, s + t)
 	case .DSUB, .DSUBU: set(c, rd, s - t)
-	case .AND:  set(c, rd, s & t)
-	case .OR:   set(c, rd, s | t)
 	case .XOR:  set(c, rd, s ~ t)
 	case .NOR:  set(c, rd, ~(s | t))
-	case .SLT:  set(c, rd, i64(s) < i64(t) ? 1 : 0)
-	case .SLTU: set(c, rd, s < t ? 1 : 0)
-	case .ADDI, .ADDIU:   set(c, rt, sx(s32 + u32(simm)))
 	case .DADDI, .DADDIU: set(c, rt, s + simm)
 	case .SLTI:  set(c, rt, i64(s) < i64(simm) ? 1 : 0)
 	case .SLTIU: set(c, rt, s < simm ? 1 : 0)
-	case .ANDI:  set(c, rt, s & imm)
-	case .ORI:   set(c, rt, s | imm)
 	case .XORI:  set(c, rt, s ~ imm)
-	case .LUI:   set(c, rt, sx(u32(i.imm) << 16))
-	case .LB:  set(c, rt, u64(i64(i8(mem.rd8(addr)))))
-	case .LBU: set(c, rt, u64(mem.rd8(addr)))
 	case .LH:  set(c, rt, u64(i64(i16(mem.rd16(addr)))))
-	case .LHU: set(c, rt, u64(mem.rd16(addr)))
-	case .LW:  set(c, rt, sx(mem.rd32(addr)))
 	case .LWU: set(c, rt, u64(mem.rd32(addr)))
-	case .LD:  set(c, rt, mem.rd64(addr))
-	case .LQ:  c.r[rt].q = mem.rd128(addr)
-	case .SB:  mem.wr8(addr, u8(t))
 	case .SH:  mem.wr16(addr, u16(t))
-	case .SW:  mem.wr32(addr, t32)
-	case .SD:  mem.wr64(addr, t)
-	case .SQ:  mem.wr128(addr, rt == 0 ? 0 : c.r[rt].q)
 	case .LWC1: f[rt].u = mem.rd32(addr)
 	case .SWC1: mem.wr32(addr, f[rt].u)
 	case .LQC2: vu.vu0_set_vf(rt, mem.rd128(addr))

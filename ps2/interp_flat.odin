@@ -97,7 +97,7 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 		ret := pc + 8
 		switch i.kind {
 		case .Alu:
-			exec_insn(i)
+			exec_fast(i)
 			pc += 4
 		case .Sys:
 			x.pc = pc + 4

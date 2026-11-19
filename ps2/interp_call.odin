@@ -86,7 +86,7 @@ delay_slot :: proc(pc: u32, lf: ^core.Learn_Frame) {
 	i := decode_cached(pc, mem.rd32(pc))
 	if lf != nil {learn_note(lf, i)}
 	if i.kind == .Bad {cpu.bad_insn(pc, i.w)}
-	exec_insn(i)
+	exec_fast(i)
 }
 
 // Continue at t from the instruction at pc: a registered function there
@@ -260,7 +260,7 @@ interp_body :: proc(entry: u32, lf_in: ^core.Learn_Frame, run: cpu.Interp_Run, s
 		ret := pc + 8
 		switch i.kind {
 		case .Alu:
-			exec_insn(i)
+			exec_fast(i)
 			pc += 4
 		case .Sys:
 			exec_insn(i)
