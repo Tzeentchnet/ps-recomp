@@ -84,11 +84,6 @@ native_efu :: proc(key, x: u32) -> u32 {
 	return transmute(u32)math.atan(f) // EATANxy, EATANxz, EATAN
 }
 
-// The page bytes of native code's RAM (recomp/r5900/native.odin
-// native_ram): no page of RAM is ever armed.
-@(private = "file", rodata)
-no_pages: [mem.RAM_SIZE >> 12]u8
-
 // Scratch for native QFSRV, which puts its two registers side by side here.
 @(private = "file")
 funnel: [32]u8
@@ -124,6 +119,15 @@ fast :: #force_inline proc "contextless" (a: u32) -> rawptr #no_bounds_check {
 	return nil
 }
 
+// fast for a store: nil for a code page too (mem.code_pages), so the store
+// goes through mem, which marks it.
+@(private = "file")
+fast_store :: #force_inline proc "contextless" (a: u32) -> rawptr #no_bounds_check {
+	if a < mem.fast_lim {return mem.code_pages[a >> mem.CODE_PAGE_SHIFT] == 0 ? &mem.ram_base[a] : nil}
+	if a - mem.SPR_BASE < mem.SPR_SIZE && mem.fast_lim != 0 {return &mem.spr[a - mem.SPR_BASE]}
+	return nil
+}
+
 // The doubleword and quadword accesses, with guest register n; the loads
 // have n not zero.
 @(private = "file")
@@ -133,7 +137,7 @@ ld :: proc(a, n: u32) {
 }
 @(private = "file")
 sd :: proc(a, n: u32) {
-	if p := fast(a); p != nil {
+	if p := fast_store(a); p != nil {
 		intrinsics.unaligned_store((^u64)(p), cpu.state.r[n].d[0])
 	} else {
 		mem.wr64(a, cpu.state.r[n].d[0])
@@ -147,7 +151,7 @@ lq :: proc(a, n: u32) {
 @(private = "file")
 sq :: proc(a, n: u32) {
 	v := n == 0 ? 0 : cpu.state.r[n].q
-	if p := fast(a &~ 15); p != nil {
+	if p := fast_store(a &~ 15); p != nil {
 		intrinsics.unaligned_store((^u128)(p), v)
 	} else {
 		mem.wr128(a, v)
@@ -161,7 +165,7 @@ lqc2 :: proc(a, n: u32) {
 @(private = "file")
 sqc2 :: proc(a, n: u32) {
 	v := vu.vu0.vf[n].q
-	if p := fast(a &~ 15); p != nil {
+	if p := fast_store(a &~ 15); p != nil {
 		intrinsics.unaligned_store((^u128)(p), v)
 	} else {
 		mem.wr128(a, v)
@@ -242,7 +246,7 @@ native_imports :: proc(types: ^map[string]typeid = nil) -> map[string]u64 {
 	vu_k[32] = {0xffffffff, 0x7fffffff, 0xffffffff, 0x7fffffff}
 	vu_k[33] = {0, 0x38100000, 0, 0x38100000}
 	m["mem.ram"] = p(mem.ram_base)
-	m["ps2.no_pages"] = p(&no_pages)
+	m["mem.code_pages"] = p(&mem.code_pages)
 	m["mem.spr"] = p(&mem.spr)
 	m["ps2.funnel"] = p(&funnel)
 	m["mem.watch_on"] = p(&mem.watch_on)

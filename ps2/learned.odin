@@ -32,6 +32,10 @@ Learned_Fn :: struct {
 	lo:    u32,
 	words: []u32,
 	fn:    cpu.Func_Proc,
+	// Native: mem.code_writes when its words were last found in RAM, its
+	// pages armed then (mem.code_arm); while it is current no armed page
+	// was written, so RAM holds them still. 0: not since loaded.
+	clean: u32,
 }
 
 // By entry. Host state: a snapshot never holds it, and every call checks
@@ -61,9 +65,15 @@ learned_find :: proc(entry: u32) -> cpu.Func_Proc #no_bounds_check {
 	}
 	if len(hit.fns) == 0 {return nil}
 	for &l in hit.fns {
+		if l.clean == mem.code_writes {
+			cpu.learned_calls += 1
+			return l.fn
+		}
 		n := len(l.words)
 		cpu.learned_words += u64(n)
 		if string(mem.ram[l.lo:][:4 * n]) == string(([^]u8)(raw_data(l.words))[:4 * n]) {
+			mem.code_arm(l.lo, 4 * u32(n))
+			l.clean = mem.code_writes
 			cpu.learned_calls += 1
 			return l.fn
 		}
@@ -117,12 +127,16 @@ load_learned_blob :: proc(blob: []u8, name: string) -> bool {
 	when ODIN_ARCH == .wasm32 {
 		learned_steps_add(&code)
 	} else {
-		if learned_fns == nil {learned_fns = make(map[u32][dynamic]Learned_Fn, core.long_allocator())}
+		if learned_fns == nil {
+			learned_fns = make(map[u32][dynamic]Learned_Fn, core.long_allocator())
+			// A load puts other code under the armed pages.
+			append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {mem.code_write_all()}})
+		}
 		for s in code.spans {
 			r := code.ranges[s.range_first]
 			fns := learned_fns[s.entry]
 			if fns == nil {fns = make([dynamic]Learned_Fn, core.long_allocator())}
-			append(&fns, Learned_Fn{r.pc, code.pool[r.at:][:r.n_words], cast(cpu.Func_Proc)rawptr(code.base + uintptr(s.off))})
+			append(&fns, Learned_Fn{lo = r.pc, words = code.pool[r.at:][:r.n_words], fn = cast(cpu.Func_Proc)rawptr(code.base + uintptr(s.off))})
 			learned_fns[s.entry] = fns
 		}
 		learned_cache = {}
@@ -181,7 +195,7 @@ learned_steps_add :: proc(code: ^core.Native_Code) {
 	}
 	for s in code.spans {
 		r := code.ranges[s.range_first]
-		fn := Learned_Fn{r.pc, code.pool[r.at:][:r.n_words], cast(cpu.Func_Proc)rawptr(code.base + uintptr(s.off))}
+		fn := Learned_Fn{lo = r.pc, words = code.pool[r.at:][:r.n_words], fn = cast(cpu.Func_Proc)rawptr(code.base + uintptr(s.off))}
 		append(&learned_steps, Learned_Step{f = fn, entry = s.entry})
 		learned_most = max(learned_most, r.n_words)
 		for w in r.pc / 4 ..< r.pc / 4 + r.n_words {learned_marks[w / 64] |= 1 << (w % 64)}

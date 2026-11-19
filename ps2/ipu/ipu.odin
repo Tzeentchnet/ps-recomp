@@ -608,6 +608,7 @@ ipu_ch3_direct :: proc(src: [^]u8, n: int) -> int {
 	a := mem.dma_addr(madr^)
 	if k == 0 || a < mem.RAM_SIZE && int(a) + k * 16 > mem.RAM_SIZE || a >= mem.RAM_SIZE && int(a - mem.SPR_BASE) + k * 16 > mem.SPR_SIZE {return 0}
 	dst := a < mem.RAM_SIZE ? &mem.ram[a] : &mem.spr[a - mem.SPR_BASE]
+	if a < mem.RAM_SIZE {mem.code_write(a, u32(k) * 16)}
 	intrinsics.mem_copy_non_overlapping(dst, src, k * 16)
 	madr^ += u32(k) * 16
 	qwc^ = (qwc^ & 0xffff) - u32(k)

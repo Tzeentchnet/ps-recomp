@@ -313,6 +313,7 @@ load_exec :: proc(filename, argc, argv: u32) {
 	if !found {cpu.fatal("LoadExecPS2: no ELF %s (the console would boot its browser)", name)}
 	user := mem.ram[LOAD_EXEC_CLEAR:]
 	intrinsics.mem_zero(raw_data(user), len(user))
+	mem.code_write_all()
 	entry, loaded := mem.load_elf(data)
 	prog := elf_id(data)
 	delete(data, core.host_allocator)

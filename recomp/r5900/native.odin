@@ -119,8 +119,8 @@ EE_SIGS := [?]native.Sig {
 
 // Main RAM as the Odin fast path sees it (FAST_HELPERS fast): an address
 // below 32 MiB. While WATCH is on (any byte of mem.watch_len set) every store
-// calls, so the runtime sees it. No page is ever armed; ps2.no_pages is all
-// zeros.
+// calls, so the runtime sees it. A store into a page that holds learned
+// code (mem.code_pages armed) calls too, so mem marks the page written.
 @(private = "file", rodata)
 RAM_GUARDS := [?]native.Guard{{"mem.watch_on", 0xff}}
 
@@ -129,7 +129,7 @@ native_ram :: proc() -> native.Ram {
 		base = "mem.ram",
 		outside = 0xfe000000,
 		size = 32 << 20,
-		pages = "ps2.no_pages",
+		pages = "mem.code_pages",
 		page_shift = 12,
 		guards = RAM_GUARDS[:],
 		// The uncached mirror, 0x20000000 and 0x30000000 up, and the

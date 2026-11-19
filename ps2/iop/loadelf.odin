@@ -133,6 +133,7 @@ in_file :: proc(data: []u8, off, n: u32) -> bool {
 ee_range :: proc(a, n: u32) -> ([]u8, bool) {
 	p := u64(a & 0x0fffffff)
 	if a >> 28 == 7 || p + u64(n) > mem.RAM_SIZE {return nil, false}
+	mem.code_write(u32(p), n)
 	return mem.ram[p:][:n], true
 }
 

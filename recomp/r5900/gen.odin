@@ -748,17 +748,25 @@ fast :: #force_inline proc "contextless" (a: u32) -> rawptr #no_bounds_check {
 	return nil
 }
 
+// fast for a store: nil for a code page too (mem.code_pages), so the store
+// goes through mem, which marks it.
+fast_store :: #force_inline proc "contextless" (a: u32) -> rawptr #no_bounds_check {
+	if a < mem.fast_lim {return mem.code_pages[a >> mem.CODE_PAGE_SHIFT] == 0 ? &mem.ram_base[a] : nil}
+	if a - mem.SPR_BASE < mem.SPR_SIZE {return &mem.spr[a - mem.SPR_BASE]}
+	return nil
+}
+
 rd8 :: #force_inline proc(a: u32) -> u8 {p := fast(a); return p != nil ? (^u8)(p)^ : mem.rd8(a)}
 rd16 :: #force_inline proc(a: u32) -> u16 {p := fast(a); return p != nil ? intrinsics.unaligned_load((^u16)(p)) : mem.rd16(a)}
 rd32 :: #force_inline proc(a: u32) -> u32 {p := fast(a); return p != nil ? intrinsics.unaligned_load((^u32)(p)) : mem.rd32(a)}
 rd64 :: #force_inline proc(a: u32) -> u64 {p := fast(a); return p != nil ? intrinsics.unaligned_load((^u64)(p)) : mem.rd64(a)}
 rd128 :: #force_inline proc(a: u32) -> u128 {p := fast(a &~ 15); return p != nil ? intrinsics.unaligned_load((^u128)(p)) : mem.rd128(a)}
 
-wr8 :: #force_inline proc(a: u32, v: u8) {if p := fast(a); p != nil {(^u8)(p)^ = v} else {mem.wr8(a, v)}}
-wr16 :: #force_inline proc(a: u32, v: u16) {if p := fast(a); p != nil {intrinsics.unaligned_store((^u16)(p), v)} else {mem.wr16(a, v)}}
-wr32 :: #force_inline proc(a: u32, v: u32) {if p := fast(a); p != nil {intrinsics.unaligned_store((^u32)(p), v)} else {mem.wr32(a, v)}}
-wr64 :: #force_inline proc(a: u32, v: u64) {if p := fast(a); p != nil {intrinsics.unaligned_store((^u64)(p), v)} else {mem.wr64(a, v)}}
-wr128 :: #force_inline proc(a: u32, v: u128) {if p := fast(a &~ 15); p != nil {intrinsics.unaligned_store((^u128)(p), v)} else {mem.wr128(a, v)}}
+wr8 :: #force_inline proc(a: u32, v: u8) {if p := fast_store(a); p != nil {(^u8)(p)^ = v} else {mem.wr8(a, v)}}
+wr16 :: #force_inline proc(a: u32, v: u16) {if p := fast_store(a); p != nil {intrinsics.unaligned_store((^u16)(p), v)} else {mem.wr16(a, v)}}
+wr32 :: #force_inline proc(a: u32, v: u32) {if p := fast_store(a); p != nil {intrinsics.unaligned_store((^u32)(p), v)} else {mem.wr32(a, v)}}
+wr64 :: #force_inline proc(a: u32, v: u64) {if p := fast_store(a); p != nil {intrinsics.unaligned_store((^u64)(p), v)} else {mem.wr64(a, v)}}
+wr128 :: #force_inline proc(a: u32, v: u128) {if p := fast_store(a &~ 15); p != nil {intrinsics.unaligned_store((^u128)(p), v)} else {mem.wr128(a, v)}}
 
 // mem.LWL, LWR, SWL, SWR, LDL, LDR, SDL and SDR over the aligned word or
 // doubleword, I/O through rd32, rd64, wr32 and wr64 as the others.

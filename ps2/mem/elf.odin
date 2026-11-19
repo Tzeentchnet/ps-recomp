@@ -139,6 +139,7 @@ guest_range :: proc(a, n: u32) -> ([]u8, bool) {
 	}
 	p := a & 0x0fffffff
 	if u64(p) + u64(n) > RAM_SIZE {return nil, false}
+	code_write(p, n)
 	return ram[p:][:n], true
 }
 

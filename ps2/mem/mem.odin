@@ -34,6 +34,56 @@ watch_on: u8 // 1 while watch_len is not 0: the one byte native code tests
 // all come here.
 spin_armed: bool
 
+// Code pages: a byte per 4 KiB page of RAM, set (armed) while learned code
+// whose words were compared against RAM lies in it (ps2/learned.odin). A
+// write to an armed page clears it and moves code_writes, so a function
+// compared at the current code_writes still has its words in RAM. Every
+// way into RAM but a native store, which tests the byte itself (native_ram
+// pages), comes through code_write: store, wr128, ram_slice, and the host
+// code that writes ram directly. Host state, outside snapshots: a load
+// clears them all (code_write_all).
+CODE_PAGE_SHIFT :: 12
+code_pages: [RAM_SIZE >> CODE_PAGE_SHIFT]u8
+code_writes: u32 = 1
+
+// A write of n bytes at RAM offset p: clears the armed pages it covers,
+// moving code_writes when one was armed. The span is clipped to RAM.
+code_write :: proc "contextless" (p, n: u32) #no_bounds_check {
+	if n == 0 || p >= RAM_SIZE {return}
+	last := min(u64(p) + u64(n), RAM_SIZE) - 1
+	hit: u8
+	for i in p >> CODE_PAGE_SHIFT ..= u32(last) >> CODE_PAGE_SHIFT {
+		hit |= code_pages[i]
+		code_pages[i] = 0
+	}
+	if hit != 0 {code_writes += 1}
+}
+
+// RAM changed wholesale (a snapshot load, a program load): no page is armed.
+code_write_all :: proc "contextless" () {
+	code_pages = {}
+	code_writes += 1
+}
+
+// Arms the pages of RAM [p, p+n), learned code whose words were just
+// compared there.
+code_arm :: proc "contextless" (p, n: u32) #no_bounds_check {
+	if n == 0 || p >= RAM_SIZE {return}
+	last := min(u64(p) + u64(n), RAM_SIZE) - 1
+	for i in p >> CODE_PAGE_SHIFT ..= u32(last) >> CODE_PAGE_SHIFT {code_pages[i] = 1}
+}
+
+// A store of n bytes at guest address a that slow_addr resolved: marks it
+// when it is in RAM through a mirror.
+@(private)
+code_store_slow :: #force_inline proc "contextless" (a, n: u32) {
+	switch a >> 28 {
+	case 0x0, 0x2, 0x3, 0x8, 0xa:
+		p := a & 0x0fffffff
+		if p < RAM_SIZE {code_write(p, n)}
+	}
+}
+
 // Handlers in the packages above this one, set by package ps2 at init.
 hw_read: proc(a: u32, size: int) -> u64
 hw_write: proc(a: u32, v: u64, size: int)
@@ -89,10 +139,12 @@ store :: #force_inline proc(a: u32, v: $T) #no_bounds_check {
 	if (a & 0x0fffffff) - watch_lo < watch_len {trace_store(a, u128(v))}
 	if spin_armed {spin_store(a, u128(v), size_of(T))}
 	if a < RAM_SIZE {
+		if code_pages[a >> CODE_PAGE_SHIFT] != 0 {code_write(a, size_of(T))}
 		intrinsics.unaligned_store((^T)(&ram[a]), v)
 		return
 	}
 	if p := slow_store_addr(a, size_of(T)); p != nil {
+		code_store_slow(a, size_of(T))
 		intrinsics.unaligned_store((^T)(p), v)
 		return
 	}
@@ -121,10 +173,12 @@ wr128 :: proc(addr: u32, v: u128) #no_bounds_check {
 	if watch_len != 0 && (a & 0x0fffffff) + 16 > watch_lo && (a & 0x0fffffff) < watch_lo + watch_len {trace_store(a, v)}
 	if spin_armed {spin_store(a, v, 16)}
 	if a < RAM_SIZE {
+		if code_pages[a >> CODE_PAGE_SHIFT] != 0 {code_write(a, 16)}
 		(^u128)(&ram[a])^ = v
 		return
 	}
 	if p := slow_store_addr(a, 16); p != nil {
+		code_store_slow(a, 16)
 		intrinsics.unaligned_store((^u128)(p), v)
 		return
 	}
@@ -149,13 +203,16 @@ spin_store :: proc(a: u32, v: u128, n: int) {
 	}
 }
 
-// Host slice over guest RAM, for kernel and DMA code.
+// Host slice over guest RAM, for kernel and DMA code. It may be written, so
+// its pages count as written (code_write), reads included: a read costs
+// learned code over it one more compare.
 ram_slice :: proc(a: u32, n: u32, loc := #caller_location) -> []u8 {
 	p := a & 0x0fffffff
 	if a >> 28 == 7 {
 		return spr[a - SPR_BASE:][:n]
 	}
 	if p + n > RAM_SIZE {cpu.fatal("ram_slice %08x+%x out of range%s (%v)", a, n, mod_region_note(a), loc)}
+	code_write(p, n)
 	return ram[p:][:n]
 }
 
