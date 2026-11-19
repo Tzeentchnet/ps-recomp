@@ -56,8 +56,9 @@ learn_header :: learnfile.learn_header
 learn_compact :: learnfile.learn_compact
 learn_compilable :: learnfile.learn_compilable
 
-// The most records one process writes, and the most bytes.
-LEARN_RECORDS_MAX :: 4096
+// The most records one process writes, and the most bytes. GT4 fills 4096
+// records with only 3.3 MB, so the record count is set well past that.
+LEARN_RECORDS_MAX :: 65536
 LEARN_BYTES_MAX :: 16 * 1024 * 1024
 // The store ring's length: the stores a run in progress can look back over,
 // on a processor without RAM stamps.
