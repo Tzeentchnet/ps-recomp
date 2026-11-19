@@ -10,7 +10,9 @@
 // The FMOD reverb (reverb_set, reverb_mix) runs each preset over a fixed
 // send, and FMOD's Reverb_SetProperties (fmod_reverb) through a sequence of
 // settings; hashes of its return pin the output. A core's reverb (spu_effect,
-// spu_effect_enable, spu_voice_send) rings on after its voice ends.
+// spu_effect_enable, spu_voice_send) rings on after its voice ends, until
+// libsd 25 or 31 (sceSdClearEffectWorkArea, sceSdCleanEffectWorkArea) zeroes
+// its work area.
 // Mixing is wide: voices that cancel leave no clipped residue, a core
 // saturates once at its output, and the host sum is left unclamped for the
 // host. A voice at pitch 0 holds its sample while its envelope steps. A
@@ -455,6 +457,13 @@ effects :: proc() {
 	iop.spu_effect_enable(0, true)
 	check(!iop.spu_effect(0, 10, 0, 0) && !iop.spu_effect(0, 0x205, 0, 0) && !iop.spu_effect(2, 5, 0, 0), "bad effect mode or core refused")
 	check(tail(effect_play(true)), "hall reverb heard after the voice ends")
+	check(tail(effect_play(false)), "a voice out of the send still hears the reverb's work area ring")
+	for fno in ([2]u32{25, 31}) { // sceSdClearEffectWorkArea, sceSdCleanEffectWorkArea(core, channel, effect mode)
+		check(tail(effect_play(true)), "hall reverb refills the work area")
+		r3000.state.r[4], r3000.state.r[5], r3000.state.r[6] = 0, 0, 5
+		v, ok := iop.libsd_fn(fno)
+		check(ok && v == 0 && !tail(effect_play(false)), "libsd 25 and 31 zero core 0's effect work area")
+	}
 	iop.spu_effect(0, 0x105, 0x500, 0x500)
 	check(!tail(effect_play(false)), "a voice out of the send gets no reverb")
 	iop.spu_effect(0, 0x100, 0, 0)

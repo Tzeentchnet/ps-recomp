@@ -94,7 +94,7 @@ libsd_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 	case 24: // sceSdGetEffectAttr(core, sceSdEffectAttr *)
 		for v, i in sd_get_effect_attr(a0) {w32(a1 + u32(i) * 4, v)}
 		return 0, true
-	case 25: // sceSdClearEffectWorkArea(core, channel, effect mode)
+	case 25, 31: // 25 sceSdClearEffectWorkArea / 31 sceSdCleanEffectWorkArea(core, channel, effect mode): LIBSD 1.5's 31 is 25 without one check; both zero the effect area
 		sd_clear_effect(a0)
 		return 0, true
 	case 26: // sceSdSetTransIntrHandler(channel, func, arg): the previous func
