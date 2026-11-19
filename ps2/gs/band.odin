@@ -253,7 +253,10 @@ band_ctx_new :: proc() {
 	x0, y0 := u32(max(c.sx0, 0)), u32(max(c.sy0, 0))
 	x1, y1 := u32(max(c.sx1, 0)) + 1, u32(max(c.sy1, 0)) + 1
 	ok := band_onto(c.fpsm, c.fbp, c.fbw, x0, y0, x1, y1, &fw)
-	if c.zte && !band_onto(c.zpsm, c.zbp, c.fbw, x0, y0, x1, y1, &zw) {ok = false}
+	// Z pages count only when the context reads or writes Z: with ZTST
+	// ALWAYS and ZMSK set the Z buffer is never touched, and a Z buffer
+	// that shares pages with the frame or texture is no hazard.
+	if (c.z_read || (c.zte && !c.zmsk)) && !band_onto(c.zpsm, c.zbp, c.fbw, x0, y0, x1, y1, &zw) {ok = false}
 	if c.tme {
 		t := &c.tex
 		for n in 0 ..= min(t.mxl, 6) {
@@ -284,12 +287,14 @@ band_onto :: proc(psm, bp, bw, x0, y0, x1, y1: u32, out: ^Page_Set) -> bool {
 @(private)
 band_draw :: proc(c: ^Ctx, kind: u64) #no_bounds_check {
 	fp, zp: Page_Set
+	// Z pages take part only when the context reads or writes Z.
+	zwrite := c.zte && !c.zmsk
+	zuse := c.z_read || zwrite
 	x0, y0, x1, y1, any := prim_rect(c, kind, &queue)
 	if any {
 		page_rect(c.fpsm, c.fbp, c.fbw, x0, y0, x1, y1, &fp)
-		if c.zte {page_rect(c.zpsm, c.zbp, c.fbw, x0, y0, x1, y1, &zp)}
+		if zuse {page_rect(c.zpsm, c.zbp, c.fbw, x0, y0, x1, y1, &zp)}
 	}
-	zwrite := c.zte && !c.zmsk
 	wp := fp
 	if zwrite {for &w, i in wp {w |= zp[i]}}
 	for w, i in wp {tc_main.pending[i] |= w}
@@ -308,17 +313,17 @@ band_draw :: proc(c: ^Ctx, kind: u64) #no_bounds_check {
 		} else if pages_meet(&wp, &band.rout) {
 			band_stats.war += 1
 			band_join()
-		} else if any && (band_alias(c.fpsm, c.fbp, c.fbw, &fp) || c.zte && band_alias(c.zpsm, c.zbp, c.fbw, &zp)) {
+		} else if any && (band_alias(c.fpsm, c.fbp, c.fbw, &fp) || zuse && band_alias(c.zpsm, c.zbp, c.fbw, &zp)) {
 			band_stats.alias += 1
 			band_join()
 		}
 	}
 	if any {
 		band_map(c.fpsm, c.fbp, c.fbw, &fp)
-		if c.zte {band_map(c.zpsm, c.zbp, c.fbw, &zp)}
+		if zuse {band_map(c.zpsm, c.zbp, c.fbw, &zp)}
 	}
 	for w, i in band.cr {band.rout[i] |= w}
-	if c.zte && !zwrite {for w, i in zp {band.rout[i] |= w}}
+	if c.z_read && !zwrite {for w, i in zp {band.rout[i] |= w}}
 	for w, i in wp {band.wout[i] |= w}
 	if band.spend {
 		j := band_slot(BAND_PAGES)
