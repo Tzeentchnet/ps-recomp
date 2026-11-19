@@ -69,6 +69,7 @@ Tex_Wrap :: struct {
 Ctx :: struct {
 	iip, tme, fge, abe, fst: bool,
 	fbp, fbw, fpsm, fbmsk:   u32,
+	fmsk:                    u32, // FBMSK in the frame pixel's bits: 5551 for a 16-bit frame
 	zbp, zpsm:               u32,
 	zmsk:                    bool,
 	sx0, sx1, sy0, sy1:      i32,
@@ -177,6 +178,11 @@ decode_ctx :: proc(prim: u64) -> (c: Ctx) #no_bounds_check {
 	c.fbw = u32(frame >> 16) & 0x3f
 	c.fpsm = u32(frame >> 24) & 0x3f
 	c.fbmsk = u32(frame >> 32)
+	c.fmsk = c.fbmsk
+	if !(c.fpsm == PSMCT32 || c.fpsm == PSMCT24 || c.fpsm == PSMZ32 || c.fpsm == PSMZ24) {
+		m := c.fbmsk
+		c.fmsk = (m >> 3) & 0x1f | (m >> 6) & 0x3e0 | (m >> 9) & 0x7c00 | (m >> 16) & 0x8000
+	}
 	for e in shown[:n_shown] {c.on_display = c.on_display || e.fbp == c.fbp}
 	zbuf := r[0x4e + n]
 	c.zbp = u32(zbuf & 0x1ff) * 32
@@ -1169,10 +1175,6 @@ pixel :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fog
 		out = u32(src.r >> 3) | u32(src.g >> 3) << 5 | u32(src.b >> 3) << 10 | (src.a & 0x80 != 0 ? 0x8000 : 0)
 		dst_raw &= 0xffff
 	}
-	msk := c.fbmsk
-	if !fb32 {
-		msk = (msk >> 3) & 0x1f | (msk >> 6) & 0x3e0 | (msk >> 9) & 0x7c00 | (msk >> 16) & 0x8000
-	}
-	v := (out &~ msk) | (dst_raw & msk)
+	v := (out &~ c.fmsk) | (dst_raw & c.fmsk)
 	if fr.ok {row_write(fr, fa, v)} else {write_raw(c.fpsm, c.fbp, c.fbw, px, py, v)}
 }

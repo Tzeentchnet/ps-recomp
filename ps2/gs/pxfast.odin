@@ -57,8 +57,8 @@ Px_Fast :: struct {
 // run (SWGS-PX-6).
 // The last eight are another title's generic contexts over 3700 vblanks
 // of its boot, loading screens and first scene, 63.6 % of its generic
-// pixels (SWGS-PX-7). The rest, 36.4 %, is its loading-screen layer into a
-// CT16 frame, which has no fast row.
+// pixels (SWGS-PX-7). The last is the rest, 36.4 %: its loading-screen
+// layer, a DECAL texture into a CT16 frame under FBMSK (SWGS-PX-8).
 PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x68, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
@@ -167,6 +167,7 @@ PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 6, afail = 0, fge = false, date = 0},
 	{tfx = -1, tcc = false, ztst = 3, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x89, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0xff, fpsm = PSMCT16, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
 }
 
 // PX_FAST's procs, in its order.
@@ -178,7 +179,7 @@ px_procs := [len(PX_FAST)]Pixel_Proc {
 	px_45, px_46, px_47, px_48, px_49, px_50, px_51, px_52, px_53, px_54, px_55, px_56, px_57, px_58, px_59, px_60, px_61, px_62, px_63, px_64, px_65,
 	px_66, px_67, px_68, px_69, px_70, px_71, px_72, px_73, px_74, px_75, px_76, px_77, px_78, px_79, px_80, px_81, px_82, px_83, px_84, px_85,
 	px_86, px_87, px_88, px_89, px_90, px_91, px_92, px_93, px_94, px_95, px_96, px_97, px_98,
-	px_99, px_100, px_101, px_102, px_103, px_104, px_105, px_106,
+	px_99, px_100, px_101, px_102, px_103, px_104, px_105, px_106, px_107,
 }
 
 @(private)
@@ -398,6 +399,8 @@ px_104 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fo
 px_105 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 105)}
 @(private)
 px_106 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 106)}
+@(private)
+px_107 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 107)}
 
 // PX_FAST's triangle row procs, in its order.
 @(private, rodata)
@@ -410,7 +413,7 @@ tri_procs := [len(PX_FAST)]Tri_Row_Proc {
 	tri_67, tri_68, tri_69, tri_70, tri_71, tri_72, tri_73, tri_74, tri_75, tri_76, tri_77, tri_78, tri_79,
 	tri_80, tri_81, tri_82, tri_83, tri_84, tri_85,
 	tri_86, tri_87, tri_88, tri_89, tri_90, tri_91, tri_92, tri_93, tri_94, tri_95, tri_96, tri_97, tri_98,
-	tri_99, tri_100, tri_101, tri_102, tri_103, tri_104, tri_105, tri_106,
+	tri_99, tri_100, tri_101, tri_102, tri_103, tri_104, tri_105, tri_106, tri_107,
 }
 
 @(private)
@@ -627,6 +630,8 @@ tri_104 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, 
 tri_105 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 105)}
 @(private)
 tri_106 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 106)}
+@(private)
+tri_107 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 107)}
 
 // PX_FAST's sprite row procs, in its order.
 @(private, rodata)
@@ -639,7 +644,7 @@ spr_procs := [len(PX_FAST)]Sprite_Row_Proc {
 	spr_67, spr_68, spr_69, spr_70, spr_71, spr_72, spr_73, spr_74, spr_75, spr_76, spr_77, spr_78, spr_79,
 	spr_80, spr_81, spr_82, spr_83, spr_84, spr_85,
 	spr_86, spr_87, spr_88, spr_89, spr_90, spr_91, spr_92, spr_93, spr_94, spr_95, spr_96, spr_97, spr_98,
-	spr_99, spr_100, spr_101, spr_102, spr_103, spr_104, spr_105, spr_106,
+	spr_99, spr_100, spr_101, spr_102, spr_103, spr_104, spr_105, spr_106, spr_107,
 }
 
 @(private)
@@ -856,6 +861,8 @@ spr_104 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(
 spr_105 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 105)}
 @(private)
 spr_106 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 106)}
+@(private)
+spr_107 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 107)}
 
 @(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
@@ -993,7 +1000,8 @@ px_depth :: #force_inline proc(c: ^Ctx, zr: ^Row, x: i32, zf: f64, $ZTST: u32, $
 px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
 	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
 	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32, ts: #simd[4]i32, $TS: bool) #no_bounds_check {
-	#assert(FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24)
+	W32 :: FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24
+	#assert(W32 || FPSM == PSMCT16 || FPSM == PSMCT16S)
 	#assert(ATST <= 7 && AFAIL <= 3)
 	#assert(ATST != 1 || AFAIL == 0)
 	#assert(DATE <= 2)
@@ -1043,7 +1051,8 @@ px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [
 	DST :: FBMSK || DATE != 0 || UNPACK
 	fa := row_addr_p(fr, px, FPSM)
 	when DST {dst_raw := row_read_p(fa, FPSM)} // `when` opens no scope
-	when DATE != 0 {if (dst_raw & 0x80000000 != 0) != (DATE == 2) {return}}
+	DA :: 0x80000000 when W32 else 0x8000 // the stored alpha's top bit
+	when DATE != 0 {if (dst_raw & DA != 0) != (DATE == 2) {return}}
 
 	when FAIL_Z {
 		if pass {row_write_p(za, z, ZPSM)}
@@ -1053,8 +1062,14 @@ px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [
 	when FAIL_F {if !pass {return}}
 
 	when UNPACK {
-		dst := expand(dst_raw)
-		when FPSM == PSMCT24 || FPSM == PSMZ24 {dst = simd.replace(dst, 3, 0x80)}
+		when W32 {
+			dst := expand(dst_raw)
+			when FPSM == PSMCT24 || FPSM == PSMZ24 {dst = simd.replace(dst, 3, 0x80)}
+		} else {
+			// 5551: each 5-bit channel to the top of its byte, the alpha bit to 0x80.
+			d := i32(dst_raw)
+			dst := simd.shl(simd.shr(#simd[4]i32{d, d, d, d}, #simd[4]u32{0, 5, 10, 8}) & #simd[4]i32{0x1f, 0x1f, 0x1f, 0x80}, #simd[4]u32{3, 3, 3, 0})
+		}
 	} else when BLEND {
 		dst: #simd[4]i32 // not read
 	}
@@ -1081,7 +1096,12 @@ px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [
 	// RGB clamped to 0..255, alpha its low byte: each lane one byte of
 	// the stored word.
 	o := simd.select(RGB, simd.clamp(rgb, #simd[4]i32{}, B255), a & B255)
-	out := transmute(u32)simd.swizzle(transmute(#simd[16]u8)o, 0, 4, 8, 12)
-	when FBMSK {out = (out &~ c.fbmsk) | (dst_raw & c.fbmsk)}
+	when W32 {
+		out := transmute(u32)simd.swizzle(transmute(#simd[16]u8)o, 0, 4, 8, 12)
+	} else {
+		// 5551: each channel's top five bits, alpha's top bit as bit 15.
+		out := u32(simd.reduce_or(simd.shl(simd.shr(o, #simd[4]u32{3, 3, 3, 7}), #simd[4]u32{0, 5, 10, 15})))
+	}
+	when FBMSK {out = (out &~ c.fmsk) | (dst_raw & c.fmsk)}
 	row_write_p(fa, out, FPSM)
 }
