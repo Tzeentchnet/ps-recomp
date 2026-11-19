@@ -18,8 +18,9 @@ Learned :: struct {
 // through cpu.call, so code outside the words is looked up as it is then;
 // each `jr $ra` calls ps2.learned_jr before it returns (native_func).
 // Two runs at one entry with other words are two spans. A run native_func
-// cannot lower for arch (nil: wasm32's exact lowering) gets no span and
-// stays interpreted; skipped counts them. In context.allocator.
+// cannot lower for arch (nil: wasm32's exact lowering), or one with a delay
+// slot past its words (slot_past_words), gets no span and stays
+// interpreted; skipped counts them. In context.allocator.
 learned_blob :: proc(runs: []Learned, arch: native.Arch) -> (blob: []u8, skipped: int) {
 	a := native_asm(arch)
 	spans := make([dynamic]native.Blob_Span, 0, len(runs))
@@ -34,7 +35,7 @@ learned_blob :: proc(runs: []Learned, arch: native.Arch) -> (blob: []u8, skipped
 		}
 		f := mips.func_make(r.entry, r.lo + 4 * u32(len(r.words)), r.lo)
 		mips.discover(RULES, img, f, nil)
-		fs := native_func(&a, f, nil, CYCLES_PER_INSN, &slow, learned = true)
+		fs := slot_past_words(f) ? nil : native_func(&a, f, nil, CYCLES_PER_INSN, &slow, learned = true)
 		if fs == nil {
 			skipped += 1
 		} else {
@@ -47,6 +48,18 @@ learned_blob :: proc(runs: []Learned, arch: native.Arch) -> (blob: []u8, skipped
 	blob = native.make_blob(&a, nil, nil, spans[:])
 	for s in spans {delete(s.ranges)}
 	return blob, skipped
+}
+
+// Whether a delay slot f reaches is past its words: a run noted with its
+// last branch or jump fetched but not the slot (a 1-word `jr $ra` record).
+// lower would run no slot there, and the words checked before the code runs
+// (ps2/learned.odin) leave that RAM unchecked, so the run stays interpreted.
+@(private = "file")
+slot_past_words :: proc(f: ^mips.Func) -> bool {
+	for d in f.delay {
+		if !mips.inside(f, d) {return true}
+	}
+	return false
 }
 
 // The mods' functions (each one run, entered at its first word) compiled to

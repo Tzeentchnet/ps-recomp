@@ -15,6 +15,9 @@
 //   - A run with a SYSCALL in a delay slot, which wasm32 leaves to the
 //     interpreter at the transfer (r5900.lower's exact), is lowered: it gets
 //     a span, and none is counted skipped.
+//   - A run whose words end at a `jr $ra`, its delay slot past them, gets no
+//     span and is counted skipped, on every arch: the slot is RAM the code
+//     would depend on and nothing checks.
 //   - A `jr $ra` whose delay slot writes $ra returns to $ra as it was before
 //     the slot, compiled as interpreted.
 package main
@@ -170,6 +173,21 @@ test_wasm_slot :: proc() {
 	check(n_spans == 2, fmt.tprintf("wasm32 blob has %d spans, want 2", n_spans))
 }
 
+// A run of one word, a `jr $ra` whose delay slot is past its words: no
+// span for it, beside the loop's, and it is counted skipped.
+@(private = "file")
+test_slot_past_words :: proc() {
+	loop := CODE_LOOP
+	jr := [?]u32{0x03e00008} // jr ra
+	for arch in ([?]native.Arch{native.Arch(core.NATIVE_ARCH), .Wasm32}) {
+		blob, skipped := r5900.learned_blob({{LOOP, LOOP, loop[:]}, {LOOP + 0x100, LOOP + 0x100, jr[:]}}, arch)
+		defer delete(blob)
+		check(skipped == 1, fmt.tprintf("%v skipped %d runs, want 1", arch, skipped))
+		n_spans := len(blob) < 32 ? -1 : int(u32(blob[28]) | u32(blob[29]) << 8 | u32(blob[30]) << 16 | u32(blob[31]) << 24)
+		check(n_spans == 1, fmt.tprintf("%v blob has %d spans, want 1", arch, n_spans))
+	}
+}
+
 @(private = "file")
 write_blob :: proc(dir, name: string, runs: []r5900.Learned) -> string {
 	path, _ := filepath.join({dir, name}, context.allocator)
@@ -193,6 +211,7 @@ game :: proc(_: rawptr) {
 	if !loaded {
 		test_compilable()
 		test_wasm_slot()
+		test_slot_past_words()
 		put_loop(CODE_LOOP[0])
 		v0, native_ran := run()
 		check(v0 == 15 && !native_ran, "interpreted loop")
