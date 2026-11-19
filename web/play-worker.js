@@ -158,7 +158,16 @@ onmessage = async ({ data }) => {
 			disc = await discFor(data);
 			postMessage({ store: disc.info });
 		}
-		wasi = new Wasi({ args: [wasm.replace(/\.wasm$/, ""), ...args], env, disc: disc.disc, log });
+		// The run's game data each time the module writes it (core/gamedata.odin
+		// renames a tmp file over gamedata.tsv, core/file.odin
+		// write_file_atomic), copied to the page for its Send: /data reaches
+		// the store only when the run ends.
+		const renamed = out ? null : (path, bytes) => {
+			if (path.split("/").at(-1) !== "gamedata.tsv") return;
+			const copy = bytes.slice();
+			postMessage({ gamedata: copy }, [copy.buffer]);
+		};
+		wasi = new Wasi({ args: [wasm.replace(/\.wasm$/, ""), ...args], env, disc: disc.disc, log, renamed });
 		// /data from the store (readers.js), but in test mode, whose runs start
 		// from an empty /data so they compare with native ones.
 		if (seed) wasi.seed(seed);

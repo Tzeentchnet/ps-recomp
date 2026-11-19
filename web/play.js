@@ -44,6 +44,16 @@
 // (the last REPORT_SECONDS): frames presented, the page's animation frames
 // (tick) and the frames the audio worklet played as silence for an empty
 // ring. No backend exists (the site is static), so the player files it.
+//
+// Send game data, the run's gamedata.tsv (core/gamedata.odin, written
+// every GAMEDATA_EVERY vblanks; the Worker posts each write): enabled once
+// the first write arrives. The click shows a dialog with the file's size,
+// its first rows and the issue's exact text, and says the issue is public;
+// Cancel sends nothing. Open issue opens a new GitHub issue titled
+// "Game data: <serial or disc id> <build>" (gamedataIssue) and downloads
+// the file as it was shown, gzipped, for the player to drag in; a
+// maintainer's game-data label then has .github/workflows/game-data.yml
+// check it (tools/gamedata) and open a pull request adding it under games/.
 import { SCANCODE_OF_CODE } from "./keys.js";
 import { LEARN_OUT, learnArgs, learnDeliver, learnSeed } from "./learn.js";
 import { AUDIO, CONTROL, EV, NET, PAD, PRESENT } from "./layout.js";
@@ -513,6 +523,7 @@ let startedAt = 0; // performance.now() at start()
 let firstPresentMs = null; // from start() to the first frame seen
 let endedAt = null; // performance.now() when done was set
 let written = []; // test mode: [name, bytes] of the module's files
+let gamedata = null; // the run's gamedata.tsv as last written (Uint8Array)
 
 function onMessage({ data }) {
 	if (data.log !== undefined) return log(data.log);
@@ -522,6 +533,11 @@ function onMessage({ data }) {
 		return;
 	}
 	if (data.audio !== undefined) return startAudio(data.audio);
+	if (data.gamedata !== undefined) {
+		gamedata = data.gamedata;
+		$("send").disabled = false;
+		return;
+	}
 	if (data.store !== undefined) return onStore(data.store);
 	if (data.learn !== undefined) return learnCompile(data.learn);
 	if (data.fullscreen !== undefined) {
@@ -706,7 +722,7 @@ function issueReport(fit) {
 		return [
 			"<details><summary>Report</summary>",
 			"",
-			`Isolated: ${crossOriginIsolated}, memory: ${navigator.deviceMemory ?? "?"} GiB, first frame: ${firstPresentMs ?? "?"} ms, frames: ${Atomics.load(new Int32Array(shared.present, 0, 4), PRESENT.FRAMES_WORD)}`,
+			`Isolated: ${crossOriginIsolated}, memory: ${memoryBucket() ?? "?"} GiB, first frame: ${firstPresentMs ?? "?"} ms, frames: ${Atomics.load(new Int32Array(shared.present, 0, 4), PRESENT.FRAMES_WORD)}`,
 			`Audio: ${audioContext?.state ?? "none"}, ${audioStats.silent} silent frames`,
 			`Disc read: ${storeInfo ? JSON.stringify({ ...storeInfo, name: undefined }).slice(0, 200) : "?"}`,
 			`Exit: ${done ? JSON.stringify(done).slice(0, 200) : "running"}`,
@@ -740,15 +756,25 @@ function issueReport(fit) {
 	return at(nRuns, nErr, nLog);
 }
 
-// Save a report's click (the comment at the top). The issue tab opens
-// first, before any await, or the browser blocks it as a popup.
-// The host's cores rounded down to 1, 2, 4, 8 or 16, as game data's host row
-// (core/gamedata.odin): the count, never the exact machine.
-function coresBucket() {
-	const n = navigator.hardwareConcurrency ?? 0;
-	return [16, 8, 4, 2, 1].find((c) => n >= c) ?? null;
+// n rounded down to the first of steps (largest first) it reaches, or null:
+// the class of the machine, never the exact one. The host's cores to 1, 2,
+// 4, 8 or 16, as game data's host row (core/gamedata.odin); its memory to
+// 1, 2, 4 or 8 GiB.
+const bucket = (n, steps) => steps.find((c) => (n ?? 0) >= c) ?? null;
+const coresBucket = () => bucket(navigator.hardwareConcurrency, [16, 8, 4, 2, 1]);
+const memoryBucket = () => bucket(navigator.deviceMemory, [8, 4, 2, 1]);
+
+// The browser saves blob as name.
+function download(blob, name) {
+	const a = document.createElement("a");
+	a.href = URL.createObjectURL(blob);
+	a.download = name;
+	a.click();
+	setTimeout(() => URL.revokeObjectURL(a.href), 60000);
 }
 
+// Save a report's click (the comment at the top). The issue tab opens
+// first, before any await, or the browser blocks it as a popup.
 async function saveReport() {
 	const sha = $("sha").textContent;
 	const title = document.title.slice(0, 100); // the URL stays short
@@ -780,14 +806,70 @@ async function saveReport() {
 		delete report.userAgent;
 		delete report.files;
 		if (report.store) report.store = { ...report.store, name: undefined };
-		Object.assign(report, { title: document.title, commit: sha, cores: coresBucket(), deviceMemory: navigator.deviceMemory ?? null });
-		const a = document.createElement("a");
-		a.href = URL.createObjectURL(new Blob([JSON.stringify(report, null, 1)], { type: "application/json" }));
-		a.download = name;
-		a.click();
-		setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+		Object.assign(report, { title: document.title, commit: sha, cores: coresBucket(), deviceMemory: memoryBucket() });
+		download(new Blob([JSON.stringify(report, null, 1)], { type: "application/json" }), name);
 	} catch (e) {
 		log(`Save a report: ${e.message}\n`);
+	}
+}
+
+const SEND_ROWS = 40; // rows of the file the dialog shows
+
+// Send game data's issue for the file bytes: its title, as tools/gamedata
+// place names the file (the id row's serial, else its disc id, and the
+// build's first 7 characters), a body of what the file holds, and the
+// download's name. No await: the issue tab opens within the click.
+function gamedataIssue(bytes) {
+	const rows = new TextDecoder().decode(bytes).split("\n");
+	if (rows.at(-1) === "") rows.pop();
+	const field = (kind) => rows.find((r) => r.startsWith(`${kind}\t`))?.split("\t") ?? [];
+	const id = field("id");
+	const end = field("end");
+	const game = id[2] || id[1] || "unknown";
+	const build = id[4] ?? "?";
+	const counts = new Map();
+	for (const r of rows) {
+		const kind = r.split("\t", 1)[0];
+		counts.set(kind, (counts.get(kind) ?? 0) + 1);
+	}
+	const name = `gamedata-${game}-${build.slice(0, 7)}.tsv.gz`;
+	const body = [
+		`Game: ${game}`,
+		`Build: ${build}`,
+		`Cores: ${coresBucket() ?? "?"}, memory: ${memoryBucket() ?? "?"} GiB`,
+		`Run: ${end[1] ?? "?"} at frame ${end[2] ?? "?"}`,
+		`Rows: ${[...counts].map(([k, n]) => `${k} ${n}`).join(", ")}`,
+		"",
+		`**Drag ${name} into this box before you submit.** It was downloaded with this issue; a maintainer's game-data label has the repository check it and add it under games/.`,
+		"",
+	].join("\n");
+	return { title: `Game data: ${game} ${build.slice(0, 7)}`, body, name, rows };
+}
+
+// What the dialog shows is what Open issue sends: the file as it was when
+// the dialog opened, though the run goes on writing it.
+let sendShown = null;
+
+function sendDialog() {
+	const bytes = gamedata;
+	const issue = gamedataIssue(bytes);
+	const more = issue.rows.length - SEND_ROWS;
+	$("send-name").textContent = issue.name;
+	$("send-size").textContent = `${bytes.length} bytes, ${issue.rows.length} rows, before gzip`;
+	$("send-rows").textContent = issue.rows.slice(0, SEND_ROWS).join("\n") + (more > 0 ? `\n(and ${more} more rows)` : "");
+	$("send-body").textContent = `${issue.title}\n\n${issue.body}`;
+	sendShown = { issue, bytes };
+	$("send-dialog").showModal();
+}
+
+async function sendGamedata() {
+	const { issue, bytes } = sendShown;
+	window.open(`${ISSUES}?${new URLSearchParams({ title: issue.title, body: issue.body })}`, "_blank", "noopener");
+	try {
+		const gz = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).blob();
+		download(gz, issue.name);
+	} catch (e) {
+		log(`Send game data: ${e.message}\n`);
 	}
 }
 
@@ -820,6 +902,8 @@ async function main() {
 		start({ wasm: "play.wasm", args: [`/disc/${img.name}`], files, store: canStore ? img.name : undefined });
 	});
 	$("report").addEventListener("click", saveReport);
+	$("send").addEventListener("click", sendDialog);
+	$("send-ok").addEventListener("click", sendGamedata);
 	requestAnimationFrame(tick);
 	showStored();
 	if (!test) return;
