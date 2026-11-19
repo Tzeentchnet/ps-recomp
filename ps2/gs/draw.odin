@@ -658,8 +658,14 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 	for x in x0 ..= x1 {
 		defer {w0 -= t.dy[0]; w1 -= t.dy[1]; w2 -= t.dy[2]}
 		l0, l1, l2 := w0 * t.inv, w1 * t.inv, w2 * t.inv
-		f0, f1, f2 := f32(l0), f32(l1), f32(l2)
 		z := t.z[0] * l0 + t.z[1] * l1 + t.z[2] * l2
+		// A fast context tests depth before it interpolates the rest: a
+		// pixel failing the test needs no color, texture or fog.
+		when FAST {
+			zok, zv, za := px_zinst(c, x, z, N)
+			if !zok {continue}
+		}
+		f0, f1, f2 := f32(l0), f32(l1), f32(l2)
 		col := t.flat
 		if t.iip {col = t.c[0] * f0 + t.c[1] * f1 + t.c[2] * f2}
 		u, v: f32
@@ -674,7 +680,7 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 		fog: f32
 		if FGE && (FAST || t.fge) {fog = t.fog[0] * f0 + t.fog[1] * f1 + t.fog[2] * f2}
 		when FAST {
-			px_inst(c, x, z, col, u, v, lod, fog, N)
+			px_shade_inst(c, x, zv, za, col, u, v, lod, fog, N)
 		} else {
 			c.px(c, x, y, z, col, u, v, lod, fog)
 		}

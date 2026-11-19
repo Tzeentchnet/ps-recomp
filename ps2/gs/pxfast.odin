@@ -705,6 +705,22 @@ px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, 
 		F[N].tfx, F[N].tcc, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].bl, F[N].fpsm, F[N].fbmsk, F[N].atst, F[N].afail, F[N].fge, F[N].date)
 }
 
+// px_inst's depth test alone, for a caller that interpolates the rest of
+// a pixel only once it passes (tri_span).
+@(private)
+px_zinst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, $N: int) -> (ok: bool, z, za: u32) {
+	F :: PX_FAST
+	return px_depth(c, x, zf, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].atst, F[N].afail)
+}
+
+// px_inst after px_zinst passed: z and za are what it returned.
+@(private)
+px_shade_inst :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
+	F :: PX_FAST
+	px_shade(c, x, z, za, col, u, v, lod, fogf,
+		F[N].tfx, F[N].tcc, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].bl, F[N].fpsm, F[N].fbmsk, F[N].atst, F[N].afail, F[N].fge, F[N].date)
+}
+
 // The pixel proc of every context decoded from now on, when not nil: the
 // generic `pixel`, or one that tallies (probe_generic, probe_tally).
 @(private)
@@ -781,27 +797,48 @@ px_atst :: #force_inline proc "contextless" ($ATST: u32, a, aref: u32) -> bool {
 @(private)
 pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
 	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
-	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) #no_bounds_check {
-	#assert(FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24)
+	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) {
+	ok, z, za := px_depth(c, x, zf, ZTST, ZMSK, ZPSM, ATST, AFAIL)
+	if !ok {return}
+	px_shade(c, x, z, za, col, u, v, lod, fogf, TFX, TCC, ZTST, ZMSK, ZPSM, BL, FPSM, FBMSK, ATST, AFAIL, FGE, DATE)
+}
+
+// pixel_fast's depth test, which runs first: a pixel failing it writes
+// nothing, whatever its color, so it samples no texture and its caller
+// need not interpolate one. ok is false for such a pixel. z is its Z value
+// and za its Z buffer address, both read only where the test or a Z write
+// needs them.
+@(private)
+px_depth :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $ATST: u32, $AFAIL: u32) -> (ok: bool, z, za: u32) #no_bounds_check {
 	#assert(ZTST >= 1)
-	#assert(ATST <= 7 && AFAIL <= 3)
-	#assert(ATST != 1 || AFAIL == 0)
-	#assert(DATE <= 2)
-	px := u32(x)
-	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // ATST NEVER always fails
-	// The depth test first: a pixel failing it writes nothing, whatever
-	// its color, so it samples no texture. Z is written after the alpha test.
+	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // as px_shade's
 	ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
 	when ZTST >= 2 || ZWRITE {
 		ZMAX :: 0xffffffff when ZPSM == PSMZ32 else 0xffffff when ZPSM == PSMZ24 else 0xffff
-		z := min(u32(min(zf, 4294967295.0)), u32(ZMAX))
-		za := row_addr_w(&c.zrow, px, ZWIDE)
+		z = min(u32(min(zf, 4294967295.0)), u32(ZMAX))
+		za = row_addr_w(&c.zrow, u32(x), ZWIDE)
 	}
 	when ZTST == 2 {
 		if z < row_read_w(&c.zrow, za, ZWIDE) {return}
 	} else when ZTST == 3 {
 		if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
 	}
+	return true, z, za
+}
+
+// pixel_fast after px_depth passed: z and za are what it returned. Z is
+// written after the alpha test.
+@(private)
+px_shade :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
+	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
+	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) #no_bounds_check {
+	#assert(FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24)
+	#assert(ATST <= 7 && AFAIL <= 3)
+	#assert(ATST != 1 || AFAIL == 0)
+	#assert(DATE <= 2)
+	px := u32(x)
+	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // ATST NEVER always fails
+	ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
 	// The color steps run on all four channels at once, each lane with the
 	// integer operations `pixel` does on that channel: RGB selects lanes
 	// 0..2, alpha is lane 3.
