@@ -41,10 +41,12 @@ Lowering :: struct {
 	// runs, and each place the code can be left and gone on at a block
 	// (lower's exact).
 	exact:     bool,
-	// Learned code: the cycles so far, the instruction's own included, are
-	// charged before each instruction that can see or publish the count
-	// (!batches), as the interpreter has charged them by then. The ones
-	// between still wait for the next flush.
+	// The cycles so far, the instruction's own included, are charged before
+	// each instruction that can see or publish the count (!batches), as the
+	// interpreter has charged them by then. The ones between still wait for
+	// the next flush. Every native EE blob but wasm32's (a disc's, learned
+	// code, mods) and the exported ports, so all charge as the interpreter
+	// does; wasm32 is exact.
 	each:      bool,
 	resume:    map[u32]bool, // exact: a block after each call and SYSCALL, also where no branch targets
 }
@@ -124,8 +126,10 @@ goto_ :: proc(l: ^Lowering, src, t: u32) {
 // BREAK or ERET is left to the interpreter at its pc (Leave), with its own
 // cycles not charged: a branch-likely's only when taken (the slot runs only
 // then), so the EE compilers' divide-by-zero trap, `beql rX, zero; break 7`,
-// stays native while the divisor is not 0.
-lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false) -> []Step {
+// stays native while the divisor is not 0. With learned (native code made
+// at run time): a `jr $ra` whose delay slot may write $ra returns to $ra as
+// it was before the slot, as the interpreter's does.
+lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false, learned := false) -> []Step {
 	pcs := make([dynamic]u32, 0, len(f.insns), context.temp_allocator)
 	for a in f.insns {append(&pcs, a)}
 	sort_u32(pcs[:])
@@ -270,7 +274,7 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false)
 					delay(&l, d, slot_op)
 					put(&l, {kind = .Return})
 					put(&l, {kind = .End})
-				} else if i.rs == 31 && each && slot_op && may_write(d, 31) {
+				} else if i.rs == 31 && learned && slot_op && may_write(d, 31) {
 					// Learned code's return goes where the interpreter's does
 					// (ps2 learned_jr_to): to $ra as it was before the slot.
 					put(&l, {kind = .Jump_Reg, n = 31})

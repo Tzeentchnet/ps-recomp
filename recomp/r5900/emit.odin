@@ -597,7 +597,7 @@ emit_func :: proc(e: ^Emitter, f: ^Func) {
 	// statements one tab, except cycle charges.
 	open := make([dynamic]Step_Kind, 0, 4, context.temp_allocator)
 	depth := 0
-	for s in lower(f, e.cycles, e.quiet) {
+	for s in lower(f, e.cycles, e.quiet, each = true) {
 		tab := strings.repeat("\t", depth, context.temp_allocator)
 		put :: proc(body: ^[dynamic]string, tab: string, line: string) {
 			append(body, fmt.tprintf("%s%s", tab, line))
