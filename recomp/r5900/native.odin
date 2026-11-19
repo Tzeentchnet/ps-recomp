@@ -76,6 +76,7 @@ EE_SIGS := [?]native.Sig {
 	{"kernel.syscall", 1, false},
 	{"kernel.trace_call", 1, false},
 	{"kernel.run_events", 0, false},
+	{"kernel.events_in_place", 1, true}, // wasm32 only
 	{"ps2.mod_call_original", 0, false}, // mods blobs only
 	{"ps2.learned_jr", 1, false}, // learned blobs only, not wasm32's
 	{"ps2.learned_jr_to", 2, false}, // the same
@@ -1522,6 +1523,7 @@ WASM_CALL := native.Wasm_Call {
 	cycles      = CYCLES,
 	sp          = GPR * 29,
 	next_event  = "cpu.next_event",
+	events      = "kernel.events_in_place",
 	mod_on      = "cpu.mod_on",
 	depth       = "cpu.wasm_depth",
 	max_depth   = WASM_CALL_MAX,
@@ -1540,11 +1542,14 @@ WASM_CALL := native.Wasm_Call {
 	fall        = {"cpu.wasm_fall_events", "cpu.wasm_fall_mod", "cpu.wasm_fall_depth", "cpu.wasm_fall_nil"},
 }
 
-// wasm32: when events are due, leave to run them with pc t (and back B).
+// wasm32: when events are due, run them in place (back B), else leave to
+// run them with pc t. Loses A.
 @(private = "file")
 events_exit :: proc(a: ^native.Asm, t: native.Reg) {
 	skip := native.new_label(a)
 	native.br_state64_below(a, CYCLES, "cpu.next_event", skip)
+	native.call(a, "kernel.events_in_place", .B)
+	native.br_zero(a, .A, skip, nonzero = true)
 	exit(a, .Events, t)
 	native.bind(a, skip)
 }

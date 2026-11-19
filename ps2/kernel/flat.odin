@@ -276,6 +276,44 @@ flat_commit :: proc() {
 	}
 }
 
+// What events_in_place left the runner to finish: nothing, the commit of
+// events it ran (a switch or an idle owed), or that with the second check
+// of a backward jr's (x.back) made too.
+Events_Owed :: enum u8 {
+	None,
+	Commit,
+	Commit_Back,
+}
+events_owed: Events_Owed
+
+// wasm32 native code's events check, in place (recomp/r5900/native.odin
+// events_exit, and the in-line call's): what the runner does for the
+// .Events exit and flat_reload's second check after a backward jr (back
+// set), without leaving native code. 1 when the code goes on. 0 when it
+// leaves to the runner: before running anything when a vblank is due (a
+// snapshot is taken there, and the frame's host hook runs), in a nested
+// run or a mod's hook; or after running them when a thread switch or an
+// idle is owed, with events_owed set so the runner commits and does not
+// run them again.
+events_in_place :: proc(back: u32) -> u32 {
+	back := back
+	for {
+		now := cpu.state.cycles
+		if now >= k.vblank_start || now >= k.vblank_end || flat.nest_depth > 0 || cpu.mod_depth > 0 {
+			return 0
+		}
+		flat_sync()
+		run_events()
+		if flat.from != nil || flat.idle != .None {
+			events_owed = back != 0 ? .Commit : .Commit_Back
+			return 0
+		}
+		flat_commit()
+		if back == 0 || cpu.state.cycles < cpu.next_event {return 1}
+		back = 0
+	}
+}
+
 // reschedule's idle, done after the syscall that owed it: skip to the next
 // event and run it, until a thread is ready. The state it keeps across
 // run_events is in flat, not in host locals, so a snapshot saved here

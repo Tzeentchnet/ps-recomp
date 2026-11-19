@@ -326,10 +326,16 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 				// interpreter's does (flat_mod_tail sets x.pc).
 				if !flat_mod_tail(x, L, e.pc) {x.pc = e.pc}
 			case .Events:
+				// Run here, or by kernel.events_in_place with the commit
+				// (and maybe the second check) left owed.
 				x.pc = e.pc
-				x.back = e.back != 0
-				kernel.flat_sync()
-				kernel.run_events()
+				x.back = e.back != 0 && kernel.events_owed != .Commit_Back
+				if kernel.events_owed != .None {
+					kernel.events_owed = .None
+				} else {
+					kernel.flat_sync()
+					kernel.run_events()
+				}
 				kernel.flat_commit()
 			case .Call:
 				// a jalr to its own return address: no call (.Jalr above)
@@ -398,6 +404,14 @@ flat_sys :: proc(i: r5900.Insn) {
 @(private = "file")
 flat_reload :: proc($L: bool) -> (^kernel.Flat_Ctx, u32, bool) {
 	for {
+		// Events run in place (kernel.events_in_place) may have switched
+		// threads: the commit swaps the state in before the ctx is read,
+		// and the left run's entry checks wait for its resume.
+		if kernel.events_owed != .None {
+			kernel.events_owed = .None
+			kernel.flat_commit()
+			continue
+		}
 		x := kernel.flat_ctx()
 		check := false
 		begin := false

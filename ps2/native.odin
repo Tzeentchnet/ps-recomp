@@ -304,6 +304,7 @@ native_imports :: proc(types: ^map[string]typeid = nil) -> map[string]u64 {
 	m["kernel.trace_on"] = p(&kernel.trace_on)
 	f(&m, types, "kernel.trace_call", kernel.trace_call)
 	f(&m, types, "kernel.run_events", kernel.run_events)
+	f(&m, types, "kernel.events_in_place", kernel.events_in_place)
 	m["cpu.spin_dirty"] = p(&cpu.spin_dirty)
 	m["ps2.spin_tick"] = p(&spin_tick)
 	f(&m, types, "ps2.spin_probe", spin_probe)

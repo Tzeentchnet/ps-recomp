@@ -64,6 +64,7 @@ Wasm_Call :: struct {
 	cycles:                 u32, // state offset: the u64 cycle count
 	sp:                     u32, // state offset: the stack pointer's low word
 	next_event:             string, // import: the u64 cycles of the next event
+	events:                 string, // runtime procedure (back) -> go on: the due events run in place, else 0 (left to the runner), or ""
 	mod_on:                 string, // import: a byte, set while a mod is in play
 	depth:                  string, // import: the u32 in-line call depth
 	max_depth:              u32,
@@ -1382,12 +1383,13 @@ H_OK :: 5
 @(private = "file")
 H_SP :: 6
 
-// Leave the check block counting counter when the i32 on the stack is set.
+// Leave the check block counting counter when the i32 on the stack is set
+// (depth: the blocks out to it, 1 from the check block itself).
 @(private = "file")
-wa_call_fall :: proc(a: ^Asm, counter: string) {
+wa_call_fall :: proc(a: ^Asm, counter: string, depth: u8 = 1) {
 	emit8(a, OP_IF, VOID)
 	wasm_imp_inc64(a, counter)
-	emit8(a, OP_BR, 1, OP_END)
+	emit8(a, OP_BR, depth, OP_END)
 }
 
 // The u32 at the address in import k += v (a wrapping add).
@@ -1414,7 +1416,20 @@ wasm_emit_call :: proc(a: ^Asm, c: Wasm_Call) {
 	wa_global(a, imp(a, c.next_event))
 	wa_mem(a, I64_LOAD, 3, 0)
 	emit8(a, I64_LT_U, I32_EQZ)
-	wa_call_fall(a, c.fall[0])
+	if c.events != "" {
+		emit8(a, OP_IF, VOID) // due: run them in place, else leave
+		wa_i32(a, 0)
+		wa_get(a, H_CTX)
+		wa_global(a, imp(a, c.events))
+		emit8(a, OP_CALL_INDIRECT)
+		wa_uleb(&a.code, u64(wa_type(a, {I32, I32}, I32)))
+		emit8(a, 0x00)
+		emit8(a, I32_EQZ)
+		wa_call_fall(a, c.fall[0], 2)
+		emit8(a, OP_END)
+	} else {
+		wa_call_fall(a, c.fall[0])
+	}
 	wa_global(a, imp(a, c.mod_on))
 	wa_mem(a, I32_LOAD8_U, 0, 0)
 	wa_call_fall(a, c.fall[1])
