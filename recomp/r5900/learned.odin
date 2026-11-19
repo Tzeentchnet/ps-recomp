@@ -20,11 +20,22 @@ Learned :: struct {
 // Two runs at one entry with other words are two spans. A run native_func
 // cannot lower for arch (nil: wasm32's exact lowering), or one with a delay
 // slot past its words (slot_past_words), gets no span and stays
-// interpreted; skipped counts them. In context.allocator.
+// interpreted; skipped counts them. On wasm32 the blob's functions are
+// every span's blocks, each at its span's offset: the runner enters a span
+// at any of its blocks (native_func), and ps2's learned_search passes over
+// a span with none at the pc. In context.allocator.
 learned_blob :: proc(runs: []Learned, arch: native.Arch) -> (blob: []u8, skipped: int) {
+	return learned_spans(runs, arch, arch == .Wasm32)
+}
+
+// learned_blob, with the spans' blocks as the blob's functions or not.
+@(private = "file")
+learned_spans :: proc(runs: []Learned, arch: native.Arch, blocks: bool) -> (blob: []u8, skipped: int) {
 	a := native_asm(arch)
 	spans := make([dynamic]native.Blob_Span, 0, len(runs))
 	defer delete(spans)
+	funcs: [dynamic]native.Blob_Func
+	defer delete(funcs)
 	slow: map[string]int
 	defer delete(slow)
 	for r in runs {
@@ -42,10 +53,11 @@ learned_blob :: proc(runs: []Learned, arch: native.Arch) -> (blob: []u8, skipped
 			ranges := make([]native.Blob_Range, 1)
 			ranges[0] = {r.lo, r.words}
 			append(&spans, native.Blob_Span{.Ee, r.entry, fs[0].off, ranges})
+			if blocks {append(&funcs, ..fs)}
 		}
 		free_all(context.temp_allocator)
 	}
-	blob = native.make_blob(&a, nil, nil, spans[:])
+	blob = native.make_blob(&a, funcs[:], nil, spans[:])
 	for s in spans {delete(s.ranges)}
 	return blob, skipped
 }
@@ -71,8 +83,9 @@ slot_past_words :: proc(f: ^mips.Func) -> bool {
 // through cpu.call and the interpreter. skipped counts them. In
 // context.allocator.
 mods_blob :: proc(funcs: []Learned, arch: native.Arch) -> (blob: []u8, skipped: int) {
-	// wasm32 code calls through the runner, never direct.
-	if arch == .Wasm32 {return learned_blob(funcs, arch)}
+	// wasm32 code calls through the runner, never direct. The mods'
+	// loader takes no functions (ps2/mods_native.odin): no blocks.
+	if arch == .Wasm32 {return learned_spans(funcs, arch, false)}
 	a := native_asm(arch)
 	// A label only for what lowers, so every label is bound below.
 	labels := make(map[u32]native.Label)

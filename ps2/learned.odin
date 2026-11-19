@@ -111,7 +111,8 @@ load_learned_blob :: proc(blob: []u8, name: string) -> bool {
 		return false
 	}
 	code, msg := core.native_load(blob, native_imports())
-	if msg == "" && (len(code.funcs) != 0 || len(code.ovls) != 0) {
+	// wasm32's functions are its spans' blocks (r5900.learned_blob).
+	if msg == "" && ((ODIN_ARCH != .wasm32 && len(code.funcs) != 0) || len(code.ovls) != 0) {
 		msg = "not a learned blob"
 	}
 	for s in code.spans {
@@ -166,6 +167,10 @@ Learned_Step :: struct {
 	// mem.code_writes when its words last compared unequal, its pages
 	// armed: while the count stays, RAM still does not hold them. 0 never.
 	miss:     u32,
+	// The pcs of its blocks, sorted: where the runner can enter its code
+	// (r5900.learned_blob). nil from a blob without them: any pc in its
+	// words.
+	blocks:   []u32,
 }
 @(private = "file")
 learned_steps: [dynamic]Learned_Step
@@ -205,10 +210,19 @@ learned_steps_add :: proc(code: ^core.Native_Code) {
 		learned_steps = make([dynamic]Learned_Step, core.long_allocator())
 		learned_epoch_hook()
 	}
+	// The blocks, by span offset then pc: each span's are one run.
+	blocks := slice.clone(code.funcs)
+	defer delete(blocks)
+	slice.sort_by(blocks, proc(a, b: core.Native_Func) -> bool {return a.off < b.off || (a.off == b.off && a.addr < b.addr)})
+	pcs := make([]u32, len(blocks), core.long_allocator())
+	for b, k in blocks {pcs[k] = b.addr}
 	for s in code.spans {
 		r := code.ranges[s.range_first]
 		fn := Learned_Fn{lo = r.pc, words = code.pool[r.at:][:r.n_words], fn = cast(cpu.Func_Proc)rawptr(code.base + uintptr(s.off))}
-		append(&learned_steps, Learned_Step{f = fn, entry = s.entry})
+		first, _ := slice.binary_search_by(blocks, s.off, proc(b: core.Native_Func, off: u32) -> slice.Ordering {return b.off < off ? .Less : .Greater})
+		end := first
+		for end < len(blocks) && blocks[end].off == s.off {end += 1}
+		append(&learned_steps, Learned_Step{f = fn, entry = s.entry, blocks = end > first ? pcs[first:end] : nil})
 		learned_most = max(learned_most, r.n_words)
 		for w in r.pc / 4 ..< r.pc / 4 + r.n_words {learned_marks[w / 64] |= 1 << (w % 64)}
 	}
@@ -222,8 +236,10 @@ learned_steps_add :: proc(code: ^core.Native_Code) {
 }
 
 // wasm32: the learned function holding the words RAM holds at pc and
-// around it now, else nil (also with none loaded). The one starting
-// nearest below pc first.
+// around it now, with a block at pc, else nil (also with none loaded). The
+// one starting nearest below pc first. One with no block at pc would leave
+// at once with nothing run (r5900.native_func), so pc is interpreted, and
+// the miss begins a run there (flat_resume).
 learned_at :: #force_inline proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 	w := pc / 4
 	if learned_marks == nil || pc >= mem.RAM_SIZE || pc & 3 != 0 || learned_marks[w / 64] & (1 << (w % 64)) == 0 {return nil}
@@ -347,7 +363,7 @@ learned_ran :: #force_inline proc() {learned_checked.pc = ~u32(0)}
 
 // learned_search's cache, by pc: pc | 1 (0 for none), and the index in
 // learned_steps of the first function the search looks at there, the one
-// with the highest lo whose words hold pc (-1: none holds it, so the search
+// with the highest lo whose words and blocks hold pc (-1: none holds it, so the search
 // finds none). A return into a function, which no single-entry check
 // keeps, so takes no search while that function's words stay clean (it is
 // the search's answer then, as learned_entry's cache says). Host state,
@@ -389,6 +405,10 @@ learned_search :: proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 		if pc - l.lo >= 4 * learned_most {break}
 		n := len(l.words)
 		if pc - l.lo >= 4 * u32(n) {continue}
+		// No block at pc: its code would leave at once, with nothing run.
+		if l.blocks != nil {
+			if _, ok := slice.binary_search(l.blocks, pc); !ok {continue}
+		}
 		if c.k < 0 {c.k = i32(k)}
 		if pc != l.entry && l.epoch == cpu.learned_epoch {return l.fn}
 		if l.miss == mem.code_writes {continue}
@@ -458,7 +478,7 @@ learned_entry_cache: [64]struct {
 }
 
 // wasm32: the index of the first learned function learned_search looks at
-// for pc (the one with the highest lo whose words hold pc), and whether pc
+// for pc (the one with the highest lo whose words and blocks hold pc), and whether pc
 // is its entry.
 @(private = "file")
 learned_first :: proc(pc: u32) -> (int, bool) #no_bounds_check {
@@ -468,7 +488,11 @@ learned_first :: proc(pc: u32) -> (int, bool) #no_bounds_check {
 	for k -= 1; k >= 0; k -= 1 {
 		l := &learned_steps[k]
 		if pc - l.lo >= 4 * learned_most {break}
-		if pc - l.lo < 4 * u32(len(l.words)) {return k, l.entry == pc}
+		if pc - l.lo >= 4 * u32(len(l.words)) {continue}
+		if l.blocks != nil {
+			if _, ok := slice.binary_search(l.blocks, pc); !ok {continue}
+		}
+		return k, l.entry == pc
 	}
 	return 0, false
 }

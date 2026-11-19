@@ -171,6 +171,13 @@ test_wasm_slot :: proc() {
 	// The header's n_spans, its eighth field (recomp/native/blob.odin).
 	n_spans := len(blob) < 32 ? -1 : int(u32(blob[28]) | u32(blob[29]) << 8 | u32(blob[30]) << 16 | u32(blob[31]) << 24)
 	check(n_spans == 2, fmt.tprintf("wasm32 blob has %d spans, want 2", n_spans))
+	// Its functions are the spans' blocks, the header's n_funcs (its fifth
+	// field): one at least for each span's entry.
+	n_funcs := int(u32(blob[16]) | u32(blob[17]) << 8 | u32(blob[18]) << 16 | u32(blob[19]) << 24)
+	check(n_funcs >= 2, fmt.tprintf("wasm32 blob has %d functions, want the spans' blocks", n_funcs))
+	native_blob, _ := r5900.learned_blob({{LOOP, LOOP, loop[:]}}, native.Arch(core.NATIVE_ARCH))
+	defer delete(native_blob)
+	check(native_blob[16] | native_blob[17] | native_blob[18] | native_blob[19] == 0, "the host blob has functions, want none")
 }
 
 // A run of one word, a `jr $ra` whose delay slot is past its words: no
