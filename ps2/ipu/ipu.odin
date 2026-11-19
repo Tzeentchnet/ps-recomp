@@ -726,13 +726,13 @@ ipu_window :: #force_inline proc() -> u64 {
 }
 
 @(private)
-ipu_peek :: proc(bits: u32) -> u32 {
+ipu_peek :: #force_inline proc(bits: u32) -> u32 {
 	ipu_need(bits)
 	return u32(ipu_window() >> (64 - bits))
 }
 
 @(private)
-ipu_speek :: proc(bits: u32) -> i32 {
+ipu_speek :: #force_inline proc(bits: u32) -> i32 {
 	ipu_need(bits)
 	return i32(ipu_window() >> 32) >> (32 - bits)
 }
@@ -755,14 +755,14 @@ ipu_wrap :: #force_inline proc() {
 }
 
 @(private)
-ipu_advance :: proc(bits: u32) {
+ipu_advance :: #force_inline proc(bits: u32) {
 	ipu_need(bits)
 	ipu.bp += bits
 	ipu_wrap()
 }
 
 @(private)
-ipu_getbits :: proc(bits: u32) -> u32 {
+ipu_getbits :: #force_inline proc(bits: u32) -> u32 {
 	ipu_need(bits)
 	v := u32(ipu_window() >> (64 - bits))
 	ipu.bp += bits
@@ -1059,36 +1059,51 @@ idct_bf :: #force_inline proc(w0, w1, d0, d1: i32) -> (t0, t1: i32) {
 // libmpeg2's integer IDCT, on coefficients placed by ipu_scan. Every
 // index is a loop constant below 64, so bounds checks only stop the passes
 // from vectorizing.
+// One row of the IDCT's first pass, in place.
+@(private)
+ipu_idct_row :: #force_inline proc(r: []i16) #no_bounds_check {
+	if r[1] | r[2] | r[3] | r[4] | r[5] | r[6] | r[7] == 0 {
+		v := i16(u16(i32(r[0]) << 3))
+		for &x in r {x = v}
+		return
+	}
+	d0 := (i32(r[0]) << 11) + 128
+	d2 := i32(r[2]) << 11
+	t0, t1 := d0 + d2, d0 - d2
+	t2, t3 := idct_bf(IDCT_W6, IDCT_W2, i32(r[3]), i32(r[1]))
+	a0, a1, a2, a3 := t0 + t2, t1 + t3, t1 - t3, t0 - t2
+	t0, t1 = idct_bf(IDCT_W7, IDCT_W1, i32(r[7]), i32(r[4]))
+	t2, t3 = idct_bf(IDCT_W3, IDCT_W5, i32(r[5]), i32(r[6]))
+	b0, b3 := t0 + t2, t1 + t3
+	t0 -= t2
+	t1 -= t3
+	b1 := ((t0 + t1) * 181) >> 8
+	b2 := ((t0 - t1) * 181) >> 8
+	r[0] = i16((a0 + b0) >> 8)
+	r[1] = i16((a1 + b1) >> 8)
+	r[2] = i16((a2 + b2) >> 8)
+	r[3] = i16((a3 + b3) >> 8)
+	r[4] = i16((a3 - b3) >> 8)
+	r[5] = i16((a2 - b2) >> 8)
+	r[6] = i16((a1 - b1) >> 8)
+	r[7] = i16((a0 - b0) >> 8)
+}
+
 @(private)
 ipu_idct :: proc(b: ^[64]i16) #no_bounds_check {
-	for i in 0 ..< 8 {
-		r := b[i * 8:][:8]
-		if r[1] | r[2] | r[3] | r[4] | r[5] | r[6] | r[7] == 0 {
-			v := i16(u16(i32(r[0]) << 3))
-			for &x in r {x = v}
-			continue
+	// Rows 1-7 zero (a DC-only or first-row-only block): the column pass
+	// sees one input per column, so every idct_bf term is 0 and each
+	// column is ((row 0's value << 11) + 65536) >> 17 all the way down.
+	w := (^[16]u64)(b)
+	if w[2] | w[3] | w[4] | w[5] | w[6] | w[7] | w[8] | w[9] | w[10] | w[11] | w[12] | w[13] | w[14] | w[15] == 0 {
+		ipu_idct_row(b[0:8])
+		for i in 0 ..< 8 {
+			v := i16(((i32(b[i]) << 11) + 65536) >> 17)
+			for y in 0 ..< 8 {b[y * 8 + i] = v}
 		}
-		d0 := (i32(r[0]) << 11) + 128
-		d2 := i32(r[2]) << 11
-		t0, t1 := d0 + d2, d0 - d2
-		t2, t3 := idct_bf(IDCT_W6, IDCT_W2, i32(r[3]), i32(r[1]))
-		a0, a1, a2, a3 := t0 + t2, t1 + t3, t1 - t3, t0 - t2
-		t0, t1 = idct_bf(IDCT_W7, IDCT_W1, i32(r[7]), i32(r[4]))
-		t2, t3 = idct_bf(IDCT_W3, IDCT_W5, i32(r[5]), i32(r[6]))
-		b0, b3 := t0 + t2, t1 + t3
-		t0 -= t2
-		t1 -= t3
-		b1 := ((t0 + t1) * 181) >> 8
-		b2 := ((t0 - t1) * 181) >> 8
-		r[0] = i16((a0 + b0) >> 8)
-		r[1] = i16((a1 + b1) >> 8)
-		r[2] = i16((a2 + b2) >> 8)
-		r[3] = i16((a3 + b3) >> 8)
-		r[4] = i16((a3 - b3) >> 8)
-		r[5] = i16((a2 - b2) >> 8)
-		r[6] = i16((a1 - b1) >> 8)
-		r[7] = i16((a0 - b0) >> 8)
+		return
 	}
+	for i in 0 ..< 8 {ipu_idct_row(b[i * 8:][:8])}
 	for i in 0 ..< 8 {
 		c := b[i:]
 		d0 := (i32(c[0]) << 11) + 65536
