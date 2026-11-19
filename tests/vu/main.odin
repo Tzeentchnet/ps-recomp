@@ -635,6 +635,9 @@ ibit :: proc() {
 	if v.base != 0 || v.itops != 0 {fail("VIF1 ran past its i-bit: base %d itops %d", v.base, v.itops)}
 	if !v.stalled || stat^ & (vu.VIF_STAT_VIS | vu.VIF_STAT_INT) != vu.VIF_STAT_VIS | vu.VIF_STAT_INT {fail("i-bit: stalled %v STAT %x", v.stalled, stat^)}
 	if mem.intc_stat != 1 << 5 {fail("i-bit raised INTC %x, want VIF1's", mem.intc_stat)}
+	// VIF1_CODE holds the code that stalled, which an interrupt handler reads.
+	code := mem.hw_reg(vu.VIF0_CODE + 0x400)
+	if code^ != 0x81000404 {fail("i-bit: VIF1_CODE %08x, want 81000404", code^)}
 	// A later transfer waits too; MODE 1.
 	mem.intc_stat = 0
 	feed(v, 0x05000001)
@@ -643,6 +646,7 @@ ibit :: proc() {
 	if v.stalled || stat^ & vu.VIF_STAT_STALL != 0 {fail("STC: stalled %v STAT %x", v.stalled, stat^)}
 	if v.base != 5 || v.itops != 7 || v.mode != 1 {fail("STC: base %d itops %d mode %d, want 5 7 1", v.base, v.itops, v.mode)}
 	if mem.intc_stat != 0 || len(v.pending) != 0 {fail("STC: INTC %x, %d bytes left", mem.intc_stat, len(v.pending))}
+	if code^ != 0x05000001 {fail("STC: VIF1_CODE %08x, want the last code run, 05000001", code^)}
 
 	// VIF0 raises its own INTC; with MII it neither raises nor stalls.
 	feed(&vu.vifs[0], 0x80000000)

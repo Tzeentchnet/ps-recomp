@@ -28,6 +28,7 @@ Vif :: struct {
 // The VIFs' registers, VIF1's 0x400 after VIF0's.
 VIF0_STAT :: 0x3800
 VIF0_ERR :: 0x3820
+VIF0_CODE :: 0x3880 // the VIFcode most recently processed, read-only
 VIF_FBRST :: 0x10 // from STAT
 VIF_STAT_VIS :: 0x400 // stalled by an i-bit
 VIF_STAT_INT :: 0x800 // an i-bit's interrupt
@@ -102,6 +103,7 @@ vif_run :: proc(v: ^Vif, w: []u32) -> int #no_bounds_check {
 		}
 		if i + need > len(w) {return i}
 		arg := w[i + 1:][:need - 1]
+		mem.hw_reg(VIF0_CODE + 0x400 * u32(v.id))^ = code
 		switch cmd {
 		case 0x00: // NOP
 		case 0x01: // STCYCL
