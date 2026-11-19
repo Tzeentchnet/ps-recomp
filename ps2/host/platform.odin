@@ -94,7 +94,8 @@ platform_init :: proc(title: cstring) -> bool {
 	// the IOP names its counter in iop_cpu_init.
 	core.learn_open()
 	core.learn_cpu(.Ee, &cpu.state.cycles, cpu.CYCLES_PER_INSN, proc(a: u32) -> u32 {return mem.rd32(a)}, mem.RAM_SIZE, false, mem.ram)
-	stats = core.env("STATS") == "1"
+	st := core.env("STATS")
+	stats, stats_each = st == "1" || st == "2", st == "2"
 	cpu.prof_on = stats
 	// PACE=<hz> paces a headless run too (netplay tests; a different
 	// rate on each peer stands in for clock drift).
@@ -354,8 +355,10 @@ vblank_frame :: proc() {
 // ms: the work per presented frame (wall less the pacing sleep), and its
 // split into the cpu.Prof sections, the rollback commits, and the rest (the
 // EE's own code, native or interpreted, and what no section covers).
+// STATS=2 adds a line for each presented frame whose work is over 16.7 ms:
+// its number, its work and the same split for that frame alone.
 @(private)
-stats: bool
+stats, stats_each: bool
 @(private)
 STATS_FRAMES :: 300
 @(private)
@@ -373,8 +376,28 @@ stats_frame :: proc() {
 		w := time.duration_milliseconds(time.tick_diff(t0, now) - (stats_pace - pace0))
 		stats_work[frame % STATS_FRAMES] = w
 		core.gamedata_frame(u64(frame), w)
+		if stats_each {stats_frame_line(w, time.tick_diff(t0, now), stats_pace - pace0)}
 	}
 	t0, pace0 = now, stats_pace
+}
+
+// STATS=2: the split of one frame over 16.7 ms, as print_stats splits 300.
+@(private)
+stats_frame_line :: proc(work: f64, wall, pace: time.Duration) {
+	@(static) tsc0, top0: u64
+	@(static) prof0: [cpu.Prof]u64
+	@(static) rb0: time.Duration
+	tsc := cpu.prof_now()
+	rb := core.rb_stats().total
+	defer {tsc0, top0, prof0, rb0 = tsc, cpu.prof_top, cpu.prof, rb}
+	if tsc0 == 0 || work <= 1000.0 / 60 {return}
+	wall_ms := time.duration_milliseconds(wall)
+	share := wall_ms / f64(max(tsc - tsc0, 1))
+	pace_ms, rb_ms := time.duration_milliseconds(pace), time.duration_milliseconds(rb - rb0)
+	fmt.eprintf("stats: f %d  work %.2f  EE+rest %.2f  RB %.2f", frame, work,
+		wall_ms - pace_ms - rb_ms - f64(cpu.prof_top - top0) * share, rb_ms)
+	for p in cpu.Prof {fmt.eprintf("  %v %.2f", p, f64(cpu.prof[p] - prof0[p]) * share)}
+	fmt.eprintfln("  pace %.2f", pace_ms)
 }
 
 @(private)
