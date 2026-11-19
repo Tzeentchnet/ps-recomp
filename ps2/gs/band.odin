@@ -1,13 +1,14 @@
 // Banded software rasterisation: K worker threads each draw every
-// primitive's rows y with (y >> 3) % K == their band, while the producer
-// (the GS write path) decodes and queues primitives.
+// primitive's rows y with (y >> BAND_SHIFT) % K == their band, while the
+// producer (the GS write path) decodes and queues primitives.
 //
 // One writer per local memory word: every frame and Z format (CT32/24/
 // 16/16S, Z32/24/16/16S) has blocks 8 rows tall (8x8 for 32/24-bit, 16x8
 // for 16-bit) and pages 32 or 64 rows tall, and FBP/ZBP are page-aligned,
-// so each block covers rows 8k..8k+7 of its buffer. A word, and a 64-byte
-// line (one column: 8x2 pixels at 32 bits, 16x2 at 16), lies in one
-// 256-byte-aligned block, so in one band. That holds while (x, y) maps
+// so each block covers rows 8k..8k+7 of its buffer. A strip of
+// 1 << BAND_SHIFT rows (a multiple of 8) holds whole blocks, so a word, and
+// a 64-byte line (one column: 8x2 pixels at 32 bits, 16x2 at 16), lies in
+// one 256-byte-aligned block, so in one band. That holds while (x, y) maps
 // one-to-one to words under one buffer mapping (psm, bp, bw): a context
 // whose scissor reaches past the buffer width, or wraps local memory,
 // reaches one page from two cells and draws serially (band_ctx_new).
@@ -38,6 +39,14 @@ import "core:math/bits"
 import "core:fmt"
 import "core:sync"
 import "ps:core"
+
+// Strips are 32 rows: every band worker decodes each texture tile its rows
+// sample into its own cache (band_job), so taller strips decode fewer tiles
+// twice. On Okami's web run 32 rows against 8 halved tc_decode and cut
+// total cycles 3.4% (3 runs each, same frame hashes), with no change in
+// audio underruns. At least 3 (8 rows, one block; see above).
+BAND_SHIFT :: 5
+#assert(BAND_SHIFT >= 3)
 
 BAND_MAX :: 16
 @(private)

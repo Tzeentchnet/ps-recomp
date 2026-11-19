@@ -90,8 +90,8 @@ Ctx :: struct {
 	srow:                    Sprite_Row_Proc, // spr_row or a fast one (px_pick)
 	fogcol:                  [3]i32,
 	tex:                     Tex,
-	// A band worker draws the rows y of its band alone: (y >> 3) % nband
-	// == band (band.odin). nband 0 or 1 draws every row.
+	// A band worker draws the rows y of its band alone: (y >> BAND_SHIFT)
+	// % nband == band (band.odin). nband 0 or 1 draws every row.
 	band, nband:             u32,
 }
 
@@ -312,7 +312,7 @@ raster :: proc(c: ^Ctx, kind: u64, q: ^[3]Vertex) {
 // Whether row y belongs to another band than c's (Ctx.band).
 @(private)
 band_skip :: #force_inline proc "contextless" (c: ^Ctx, y: i32) -> bool {
-	return c.nband > 1 && (u32(y) >> 3) % c.nband != c.band
+	return c.nband > 1 && (u32(y) >> BAND_SHIFT) % c.nband != c.band
 }
 
 // ------------------------------------------------------------ rasteriser
