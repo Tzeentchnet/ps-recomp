@@ -4,7 +4,7 @@ browser's result.
 
     python3 tests/wasi/serve.py <page dir> <result.json> <disc file>... [--host H] [--port P] [--arch A]
     python3 tests/wasi/serve.py <page dir> <result.json> --pick [--host H] [--port P] [--arch A]
-    python3 tests/wasi/serve.py <page dir> <result.json> --play <module.wasm> [<disc file>...] [--env K=V]... [--no-input] [--store url] [--seconds N] [--no-isolate] [--net ROOM]
+    python3 tests/wasi/serve.py <page dir> <result.json> --play <module.wasm> [<disc file>...] [--env K=V]... [--no-input] [--store url] [--seconds N] [--convert] [--no-isolate] [--net ROOM]
 
 Open the printed URL in any browser. The page converts the first disc file,
 read by HTTP Range requests, posts the blob and its report, and the server
@@ -25,6 +25,9 @@ only one), with each --env variable in its environment. --no-input stops
 the page's fake button and key presses, which change what the module does.
 The page copies the disc files into the browser's storage (OPFS) and reads
 them from there, as a picked disc is; --store url reads them by URL instead.
+--convert runs `play --convert-store` on the disc first and starts the run
+from the /data that stored, so it takes the native code a player's run
+takes (a build with a commit only: a -dirty build's blobs are never taken).
 The page runs it until it exits or for --seconds, then posts each file the
 module wrote, and ring.pcm (every sample it queued for the audio device),
 to /file/<name>, which the server writes beside <result.json>, and then its
@@ -70,6 +73,7 @@ parser.add_argument("--seconds", type=int)
 parser.add_argument("--env", action="append", default=[], metavar="K=V")
 parser.add_argument("--no-input", action="store_true")
 parser.add_argument("--store", choices=["url"])
+parser.add_argument("--convert", action="store_true")
 parser.add_argument("--no-isolate", action="store_true")
 parser.add_argument("--net", metavar="ROOM")
 args = parser.parse_args()
@@ -295,6 +299,8 @@ if args.play:
         query += "&store=" + args.store
     if args.seconds:
         query += f"&seconds={args.seconds}"
+    if args.convert:
+        query += "&convert=1"
 elif args.pick:
     query = "pick=1"
 else:

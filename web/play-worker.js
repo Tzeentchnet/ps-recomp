@@ -90,8 +90,11 @@ async function discFor({ files, urls, store: name, stored }) {
 // out: a tool run, as a mid-run learned compile's (web/learn.js): no disc,
 // no store and no window; /data holds only seed (path -> bytes), and done
 // carries what the module wrote there as files.
+//
+// useStore: a test run (test mode's convert=1) that loads and stores /data
+// as a normal run does, not one from an empty /data.
 onmessage = async ({ data }) => {
-	const { wasm, args, env = {}, test = false, failSaves = true, control, audio, present, net: netBuffer, out = false, seed } = data;
+	const { wasm, args, env = {}, test = false, useStore = false, failSaves = true, control, audio, present, net: netBuffer, out = false, seed } = data;
 	let wasi = null;
 	let disc = null;
 	const ring = [];
@@ -169,9 +172,9 @@ onmessage = async ({ data }) => {
 		};
 		wasi = new Wasi({ args: [wasm.replace(/\.wasm$/, ""), ...args], env, disc: disc.disc, log, renamed });
 		// /data from the store (readers.js), but in test mode, whose runs start
-		// from an empty /data so they compare with native ones.
+		// from an empty /data so they compare with native ones (unless useStore).
 		if (seed) wasi.seed(seed);
-		if (!test && !out && typeof navigator.storage?.getDirectory === "function") {
+		if ((!test || useStore) && !out && typeof navigator.storage?.getDirectory === "function") {
 			try {
 				stored = await dataLoad();
 				wasi.seed(stored);

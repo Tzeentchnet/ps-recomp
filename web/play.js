@@ -9,11 +9,17 @@
 // and the page reloads once under it.
 //
 // Test mode, play.html?test=1[&wasm=<url>][&disc=<url>...][&env=<K=V>...]
-// [&input=0][&store=url][&seconds=<n>]: runs that module (play.wasm by
+// [&input=0][&store=url][&seconds=<n>][&convert=1]: runs that module (play.wasm by
 // default) on the disc files read from those URLs, if any (the module's
 // argument is the .cue among them, else the only one), with those
 // environment variables. The files are copied into the browser's storage
 // and read from there first, as a picked disc is, unless store=url.
+// convert=1 first runs `play --convert-store` on the disc, which stores
+// /data as Play does (playStored), and then the test run starts from that
+// stored /data instead of an empty one, so it takes the native code a
+// player's run takes. It needs a build with a commit (not -dirty), whose
+// blobs play takes as cached; the report gives the conversion's
+// convertMs, and its failure in errors.
 // Only test mode has the fake standard gamepad, driven by window.testPad.
 // Once the first frame is drawn the page presses A on it and the Z key for
 // half a second each (not with input=0, which leaves emulation untouched),
@@ -686,6 +692,7 @@ async function testState() {
 		done,
 		store: storeInfo,
 		firstPresentMs,
+		convertMs,
 		files: written.map(([name, bytes]) => ({ name, size: bytes.length })),
 		net: netLink && { player: netPlayer, ...netLink.stats },
 		history: [...history],
@@ -925,7 +932,9 @@ async function main() {
 	}
 	$("picked").textContent = `Test: ${wasm}` + (img ? ` on ${img.name}` : "");
 	const store = img && canStore && params.get("store") !== "url" ? img.name : undefined;
-	start({ wasm, args: img ? [`/disc/${img.name}`] : [], urls, store, env, test: true });
+	const convert = params.get("convert") === "1";
+	if (convert && img) await testConvert(img, urls, env);
+	start({ wasm, args: img ? [`/disc/${img.name}`] : [], urls, store, env, test: true, useStore: convert });
 	await selfTest(Number(params.get("seconds") ?? 20) * 1000, params.get("input") !== "0");
 }
 
@@ -958,6 +967,29 @@ async function selfTest(limit, input) {
 		if (!r.ok) report.errors.push(`file/${dir}${name}: ${r.status ?? r.message}`);
 	}
 	await postReport(report);
+}
+
+// Test mode's convert=1: `play --convert-store` on the test disc in a
+// Worker, /data stored as playStored's conversion stores it, before the
+// test run. Its time goes in the report as convertMs, a failure in errors.
+let convertMs = null;
+function testConvert(img, urls, env) {
+	const t0 = performance.now();
+	return new Promise((resolve) => {
+		const conv = new Worker("play-worker.js", { type: "module" });
+		const end = (note) => {
+			conv.terminate();
+			convertMs = Math.round(performance.now() - t0);
+			if (note) errors.push(note);
+			resolve();
+		};
+		conv.onmessage = ({ data }) => {
+			if (data.done !== undefined) end(data.done.code === 0 ? "" : `test: convert exit ${data.done.code}`);
+			else if (data.error !== undefined) end(`test: convert: ${data.error.split("\n")[0]}`);
+		};
+		conv.onerror = (e) => end(`test: convert: ${e.message || "worker failed to load"}`);
+		conv.postMessage({ wasm: "play.wasm", args: ["--convert-store", `/disc/${img.name}`], urls, env, failSaves: false, ...shared });
+	});
 }
 
 // Test mode's report, to tests/wasi/serve.py.
