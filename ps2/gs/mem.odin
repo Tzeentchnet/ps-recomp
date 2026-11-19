@@ -492,9 +492,9 @@ readback :: proc(dst: []u8) {
 }
 
 // Host-to-local pixels the software path wrote through transfer8 and
-// through transfer_px (PS_STATS).
+// through transfer4, through transfer24 and through transfer_px (PS_STATS).
 xfer_stats: struct {
-	px8, px: u64,
+	px8, px4, px24, px: u64,
 }
 
 @(private)
@@ -512,6 +512,12 @@ transfer_cpu :: proc(data: []u8) {
 	} else if xfer.psm == PSMT8 {
 		xfer_stats.px8 += u64(len(body))
 		transfer8(body)
+	} else if xfer.psm == PSMT4 {
+		xfer_stats.px4 += u64(len(body)) * 2
+		transfer4(body)
+	} else if bpp == 24 {
+		xfer_stats.px24 += u64(len(body)) / 3
+		transfer24(body)
 	} else {
 		xfer_stats.px += u64(len(body)) * 8 / u64(bpp)
 		transfer_px(body, bpp)
@@ -609,6 +615,101 @@ transfer8 :: proc(data: []u8) #no_bounds_check {
 	}
 }
 
+// Whole PSMT4 pixels, two to a byte, low nibble first: the 4-bit texture
+// upload path. addr4 split as transfer8 splits addr8: the block row base
+// and the column table row once per row, the block once per 32 pixels, so
+// an aligned run of 32 is 16 bytes into one block.
+@(private)
+transfer4 :: proc(data: []u8) #no_bounds_check {
+	M :: 8 * VRAM_WORDS - 1
+	bp, bw := xfer.bp, xfer.bw
+	x0, y0, w, h := xfer.x0, xfer.y0, xfer.w, xfer.h
+	tx, ty := xfer.x, xfer.y
+	defer {xfer.x, xfer.y = tx, ty}
+	v8 := vram8()
+	put :: #force_inline proc(v8: [^]u8, n, v: u32) {
+		b := &v8[n >> 1]
+		sh := u8(n & 1) * 4
+		b^ = (b^ &~ (15 << sh)) | (u8(v & 15) << sh)
+	}
+	n := u32(len(data)) * 2
+	for i: u32 = 0; i < n; {
+		y := (y0 + ty) & 2047
+		rb := bp + (y >> 7) * (bw >> 1) * 32
+		brow := &block16[(y >> 4) & 7]
+		col := &col4[y & 15]
+		for end := i + min(w - tx, n - i); i < end; {
+			x := (x0 + tx) & 2047
+			blk := (rb + (x >> 7) * 32 + brow[(x >> 5) & 3]) << 9
+			// x & 31 == 0 keeps x + 31 inside both the block and the
+			// 2048 wrap; an even i starts the run on a whole byte.
+			if x & 31 == 0 && i & 1 == 0 && end - i >= 32 {
+				src := data[i >> 1:]
+				for k in 0 ..< 16 {
+					b := u32(src[k])
+					put(v8, (blk + col[2 * k]) & M, b)
+					put(v8, (blk + col[2 * k + 1]) & M, b >> 4)
+				}
+				i += 32
+				tx += 32
+			} else {
+				put(v8, (blk + col[x & 31]) & M, u32(data[i >> 1]) >> ((i & 1) * 4))
+				i += 1
+				tx += 1
+			}
+		}
+		if tx == w {
+			tx = 0
+			ty += 1
+			if ty == h {
+				xfer.active = false
+				return
+			}
+		}
+	}
+}
+
+// Whole 24-bit pixels (PSMCT24, PSMZ24), keeping each word's top byte:
+// transfer32's eight-pixel block row run, one read-modify-write a pixel.
+@(private)
+transfer24 :: proc(data: []u8) #no_bounds_check {
+	psm, bp, bw := xfer.psm, xfer.bp, xfer.bw
+	x0, y0, w, h := xfer.x0, xfer.y0, xfer.w, xfer.h
+	tx, ty := xfer.x, xfer.y
+	defer {xfer.x, xfer.y = tx, ty}
+	px :: #force_inline proc(data: []u8, i: int) -> u32 #no_bounds_check {
+		return u32(data[3 * i]) | u32(data[3 * i + 1]) << 8 | u32(data[3 * i + 2]) << 16
+	}
+	n := len(data) / 3
+	for i := 0; i < n; {
+		x, y := (x0 + tx) & 2047, (y0 + ty) & 2047
+		// x & 7 == 0 keeps x + 7 inside both the block and the 2048 wrap;
+		// pixel k of the run is word 4 * (k >> 1) + (k & 1) (col32_pairs).
+		if x & 7 == 0 && tx + 8 <= w && i + 8 <= n {
+			d := addr32(psm, bp, bw, x, y)
+			for k in 0 ..< u32(8) {
+				p := &vram[d + 4 * (k >> 1) + (k & 1)]
+				p^ = (p^ & 0xff000000) | px(data, i + int(k))
+			}
+			i += 8
+			tx += 8
+		} else {
+			p := &vram[addr32(psm, bp, bw, x, y)]
+			p^ = (p^ & 0xff000000) | px(data, i)
+			i += 1
+			tx += 1
+		}
+		if tx == w {
+			tx = 0
+			ty += 1
+			if ty == h {
+				xfer.active = false
+				return
+			}
+		}
+	}
+}
+
 // Whole 32-bit pixels: the FMV and texture upload path.
 @(private)
 transfer32 :: proc(words: []u32) #no_bounds_check {
@@ -647,7 +748,7 @@ transfer32 :: proc(words: []u32) #no_bounds_check {
 	}
 }
 
-// The transfer32 fast path's layout claim, checked once at startup:
+// The transfer32 and transfer24 fast paths' layout claim, checked once at startup:
 // col32[r][2j] == col32[r][0] + 4j and col32[r][2j + 1] == col32[r][2j] + 1.
 @(init, private)
 col32_pairs :: proc "contextless" () {

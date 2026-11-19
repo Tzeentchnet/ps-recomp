@@ -421,8 +421,10 @@ print_stats :: proc() {
 		for p in cpu.Prof {fmt.eprintf("  %v %.2f", p, f64(cpu.prof[p] - prof0[p]) * share)}
 		fmt.eprintfln("  pace %.2f", pace_ms)
 		if xs := gs.xfer_stats; xs != xfer0 {
-			fmt.eprintfln("stats: upload/frame  psmt8 %.0f px  transfer_px %.0f px",
-				f64(xs.px8 - xfer0.px8) / f64(STATS_FRAMES), f64(xs.px - xfer0.px) / f64(STATS_FRAMES))
+			fmt.eprintfln("stats: upload/frame  psmt8 %.0f px  psmt4 %.0f px  24-bit %.0f px  transfer_px %.0f px",
+				f64(xs.px8 - xfer0.px8) / f64(STATS_FRAMES), f64(xs.px4 - xfer0.px4) / f64(STATS_FRAMES),
+				f64(xs.px24 - xfer0.px24) / f64(STATS_FRAMES),
+				f64(xs.px - xfer0.px) / f64(STATS_FRAMES))
 		}
 		if gs.haz_on {
 			st := gs.band_stats
