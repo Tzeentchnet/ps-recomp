@@ -21,7 +21,8 @@ import mem "../mem"
 import r3000 "ps:psx/cpu"
 
 IOP_RPC_SERVERS :: 32
-IOP_RPC_QUEUES :: 8
+// A queue per server at most: eight were too few for Gran Turismo 4's modules.
+IOP_RPC_QUEUES :: IOP_RPC_SERVERS
 // The requests queued and not yet run, every queue's together.
 IOP_RPC_REQS :: 16
 
