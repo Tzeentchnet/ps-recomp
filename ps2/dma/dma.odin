@@ -134,6 +134,7 @@ src_tag :: proc(ch, t: u32) -> (addr, n, id: u32, done: bool) {
 // VIF1 drains with the same code; only where the data goes differs.
 
 D_CTRL :: 0xe000
+D_STADR :: 0xe020
 D_RBSR :: 0xe040
 D_RBOR :: 0xe050
 D_STAT_MEIS :: 1 << 14
@@ -144,6 +145,9 @@ D_STAT_MEIS :: 1 << 14
 mfifo_last: bool
 @(private)
 mfifo_stalled: bool
+// The unsupported destination chain tag ID has been logged once.
+@(private)
+spr0_bad_id_shown: bool
 
 // Whether ch is the channel draining the MFIFO: GIF under MFD 3, VIF1
 // reading memory (CHCR.DIR set) under MFD 2.
@@ -256,15 +260,14 @@ mfifo_run :: proc(ch: u32) -> bool {
 // them in one block. Interleave mode sends blocks of D_SQWC.TQWC (all QWC
 // when 0) and skips D_SQWC.SQWC quadwords of memory after each block, so it
 // writes a rectangle of rows; the scratchpad side stays linear, as toSPR's
-// interleave reads it (PCSX2 _SPR0interleave). Chain mode is not done.
-// No bounds checks here: the scratchpad offset is masked and the RAM slice
-// is 16 bytes long; ram_slice still checks the guest address.
-dma_from_spr :: proc() #no_bounds_check {
+// interleave reads it (PCSX2 _SPR0interleave). Chain mode (spr0_chain) first
+// finishes any QWC left from a suspended packet, then follows the tags.
+dma_from_spr :: proc() {
+	chcr := mem.dma_reg(mem.DMA_FROM_SPR, 0)
 	madr := mem.dma_reg(mem.DMA_FROM_SPR, 0x10)
 	qwc := mem.dma_reg(mem.DMA_FROM_SPR, 0x20)
 	sadr := mem.dma_reg(mem.DMA_FROM_SPR, 0x80)
-	mode := (mem.dma_reg(mem.DMA_FROM_SPR, 0)^ >> 2) & 3
-	if mode == 1 {fmt.eprintln("dma: fromSPR chain mode unsupported")}
+	mode := (chcr^ >> 2) & 3
 	if mode == 3 {fmt.eprintln("dma: fromSPR mode 3 unsupported")}
 	n := qwc^ & 0xffff
 	tqwc, skip := n, u32(0)
@@ -274,7 +277,21 @@ dma_from_spr :: proc() #no_bounds_check {
 		if t := (sqwc >> 16) & 0xff; t != 0 {tqwc = t}
 	}
 	if cpu.debug >= 2 {fmt.eprintfln("dma: fromSPR %04x -> %08x qwc %d block %d skip %d", sadr^, madr^, n, tqwc, skip)}
-	// Under MFD, a transfer into the ring wraps at its top (_SPR0chain).
+	spr0_copy(madr, sadr, n, tqwc, skip)
+	qwc^ = 0
+	// A packet resumed above whose tag ends the chain stops here.
+	if mode == 1 && !(n != 0 && spr0_tag_stops(chcr^)) {spr0_chain(chcr, madr, sadr)}
+	mfifo_resume()
+}
+
+// Copy n quadwords from scratchpad at SADR to MADR, in blocks of tqwc with
+// skip quadwords of memory after each. Under MFD, a transfer into the ring
+// wraps at its top (_SPR0chain). No bounds checks here: the scratchpad
+// offset is masked and the RAM slice is 16 bytes long; ram_slice still
+// checks the guest address.
+@(private)
+spr0_copy :: proc(madr, sadr: ^u32, n, tqwc, skip: u32) #no_bounds_check {
+	n := n
 	ring := (mem.hw_reg(D_CTRL)^ >> 2) & 3 != 0 && ring_mask() != 0 && in_ring(madr^)
 	for n > 0 {
 		k := min(n, tqwc)
@@ -287,8 +304,43 @@ dma_from_spr :: proc() #no_bounds_check {
 		if skip != 0 {madr^ = ring ? ring_wrap(madr^ + skip * 16) : madr^ + skip * 16}
 		n -= k
 	}
-	qwc^ = 0
-	mfifo_resume()
+}
+
+// Destination chain (EE User's Manual, DMAC chapter, destination chain
+// mode). Each packet in scratchpad is a tag quadword, then the tag's QWC
+// quadwords, which go to the tag's ADDR. The tag's upper 16 bits go to
+// CHCR.TAG. IDs: cnts (0) is cnt that also, when D_CTRL.STS names fromSPR,
+// puts MADR in D_STADR for stall control; cnt (1) goes on to the next tag;
+// end (7) stops after its data. With CHCR.TIE set, a tag with its IRQ bit
+// stops after its packet too. Cross-checked against PCSX2 pcsx2/SPR.cpp,
+// _SPR0chain and dmaSPR0.
+@(private)
+spr0_chain :: proc(chcr, madr, sadr: ^u32) #no_bounds_check {
+	for _ in 0 ..< mem.SPR_SIZE / 16 {
+		tag := (^[2]u32)(&mem.spr[sadr^ & (mem.SPR_SIZE - 16)])^
+		sadr^ = (sadr^ + 16) & (mem.SPR_SIZE - 16)
+		chcr^ = (chcr^ & 0xffff) | (tag[0] & 0xffff0000)
+		id := (tag[0] >> 28) & 7
+		if id != 0 && id != 1 && id != 7 {
+			if !spr0_bad_id_shown {
+				fmt.eprintfln("dma: fromSPR destination chain tag ID %d unsupported", id)
+				spr0_bad_id_shown = true
+			}
+			return
+		}
+		madr^ = tag[1] & 0xfffffff0
+		n := tag[0] & 0xffff
+		spr0_copy(madr, sadr, n, n, 0)
+		if id == 0 && (mem.hw_reg(D_CTRL)^ >> 4) & 3 == 1 {mem.hw_reg(D_STADR)^ = madr^}
+		if spr0_tag_stops(chcr^) {return}
+	}
+	fmt.eprintln("dma: fromSPR destination chain ran past the scratchpad without an end tag")
+}
+
+// Whether the tag in CHCR.TAG ends the chain: ID end, or TIE with IRQ.
+@(private)
+spr0_tag_stops :: proc(chcr: u32) -> bool {
+	return (chcr >> 28) & 7 == 7 || (chcr & 0x80 != 0 && chcr & 0x80000000 != 0)
 }
 
 // toSPR: the source chain, normal or interleaved block into scratchpad at SADR.
