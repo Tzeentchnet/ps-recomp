@@ -1060,6 +1060,60 @@ spr_interleave :: proc() {
 	if mem.dma_reg(mem.DMA_FROM_SPR, 0x10)^ != 0x3070 {fail("fromSPR interleave TQWC 0: MADR %x, want 3070", mem.dma_reg(mem.DMA_FROM_SPR, 0x10)^)}
 }
 
+// toSPR and fromSPR with MADR above RAM, as PCSX2's SPRdmaGetAddr has it:
+// from RAM_SIZE up to 0x10000000 reads give zeros and writes are dropped,
+// and MADR and SADR move on as for RAM. A block that starts in RAM's last
+// quadword keeps that quadword. Normal, interleave and chain (a ref tag)
+// toSPR; normal fromSPR.
+@(private = "file")
+spr_high :: proc() {
+	if mem.ram == nil {mem.mem_init()}
+	defer mem.hw_reg(0xe030)^ = 0
+	TOP :: mem.RAM_SIZE - 16
+	for i in 0 ..< 16 {mem.ram[TOP + i] = u8(0x40 + i)}
+	to_spr :: proc(chcr, madr, qwc, tadr: u32) {
+		for &b in mem.spr[:64] {b = 0xee}
+		mem.dma_reg(mem.DMA_TO_SPR, 0x00)^ = chcr
+		mem.dma_reg(mem.DMA_TO_SPR, 0x10)^ = madr
+		mem.dma_reg(mem.DMA_TO_SPR, 0x20)^ = qwc
+		mem.dma_reg(mem.DMA_TO_SPR, 0x30)^ = tadr
+		mem.dma_reg(mem.DMA_TO_SPR, 0x80)^ = 0
+		dma.dma_to_spr()
+	}
+	zeros: [48]u8
+	to_spr(0x101, TOP, 3, 0) // normal
+	if !slice.equal(mem.spr[:16], mem.ram[TOP:][:16]) || !slice.equal(mem.spr[16:48], zeros[:32]) || mem.spr[48] != 0xee {
+		fail("toSPR normal across RAM top: spr %x, want RAM's last quadword, 2 zero quadwords", mem.spr[:64])
+	}
+	if m, sa := mem.dma_reg(mem.DMA_TO_SPR, 0x10)^, mem.dma_reg(mem.DMA_TO_SPR, 0x80)^; m != TOP + 48 || sa != 48 {
+		fail("toSPR normal across RAM top: MADR %x SADR %x, want %x 30", m, sa, TOP + 48)
+	}
+	mem.hw_reg(0xe030)^ = 1 << 16 | 1 // TQWC 1, SQWC 1
+	to_spr(0x109, 0x0800_0000, 2, 0) // interleave
+	if !slice.equal(mem.spr[:32], zeros[:32]) || mem.spr[32] != 0xee || mem.dma_reg(mem.DMA_TO_SPR, 0x10)^ != 0x0800_0040 {
+		fail("toSPR interleave above RAM: spr %x MADR %x, want 2 zero quadwords, 8000040", mem.spr[:48], mem.dma_reg(mem.DMA_TO_SPR, 0x10)^)
+	}
+	mem.wr64(0x1000, 3 << 28 | 3) // ref, 3 quadwords
+	mem.wr64(0x1008, u64(0x0400_0000))
+	mem.wr64(0x1010, 7 << 28) // end, no data
+	mem.wr64(0x1018, 0)
+	to_spr(0x105, 0, 0, 0x1000) // chain
+	if !slice.equal(mem.spr[:48], zeros[:]) || mem.spr[48] != 0xee || mem.dma_reg(mem.DMA_TO_SPR, 0x80)^ != 48 {
+		fail("toSPR chain ref above RAM: spr %x SADR %x, want 3 zero quadwords, 30", mem.spr[:64], mem.dma_reg(mem.DMA_TO_SPR, 0x80)^)
+	}
+	for i in 0 ..< 48 {mem.spr[i] = u8(0x80 + i)}
+	for i in 0 ..< 16 {mem.ram[TOP + i] = 0}
+	mem.dma_reg(mem.DMA_FROM_SPR, 0x00)^ = 0x100 // STR, normal
+	mem.dma_reg(mem.DMA_FROM_SPR, 0x10)^ = TOP
+	mem.dma_reg(mem.DMA_FROM_SPR, 0x20)^ = 3
+	mem.dma_reg(mem.DMA_FROM_SPR, 0x80)^ = 0
+	dma.dma_from_spr()
+	if !slice.equal(mem.ram[TOP:][:16], mem.spr[:16]) {fail("fromSPR across RAM top: RAM's last quadword %x, want %x", mem.ram[TOP:][:16], mem.spr[:16])}
+	if m, sa := mem.dma_reg(mem.DMA_FROM_SPR, 0x10)^, mem.dma_reg(mem.DMA_FROM_SPR, 0x80)^; m != TOP + 48 || sa != 48 {
+		fail("fromSPR across RAM top: MADR %x SADR %x, want %x 30", m, sa, TOP + 48)
+	}
+}
+
 // The GIF draining an MFIFO ring of 16 quadwords at 0x100000 that fromSPR
 // fills: the drain stops on an empty ring with STR set and MEIS raised, a
 // cnt tag's data wraps at the ring's top mid-transfer, each fromSPR transfer
@@ -1512,6 +1566,7 @@ main :: proc() {
 	gif_paths()
 	gif_tte()
 	spr_interleave()
+	spr_high()
 	mfifo()
 	mfifo_hold()
 	window()

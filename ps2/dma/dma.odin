@@ -23,27 +23,36 @@ dma_gather :: proc(ch: u32, out: ^[dynamic]u8) {
 	qwc := mem.dma_reg(ch, 0x20)
 	tadr := mem.dma_reg(ch, 0x30)
 
-	data :: proc(out: ^[dynamic]u8, addr, qwc: u32) {
+	data :: proc(out: ^[dynamic]u8, ch, addr, qwc: u32) {
 		if qwc >= 1024 && cpu.debug == 2 {fmt.eprintfln("dma: data %08x qwc %x", addr, qwc)}
-		if qwc != 0 {append(out, ..mem.ram_slice(mem.dma_addr(addr), qwc * 16))}
+		if qwc == 0 {return}
+		d, n := mem.dma_addr(addr), qwc * 16
+		if ch != mem.DMA_TO_SPR || spr_mem_whole(d, n) {
+			append(out, ..mem.ram_slice(d, n))
+			return
+		}
+		// toSPR reads zeros above RAM (spr_mem_whole).
+		k := spr_mem_len(d, n)
+		if k != 0 {append(out, ..mem.ram_slice(d, k))}
+		resize(out, len(out) + int(n - k))
 	}
 
 	if (chcr^ >> 2) & 3 != 1 { // normal (or interleave, treated as normal)
-		data(out, madr^, qwc^ & 0xffff)
+		data(out, ch, madr^, qwc^ & 0xffff)
 		madr^ += (qwc^ & 0xffff) * 16
 		qwc^ = 0
 		return
 	}
 	// A transfer started with QWC set first drains MADR.
 	if qwc^ & 0xffff != 0 {
-		data(out, madr^, qwc^ & 0xffff)
+		data(out, ch, madr^, qwc^ & 0xffff)
 		qwc^ = 0
 	}
 	for _ in 0 ..< 1 << 20 {
 		t := tadr^
 		tag_tte(ch, out, t)
 		addr, n, _, done := src_tag(ch, t)
-		data(out, addr, n)
+		data(out, ch, addr, n)
 		if done {return}
 	}
 	fmt.eprintfln("dma: ch %d chain did not end", ch)
@@ -288,18 +297,30 @@ dma_from_spr :: proc() {
 // skip quadwords of memory after each. Under MFD, a transfer into the ring
 // wraps at its top (_SPR0chain). No bounds checks here: the scratchpad
 // offset is masked and the RAM slice is 16 bytes long; ram_slice still
-// checks the guest address.
+// checks the guest address. A block not wholly in memory (spr_mem_whole)
+// goes a quadword at a time and drops the quadwords above RAM.
 @(private)
 spr0_copy :: proc(madr, sadr: ^u32, n, tqwc, skip: u32) #no_bounds_check {
 	n := n
 	ring := (mem.hw_reg(D_CTRL)^ >> 2) & 3 != 0 && ring_mask() != 0 && in_ring(madr^)
 	for n > 0 {
 		k := min(n, tqwc)
-		for _ in 0 ..< k {
-			s := sadr^ & (mem.SPR_SIZE - 16)
-			intrinsics.unaligned_store((^u128)(&mem.ram_slice(mem.dma_addr(madr^), 16)[0]), intrinsics.unaligned_load((^u128)(&mem.spr[s])))
-			madr^ = ring ? ring_wrap(madr^ + 16) : madr^ + 16
-			sadr^ = (sadr^ + 16) & (mem.SPR_SIZE - 16)
+		if ring || spr_mem_whole(mem.dma_addr(madr^), k * 16) {
+			for _ in 0 ..< k {
+				s := sadr^ & (mem.SPR_SIZE - 16)
+				intrinsics.unaligned_store((^u128)(&mem.ram_slice(mem.dma_addr(madr^), 16)[0]), intrinsics.unaligned_load((^u128)(&mem.spr[s])))
+				madr^ = ring ? ring_wrap(madr^ + 16) : madr^ + 16
+				sadr^ = (sadr^ + 16) & (mem.SPR_SIZE - 16)
+			}
+		} else {
+			for _ in 0 ..< k {
+				s := sadr^ & (mem.SPR_SIZE - 16)
+				if d := mem.dma_addr(madr^); spr_mem_whole(d, 16) {
+					intrinsics.unaligned_store((^u128)(&mem.ram_slice(d, 16)[0]), intrinsics.unaligned_load((^u128)(&mem.spr[s])))
+				}
+				madr^ += 16
+				sadr^ = (sadr^ + 16) & (mem.SPR_SIZE - 16)
+			}
 		}
 		if skip != 0 {madr^ = ring ? ring_wrap(madr^ + skip * 16) : madr^ + skip * 16}
 		n -= k
@@ -356,7 +377,7 @@ dma_to_spr :: proc() {
 		qwc := mem.dma_reg(mem.DMA_TO_SPR, 0x20)
 		n := (qwc^ & 0xffff) * 16
 		if cpu.debug >= 2 {fmt.eprintfln("dma: toSPR %08x -> %04x bytes %d", madr^, sadr^, n)}
-		if n != 0 {spr_write(sadr, mem.ram_slice(mem.dma_addr(madr^), n))}
+		if n != 0 {spr_write_mem(sadr, madr^, n)}
 		madr^ += n
 		qwc^ = 0
 		return
@@ -382,11 +403,48 @@ dma_to_spr_interleave :: proc(sadr: ^u32) {
 	if cpu.debug >= 2 {fmt.eprintfln("dma: toSPR %08x -> %04x qwc %d interleave %d/%d", madr^, sadr^, n, tqwc, skip)}
 	for n > 0 {
 		k := min(n, tqwc)
-		spr_write(sadr, mem.ram_slice(mem.dma_addr(madr^), k * 16))
+		spr_write_mem(sadr, madr^, k * 16)
 		madr^ += (k + skip) * 16
 		n -= k
 	}
 	qwc^ = 0
+}
+
+// toSPR and fromSPR see memory as PCSX2's SPRdmaGetAddr (pcsx2/Dmac.cpp):
+// main RAM below RAM_SIZE, then nothing up to 0x10000000, where reads give
+// zeros and writes are dropped (ZeroRead, ZeroWrite). Whether the n bytes
+// at d (a dma_addr result: RAM below 0x10000000, else scratchpad) are all
+// RAM or scratchpad: one compare for a block in RAM.
+@(private)
+spr_mem_whole :: #force_inline proc(d, n: u32) -> bool {
+	return d + n <= mem.RAM_SIZE || d >> 28 == 7
+}
+
+// How many of the n bytes at d are RAM or scratchpad; the rest lie above RAM.
+@(private)
+spr_mem_len :: proc(d, n: u32) -> u32 {
+	if d >> 28 == 7 {return n}
+	return d < mem.RAM_SIZE ? min(n, mem.RAM_SIZE - d) : 0
+}
+
+// toSPR from memory: n bytes at guest address a into scratchpad at sadr^,
+// zeros for the part above RAM.
+@(private)
+spr_write_mem :: proc(sadr: ^u32, a, n: u32) {
+	d := mem.dma_addr(a)
+	if spr_mem_whole(d, n) {
+		spr_write(sadr, mem.ram_slice(d, n))
+		return
+	}
+	k := spr_mem_len(d, n)
+	if k != 0 {spr_write(sadr, mem.ram_slice(d, k))}
+	for z := n - k; z >= 16; {
+		s := sadr^ & (mem.SPR_SIZE - 16)
+		m := min(z, mem.SPR_SIZE - s) &~ 15
+		intrinsics.mem_zero(&mem.spr[s], m)
+		z -= m
+		sadr^ = (sadr^ + m) & (mem.SPR_SIZE - 16)
+	}
 }
 
 // Copy whole quadwords of src to scratchpad at sadr^, wrapping at its end.
