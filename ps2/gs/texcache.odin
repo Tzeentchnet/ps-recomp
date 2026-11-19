@@ -219,6 +219,7 @@ prim_rect :: proc(c: ^Ctx, kind: u64, queue: ^[3]Vertex) -> (x0, y0, x1, y1: u32
 
 // Drop every entry: local memory and the CLUT may be anything now.
 tc_flush :: proc() {
+	scan_ok = false
 	tc_drop_all(&tc_main)
 	band_flush()
 }

@@ -3,6 +3,7 @@
 package ps2_gs
 
 import "core:fmt"
+import "core:math/bits"
 
 DISP_W :: 640
 DISP_H :: 512
@@ -22,6 +23,23 @@ skip_wanted: bool
 replays: bool
 @(private)
 disp_logged: u64
+
+// The last software scanout's rect and tc_main.gen when it ran. A scanout of
+// the same rect, with no page of it written since (page_gen, stamped here as
+// resolve stamps), leaves `screen` as it is. scan_ok is false until the next
+// fill: at start, after tc_flush (local memory restored) and after a scanout
+// that filled nothing.
+@(private)
+Scan_Rect :: struct {
+	fbp, fbw, psm, dbx, dby: u32,
+	w, h:                    int,
+}
+@(private)
+scan_last: Scan_Rect
+@(private)
+scan_gen: u64
+@(private)
+scan_ok: bool
 
 // Buffers the display has shown since the last reset. A draw whose FRAME
 // FBP is one of them (exact base) is the picture itself, redrawn every
@@ -189,6 +207,7 @@ scanout :: proc() -> (w, h: int) {
 	track_display(pmode)
 	circ: u32 = pmode & 1 != 0 ? 0 : 1
 	if pmode & 3 == 0 {
+		scan_ok = false
 		if hw_on {hw_frame(0, 0, 0, 0, 0, 0, 0)}
 		return 0, 0
 	}
@@ -216,10 +235,15 @@ scanout :: proc() -> (w, h: int) {
 	}
 	w, h = min(w, DISP_W), min(h, DISP_H)
 	if hw_on {
+		scan_ok = false
 		hw_frame(psm, fbp, fbw, dbx, dby, w, h)
 		return
 	}
-	if skip_readout {return} // headless, no picture due: the size is enough
+	if skip_readout { // headless, no picture due: the size is enough
+		scan_ok = false
+		return
+	}
+	if scan_same(Scan_Rect{fbp, fbw, psm, dbx, dby, w, h}) {return}
 	r := row_init(psm)
 	switch {
 	case r.ok && r.wide: scanout_rows(&r, fbp, fbw, dbx, dby, w, h, true)
@@ -234,6 +258,33 @@ scanout :: proc() -> (w, h: int) {
 		}
 	}
 	return
+}
+
+// Whether `screen` already holds rect: the last fill was of rect and no page
+// it spans was written since. Stamps tc_main's pending writes (as resolve
+// does) and starts a new generation, so later writes stamp above scan_gen.
+@(private)
+scan_same :: proc(rect: Scan_Rect) -> bool #no_bounds_check {
+	tc := &tc_main
+	tc_stamp(tc)
+	tc.pending = {}
+	same := scan_ok && rect == scan_last && rect.fbw != 0
+	if same {
+		pages: Page_Set
+		page_rect(rect.psm, rect.fbp, rect.fbw, rect.dbx, rect.dby,
+			rect.dbx + u32(rect.w), rect.dby + u32(rect.h), &pages)
+		outer: for w, i in pages {
+			for b := w; b != 0; b &= b - 1 {
+				if tc.page_gen[u32(i) * 64 + u32(bits.count_trailing_zeros(b))] > scan_gen {
+					same = false
+					break outer
+				}
+			}
+		}
+	}
+	scan_last, scan_gen, scan_ok = rect, tc.gen, true
+	tc.gen += 1
+	return same
 }
 
 // A displayed pixel as RGBA8888: 16-bit colours widened (5 bits to the top
