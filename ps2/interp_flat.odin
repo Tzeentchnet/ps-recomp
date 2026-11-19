@@ -141,21 +141,24 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 			} else if flat_goto(x, pc, i.target) {
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
-				when N {
-					// interp_body's split of a tail call that would make
-					// the run .Large: it returns for LEARN, one from the
-					// target begins at the same depth.
-					if core.learn_past_span(lf, i.target) && flat_frame_gone(x) {
-						kernel.flat_learn_begin(x, i.target)
-						lf = kernel.flat_learn_top(x)
-						if lf == nil {return x, i.target, nil, true}
-					}
-				}
 				pc = i.target
 				if flat_native_at(pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
+				} else {
+					when N {
+						// interp_body's split of a tail call that would
+						// make the run .Large: it returns for LEARN, one
+						// from the target begins at the same depth. Native
+						// code at the target runs it instead (above), so
+						// no run begins that would fetch nothing.
+						if core.learn_past_span(lf, pc) && flat_frame_gone(x) {
+							kernel.flat_learn_begin(x, pc)
+							lf = kernel.flat_learn_top(x)
+							if lf == nil {return x, pc, nil, true}
+						}
+					}
 				}
 			}
 		case .Call:
