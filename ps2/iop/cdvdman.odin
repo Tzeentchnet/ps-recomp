@@ -71,6 +71,7 @@ Iop_Cd :: struct {
 	n_pending: u32,
 	pending:   [CD_PENDING]u32, // the function codes of the completed commands' callbacks not yet run, first made first
 	stopped:   bool, // sceCdStop stopped the disc, and no command has spun it up since
+	poff:      [2]u32, // sceCdPOffCallback's function and argument; the power button is never pressed here
 }
 
 // Emulated state, snapshotted (sif_snap) and reset with the loader.
@@ -145,6 +146,10 @@ cdvdman_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 		return 0, true
 	case 75: // sceCdMmode(media): 1. The media only gates disk type checks, none made here
 		return 1, true
+	case 78: // sceCdPOffCallback(func, addr): the previous func
+		old := iop_cd.poff[0]
+		iop_cd.poff = {a0, a1}
+		return old, true
 	case 83: // sceCdReadDvdDualInfo(int *on_dual, u32 *layer1_start): 1
 		on_dual, layer1 := cd_dual_info()
 		iop_u32(a0)^, iop_u32(a1)^ = on_dual, layer1

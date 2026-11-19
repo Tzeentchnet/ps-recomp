@@ -55,6 +55,8 @@ sifcmd_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 	switch fno {
 	case 4: // sceSifInitCmd: the link is up from the start
 		return 0, true
+	case 6: // sceSifGetSreg(index): the software register the EE set last
+		return sif.sreg[a0 & 31], true
 	case 8: // sceSifSetCmdBuffer(db, size): the previous table
 		old := s.user_tab
 		s.user_tab, s.user_size = a0, a1
