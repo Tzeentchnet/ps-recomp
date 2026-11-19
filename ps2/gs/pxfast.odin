@@ -804,16 +804,16 @@ px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, 
 // px_inst's depth test alone, for a caller that interpolates the rest of
 // a pixel only once it passes (tri_span).
 @(private)
-px_zinst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, $N: int) -> (ok: bool, z, za: u32) {
+px_zinst :: #force_inline proc(c: ^Ctx, zr: ^Row, x: i32, zf: f64, $N: int) -> (ok: bool, z, za: u32) {
 	F :: PX_FAST
-	return px_depth(c, x, zf, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].atst, F[N].afail)
+	return px_depth(c, zr, x, zf, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].atst, F[N].afail)
 }
 
 // px_inst after px_zinst passed: z and za are what it returned.
 @(private)
-px_shade_inst :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
+px_shade_inst :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
 	F :: PX_FAST
-	px_shade(c, x, z, za, col, u, v, lod, fogf,
+	px_shade(c, fr, zr, x, z, za, col, u, v, lod, fogf,
 		F[N].tfx, F[N].tcc, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].bl, F[N].fpsm, F[N].fbmsk, F[N].atst, F[N].afail, F[N].fge, F[N].date)
 }
 
@@ -894,38 +894,38 @@ px_atst :: #force_inline proc "contextless" ($ATST: u32, a, aref: u32) -> bool {
 pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
 	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
 	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) {
-	ok, z, za := px_depth(c, x, zf, ZTST, ZMSK, ZPSM, ATST, AFAIL)
+	ok, z, za := px_depth(c, &c.zrow, x, zf, ZTST, ZMSK, ZPSM, ATST, AFAIL)
 	if !ok {return}
-	px_shade(c, x, z, za, col, u, v, lod, fogf, TFX, TCC, ZTST, ZMSK, ZPSM, BL, FPSM, FBMSK, ATST, AFAIL, FGE, DATE)
+	px_shade(c, &c.frow, &c.zrow, x, z, za, col, u, v, lod, fogf, TFX, TCC, ZTST, ZMSK, ZPSM, BL, FPSM, FBMSK, ATST, AFAIL, FGE, DATE)
 }
 
 // pixel_fast's depth test, which runs first: a pixel failing it writes
 // nothing, whatever its color, so it samples no texture and its caller
 // need not interpolate one. ok is false for such a pixel. z is its Z value
 // and za its Z buffer address, both read only where the test or a Z write
-// needs them.
+// needs them. zr is the context's Z row, or a row proc's copy of it.
 @(private)
-px_depth :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $ATST: u32, $AFAIL: u32) -> (ok: bool, z, za: u32) #no_bounds_check {
+px_depth :: #force_inline proc(c: ^Ctx, zr: ^Row, x: i32, zf: f64, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $ATST: u32, $AFAIL: u32) -> (ok: bool, z, za: u32) #no_bounds_check {
 	#assert(ZTST >= 1)
 	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // as px_shade's
-	ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
 	when ZTST >= 2 || ZWRITE {
 		ZMAX :: 0xffffffff when ZPSM == PSMZ32 else 0xffffff when ZPSM == PSMZ24 else 0xffff
 		z = min(u32(min(zf, 4294967295.0)), u32(ZMAX))
-		za = row_addr_w(&c.zrow, u32(x), ZWIDE)
+		za = row_addr_p(zr, u32(x), ZPSM)
 	}
 	when ZTST == 2 {
-		if z < row_read_w(&c.zrow, za, ZWIDE) {return}
+		if z < row_read_p(za, ZPSM) {return}
 	} else when ZTST == 3 {
-		if z <= row_read_w(&c.zrow, za, ZWIDE) {return}
+		if z <= row_read_p(za, ZPSM) {return}
 	}
 	return true, z, za
 }
 
-// pixel_fast after px_depth passed: z and za are what it returned. Z is
-// written after the alpha test.
+// pixel_fast after px_depth passed: z and za are what it returned, fr and
+// zr the frame and Z rows as px_depth's zr. Z is written after the alpha
+// test.
 @(private)
-px_shade :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
+px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
 	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
 	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) #no_bounds_check {
 	#assert(FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24)
@@ -934,7 +934,6 @@ px_shade :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f
 	#assert(DATE <= 2)
 	px := u32(x)
 	ZWRITE :: !ZMSK && !(ATST == 0 && (AFAIL == 1 || AFAIL == 3)) // ATST NEVER always fails
-	ZWIDE :: ZPSM == PSMZ32 || ZPSM == PSMZ24
 	// The color steps run on all four channels at once, each lane with the
 	// integer operations `pixel` does on that channel: RGB selects lanes
 	// 0..2, alpha is lane 3.
@@ -975,14 +974,14 @@ px_shade :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f
 
 	UNPACK :: FAIL_A || (BLEND && (A == 1 || B == 1 || C == 1 || D == 1))
 	DST :: FBMSK || DATE != 0 || UNPACK
-	fa := row_addr_w(&c.frow, px, true)
-	when DST {dst_raw := row_read_w(&c.frow, fa, true)} // `when` opens no scope
+	fa := row_addr_p(fr, px, FPSM)
+	when DST {dst_raw := row_read_p(fa, FPSM)} // `when` opens no scope
 	when DATE != 0 {if (dst_raw & 0x80000000 != 0) != (DATE == 2) {return}}
 
 	when FAIL_Z {
-		if pass {row_write_w(&c.zrow, za, z, ZWIDE)}
+		if pass {row_write_p(za, z, ZPSM)}
 	} else when ZWRITE {
-		row_write_w(&c.zrow, za, z, ZWIDE)
+		row_write_p(za, z, ZPSM)
 	}
 	when FAIL_F {if !pass {return}}
 
@@ -1017,5 +1016,5 @@ px_shade :: #force_inline proc(c: ^Ctx, x: i32, z, za: u32, col: [4]f32, u, v: f
 	o := simd.select(RGB, simd.clamp(rgb, #simd[4]i32{}, B255), a & B255)
 	out := transmute(u32)simd.swizzle(transmute(#simd[16]u8)o, 0, 4, 8, 12)
 	when FBMSK {out = (out &~ c.fbmsk) | (dst_raw & c.fbmsk)}
-	row_write_w(&c.frow, fa, out, true)
+	row_write_p(fa, out, FPSM)
 }

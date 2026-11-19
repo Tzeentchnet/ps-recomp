@@ -251,6 +251,48 @@ row_write_w :: #force_inline proc(r: ^Row, a, v: u32, $WIDE: bool) #no_bounds_ch
 	}
 }
 
+// row_addr_w, row_read_w and row_write_w for a row known to hold format
+// PSM, as row_init(PSM) set it up: its block xor and mask are constants
+// here, not loads, and a 32-bit format's write stores the word whole
+// rather than merging with the word it replaces.
+@(private)
+row_addr_p :: #force_inline proc(r: ^Row, x: u32, $PSM: u32) -> u32 #no_bounds_check {
+	WIDE :: PSM == PSMCT32 || PSM == PSMCT24 || PSM == PSMZ32 || PSM == PSMZ24
+	ZX :: 24 when PSM & 0x30 == 0x30 else 0 // row_init's zx
+	when WIDE {
+		blk := r.base + (x >> 6) * 32 + (r.blk[(x >> 3) & 7] ~ ZX)
+		return ((blk << 6) + r.col[x & 7]) & (VRAM_WORDS - 1)
+	} else {
+		blk := r.base + (x >> 6) * 32 + (r.blk[(x >> 4) & 3] ~ ZX)
+		return ((blk << 7) + r.col[x & 15]) & (2 * VRAM_WORDS - 1)
+	}
+}
+
+@(private)
+row_read_p :: #force_inline proc(a: u32, $PSM: u32) -> u32 #no_bounds_check {
+	when PSM == PSMCT32 || PSM == PSMZ32 {
+		return vram[a]
+	} else when PSM == PSMCT24 || PSM == PSMZ24 {
+		return vram[a] & 0xffffff
+	} else {
+		#assert(PSM == PSMCT16 || PSM == PSMCT16S || PSM == PSMZ16 || PSM == PSMZ16S)
+		return u32(vram16()[a])
+	}
+}
+
+@(private)
+row_write_p :: #force_inline proc(a, v: u32, $PSM: u32) #no_bounds_check {
+	when PSM == PSMCT32 || PSM == PSMZ32 {
+		vram[a] = v
+	} else when PSM == PSMCT24 || PSM == PSMZ24 {
+		p := &vram[a]
+		p^ = (p^ &~ 0xffffff) | (v & 0xffffff)
+	} else {
+		#assert(PSM == PSMCT16 || PSM == PSMCT16S || PSM == PSMZ16 || PSM == PSMZ16S)
+		vram16()[a] = u16(v)
+	}
+}
+
 // Stored value of a pixel: the full word for 32-bit formats, 24 bits for
 // 24-bit ones, the halfword for 16-bit ones and the index for 8/4-bit ones.
 // read_raw and write_raw are unchecked: the addr procs mask every index

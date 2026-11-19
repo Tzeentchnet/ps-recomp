@@ -518,6 +518,7 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 	// known to outlive that.
 	s := s^
 	z, col, fog := b.z, b.c, b.fog
+	when FAST {fr, zr := c.frow, c.zrow} // as ctx_seek left them for y
 	when FAST {
 		TME :: PX_FAST[N].tfx >= 0 // as c.tme (px_pick)
 		when TME {tm, q := tex_map(c), b.q}
@@ -531,9 +532,9 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 			u := transmute([4]f32)u4
 			for i in 0 ..< min(4, s.px1 - x0 + 1) {
 				x := x0 + i32(i)
-				zok, zv, za := px_zinst(c, x, z, N)
+				zok, zv, za := px_zinst(c, &zr, x, z, N)
 				if !zok {continue}
-				px_shade_inst(c, x, zv, za, col, u[i], v, lod, fog, N)
+				px_shade_inst(c, &fr, &zr, x, zv, za, col, u[i], v, lod, fog, N)
 			}
 		}
 		return
@@ -542,9 +543,9 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 		u, v: f32
 		lod: i32
 		when FAST {
-			zok, zv, za := px_zinst(c, x, z, N)
+			zok, zv, za := px_zinst(c, &zr, x, z, N)
 			if !zok {continue}
-			px_shade_inst(c, x, zv, za, col, u, v, lod, fog, N)
+			px_shade_inst(c, &fr, &zr, x, zv, za, col, u, v, lod, fog, N)
 		} else {
 			u, v, lod = sprite_tex(c, &s, x, vv, tt, q)
 			c.px(c, x, y, z, col, u, v, lod, fog)
@@ -677,9 +678,10 @@ tri_row :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, 
 // either way.
 @(private)
 tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64, $FAST: bool, $N: int) #no_bounds_check {
-	// A local copy: a pixel writes memory, and nothing behind a pointer is
-	// known to outlive that.
+	// Local copies: a pixel writes memory, and nothing behind a pointer is
+	// known to outlive that. The rows are as ctx_seek left them for y.
 	t := t^
+	when FAST {fr, zr := c.frow, c.zrow}
 	TME :: !FAST || PX_FAST[N].tfx >= 0
 	FGE :: !FAST || PX_FAST[N].fge
 	// Not on wasm32: there the four-lane row ran 0.84% more instructions on
@@ -696,7 +698,7 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 		// A fast context tests depth before it interpolates the rest: a
 		// pixel failing the test needs no color, texture or fog.
 		when FAST {
-			zok, zv, za := px_zinst(c, x, z, N)
+			zok, zv, za := px_zinst(c, &zr, x, z, N)
 			if !zok {continue}
 		}
 		f0, f1, f2 := f32(l0), f32(l1), f32(l2)
@@ -714,7 +716,7 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 		fog: f32
 		if FGE && (FAST || t.fge) {fog = t.fog[0] * f0 + t.fog[1] * f1 + t.fog[2] * f2}
 		when FAST {
-			px_shade_inst(c, x, zv, za, col, u, v, lod, fog, N)
+			px_shade_inst(c, &fr, &zr, x, zv, za, col, u, v, lod, fog, N)
 		} else {
 			c.px(c, x, y, z, col, u, v, lod, fog)
 		}
@@ -731,6 +733,7 @@ tri_span4 :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1: i32, w: [3]f64, 
 	D :: #force_inline proc "contextless" (f: f64) -> #simd[4]f64 {return {f, f, f, f}}
 	F :: #force_inline proc "contextless" (f: f32) -> #simd[4]f32 {return {f, f, f, f}}
 	m := t.tm
+	fr, zr := c.frow, c.zrow // as tri_span's
 	s := transmute([3][4]f32)t.s
 	sc := transmute([4]f32)m.sc
 	// U and V under FST, else S and T.
@@ -756,14 +759,14 @@ tri_span4 :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1: i32, w: [3]f64, 
 		g0, g1, g2 := transmute([4]f32)f0, transmute([4]f32)f1, transmute([4]f32)f2
 		for i in 0 ..< min(4, x1 - xb + 1) {
 			x := xb + i32(i)
-			zok, zv, za := px_zinst(c, x, z[i], N)
+			zok, zv, za := px_zinst(c, &zr, x, z[i], N)
 			if !zok {continue}
 			col := t.flat
 			if t.iip {col = t.c[0] * g0[i] + t.c[1] * g1[i] + t.c[2] * g2[i]}
 			lod := tex_lod(m, m.fst ? 1 : q[i])
 			fog: f32
 			when PX_FAST[N].fge {fog = t.fog[0] * g0[i] + t.fog[1] * g1[i] + t.fog[2] * g2[i]}
-			px_shade_inst(c, x, zv, za, col, u[i], v[i], lod, fog, N)
+			px_shade_inst(c, &fr, &zr, x, zv, za, col, u[i], v[i], lod, fog, N)
 		}
 	}
 }
