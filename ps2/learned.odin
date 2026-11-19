@@ -471,7 +471,7 @@ learned_entry :: proc(pc: u32) -> uintptr #no_bounds_check {
 // learned_steps of the first function learned_search looks at there, ok
 // when pc is its entry. Host state, made again at a load.
 @(private = "file")
-learned_entry_cache: [64]struct {
+learned_entry_cache: [1024]struct {
 	pc: u32,
 	k:  int,
 	ok: bool,
