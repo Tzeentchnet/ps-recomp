@@ -55,6 +55,10 @@ Px_Fast :: struct {
 // 2.2 % more (SWGS-PX-5). The last thirteen are that title's generic
 // contexts left after those, 95.9 % of its generic pixels over the same
 // run (SWGS-PX-6).
+// The last eight are another title's generic contexts over 3700 vblanks
+// of its boot, loading screens and first scene, 63.6 % of its generic
+// pixels (SWGS-PX-7). The rest, 36.4 %, is its loading-screen layer into a
+// CT16 frame, which has no fast row.
 PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x68, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
@@ -155,6 +159,14 @@ PX_FAST :: [?]Px_Fast {
 	{tfx = -1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0x48, fpsm = PSMCT24, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = -1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ24, bl = 0xa9, fpsm = PSMCT32, fbmsk = false, atst = 4, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x54, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x68, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x64, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x64, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0xff, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 6, afail = 0, fge = false, date = 0},
+	{tfx = -1, tcc = false, ztst = 3, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
+	{tfx = 1, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x89, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 }
 
 // PX_FAST's procs, in its order.
@@ -166,6 +178,7 @@ px_procs := [len(PX_FAST)]Pixel_Proc {
 	px_45, px_46, px_47, px_48, px_49, px_50, px_51, px_52, px_53, px_54, px_55, px_56, px_57, px_58, px_59, px_60, px_61, px_62, px_63, px_64, px_65,
 	px_66, px_67, px_68, px_69, px_70, px_71, px_72, px_73, px_74, px_75, px_76, px_77, px_78, px_79, px_80, px_81, px_82, px_83, px_84, px_85,
 	px_86, px_87, px_88, px_89, px_90, px_91, px_92, px_93, px_94, px_95, px_96, px_97, px_98,
+	px_99, px_100, px_101, px_102, px_103, px_104, px_105, px_106,
 }
 
 @(private)
@@ -369,6 +382,22 @@ px_96 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fog
 px_97 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 97)}
 @(private)
 px_98 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 98)}
+@(private)
+px_99 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 99)}
+@(private)
+px_100 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 100)}
+@(private)
+px_101 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 101)}
+@(private)
+px_102 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 102)}
+@(private)
+px_103 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 103)}
+@(private)
+px_104 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 104)}
+@(private)
+px_105 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 105)}
+@(private)
+px_106 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 106)}
 
 // PX_FAST's triangle row procs, in its order.
 @(private, rodata)
@@ -381,6 +410,7 @@ tri_procs := [len(PX_FAST)]Tri_Row_Proc {
 	tri_67, tri_68, tri_69, tri_70, tri_71, tri_72, tri_73, tri_74, tri_75, tri_76, tri_77, tri_78, tri_79,
 	tri_80, tri_81, tri_82, tri_83, tri_84, tri_85,
 	tri_86, tri_87, tri_88, tri_89, tri_90, tri_91, tri_92, tri_93, tri_94, tri_95, tri_96, tri_97, tri_98,
+	tri_99, tri_100, tri_101, tri_102, tri_103, tri_104, tri_105, tri_106,
 }
 
 @(private)
@@ -581,6 +611,22 @@ tri_96 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t
 tri_97 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 97)}
 @(private)
 tri_98 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 98)}
+@(private)
+tri_99 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 99)}
+@(private)
+tri_100 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 100)}
+@(private)
+tri_101 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 101)}
+@(private)
+tri_102 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 102)}
+@(private)
+tri_103 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 103)}
+@(private)
+tri_104 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 104)}
+@(private)
+tri_105 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 105)}
+@(private)
+tri_106 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 106)}
 
 // PX_FAST's sprite row procs, in its order.
 @(private, rodata)
@@ -593,6 +639,7 @@ spr_procs := [len(PX_FAST)]Sprite_Row_Proc {
 	spr_67, spr_68, spr_69, spr_70, spr_71, spr_72, spr_73, spr_74, spr_75, spr_76, spr_77, spr_78, spr_79,
 	spr_80, spr_81, spr_82, spr_83, spr_84, spr_85,
 	spr_86, spr_87, spr_88, spr_89, spr_90, spr_91, spr_92, spr_93, spr_94, spr_95, spr_96, spr_97, spr_98,
+	spr_99, spr_100, spr_101, spr_102, spr_103, spr_104, spr_105, spr_106,
 }
 
 @(private)
@@ -793,6 +840,22 @@ spr_96 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c
 spr_97 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 97)}
 @(private)
 spr_98 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 98)}
+@(private)
+spr_99 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 99)}
+@(private)
+spr_100 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 100)}
+@(private)
+spr_101 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 101)}
+@(private)
+spr_102 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 102)}
+@(private)
+spr_103 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 103)}
+@(private)
+spr_104 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 104)}
+@(private)
+spr_105 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 105)}
+@(private)
+spr_106 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 106)}
 
 @(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
