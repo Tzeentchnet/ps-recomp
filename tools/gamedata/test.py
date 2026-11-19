@@ -4,7 +4,9 @@ before place writes anything: a bad field, a file too large (raw, packed,
 or gunzipped), a run of 64 hex digits in a text field, rows out of the
 writer's order or unsorted, a verdict row, an unknown kind, a wrong field
 count, a dev build, an issue that is not a number. url takes the one
-attachment link of an issue body and refuses none or two.
+attachment link of an issue body and refuses none or two. rank sums
+interp calls per game entry, sys calls by name across games and refused
+entries by reason, and leaves out a file that fails check.
 
     python3 -I tools/gamedata/test.py
 """
@@ -135,7 +137,8 @@ class Place(unittest.TestCase):
         p = os.path.join(root, "sent.gz")
         with open(p, "wb") as f:
             f.write(gzip.compress(text(rows)) if packed else text(rows))
-        rc = gd.main(["place", p, issue, root])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = gd.main(["place", p, issue, root])
         return rc, root
 
     def test_place(self):
@@ -209,6 +212,51 @@ class Url(unittest.TestCase):
 
     def test_two(self):
         self.assertEqual(self.url("%s\n%s2\n" % (self.LINK, self.LINK)), (1, ""))
+
+
+class Rank(unittest.TestCase):
+    OTHER = [r.replace("SLUS-21503", "SLES-50001") for r in GOOD]
+
+    def rank(self, *files, n=None):
+        root = tempfile.mkdtemp()
+        paths = []
+        for k, rows in enumerate(files):
+            paths.append(os.path.join(root, "f%d" % k))
+            with open(paths[-1], "wb") as f:
+                f.write(gzip.compress(text(rows)) if k % 2 else text(rows))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = gd.main(["rank"] + (["-n", str(n)] if n is not None else []) + paths)
+        return rc, out.getvalue().splitlines(), err.getvalue()
+
+    def section(self, lines, name):
+        at = next(i for i, l in enumerate(lines) if l.startswith("# %s:" % name))
+        rest = lines[at + 1:]
+        end = next((i for i, l in enumerate(rest) if l.startswith("#")), len(rest))
+        return rest[:end]
+
+    def test_sums(self):
+        more = GOOD[:6] + ["interp\tee\t001c7000\t90\t00000000\t0\t0000000000000000\t0"] + GOOD[6:]
+        rc, lines, err = self.rank(GOOD, more, self.OTHER)
+        self.assertEqual((rc, err), (0, ""))
+        # per game: the same pc in two games is two entries; one game's two runs sum
+        self.assertEqual(self.section(lines, "interp"), [
+            "104\tSLUS-21503\tee\t001c6408\t2",
+            "90\tSLUS-21503\tee\t001c7000\t1",
+            "52\tSLES-50001\tee\t001c6408\t1",
+        ])
+        # by name across games
+        self.assertEqual(self.section(lines, "sys"), ["21\tsif rpc 0x80000597 fn 3\t3\t2"])
+        self.assertEqual(self.section(lines, "refused"), ["3\tsmc\t3\t2"])
+
+    def test_cut_and_bad_file(self):
+        bad = swap(5, "interp\tee\t01c6408\t52\t001c6400\t24\t0123456789abcdef\t1")
+        rc, lines, err = self.rank(self.OTHER, bad, GOOD, n=1)
+        self.assertEqual(rc, 0)
+        self.assertIn("f1 left out: line 6: interp field 3", err)
+        # ties by key: SLES before SLUS
+        self.assertEqual(self.section(lines, "interp"), ["52\tSLES-50001\tee\t001c6408\t1"])
+        self.assertEqual(self.rank(GOOD, n="x")[:2], (2, []))
 
 
 if __name__ == "__main__":

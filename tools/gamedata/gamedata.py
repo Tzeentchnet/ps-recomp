@@ -1,9 +1,11 @@
 """Game data files (core/gamedata.odin's gamedata.tsv): check one against
-the schema, or place a player's sent file under games/.
+the schema, place a player's sent file under games/, or rank what the
+placed files say is missing.
 
     python3 -I tools/gamedata/gamedata.py check <file>...
     python3 -I tools/gamedata/gamedata.py place <file> <issue number> <repo root>
     python3 -I tools/gamedata/gamedata.py url < <issue body>
+    python3 -I tools/gamedata/gamedata.py rank [-n N] [<file>...]
 
 A file may be gzip compressed (gamedata.tsv.gz, as the web player's Send
 downloads it); its first two bytes say which. check prints each file's
@@ -17,6 +19,15 @@ build's file is not placed. url prints the one file attachment
 (ATTACHMENT) an issue body links to, and fails if it links none or more
 than one.
 
+rank reads the files (by default games/*/gamedata*.tsv under the current
+directory), leaves out with a note on stderr any that fails check, and
+prints three tables, each its N (RANK_N) largest, tab separated: the
+interpreted entries by calls summed over the runs (game, cpu, pc: an
+address means something only within its game), the calls the HLE does
+not implement (sys rows) by name across games, and the learned code's
+refused entries by reason. Each line also counts the files (and, for sys
+and refused, the games) that had it. Local only: no network.
+
 The file is untrusted (.github/workflows/game-data.yml runs this on a
 player's attachment), so every row must be one the writer can make: its
 kind known and in the writer's order, each field of its kind's type, no
@@ -29,6 +40,7 @@ GAMEDATA_VERSION; a change there changes it here.
 Standard library only.
 """
 
+import glob
 import os
 import re
 import sys
@@ -40,6 +52,7 @@ RAW_MAX = 4 << 20  # bytes once gunzipped
 HEX_RUN_MAX = 16
 TEXT_MAX = 160  # GAMEDATA_TEXT
 ERRORS_MAX = 20
+RANK_N = 20  # lines of each rank table
 
 DEC = re.compile(r"(0|[1-9][0-9]{0,19})\Z")
 INT = re.compile(r"(0|-?[1-9][0-9]{0,19})\Z")
@@ -183,6 +196,42 @@ def row(line):
     return None
 
 
+def rank(datas, n=RANK_N):
+    """The rank tables of checked, gunzipped files, as lines."""
+    interp, sys_, refused = {}, {}, {}
+
+    def add(table, key, n, file, game):
+        t = table.setdefault(key, [0, set(), set()])
+        t[0] += n
+        t[1].add(file)
+        t[2].add(game)
+
+    for file, data in enumerate(datas):
+        game = None
+        for line in data.decode("ascii").splitlines():
+            f = line.split("\t")
+            if f[0] == "id":
+                game = f[2] or f[1]
+            elif f[0] == "interp":
+                add(interp, (game, f[1], f[2]), int(f[3]), file, game)
+            elif f[0] == "sys":
+                add(sys_, f[1], int(f[2]), file, game)
+            elif f[0] == "refused":
+                add(refused, f[3], 1, file, game)
+
+    def top(table):
+        # largest first; ties by key, so the output is the same each run
+        return sorted(table.items(), key=lambda kv: (-kv[1][0], kv[0]))
+
+    out = ["# interp: calls\tgame\tcpu\tpc\tfiles"]
+    out += ["%d\t%s\t%s\t%s\t%d" % (n, *k, len(fs)) for k, (n, fs, _) in top(interp)[:n]]
+    out.append("# sys: calls\tname\tfiles\tgames")
+    out += ["%d\t%s\t%d\t%d" % (n, k, len(fs), len(gs)) for k, (n, fs, gs) in top(sys_)[:n]]
+    out.append("# refused: entries\treason\tfiles\tgames")
+    out += ["%d\t%s\t%d\t%d" % (n, k, len(fs), len(gs)) for k, (n, fs, gs) in top(refused)[:n]]
+    return out
+
+
 def read(p):
     with open(p, "rb") as f:
         return f.read(max(PACKED_MAX, RAW_MAX) + 1)
@@ -225,6 +274,24 @@ def main(argv):
             print("url: the issue links %d file attachments, not 1" % len(urls), file=sys.stderr)
             return 1
         print(urls.pop())
+        return 0
+    if argv[:1] == ["rank"]:
+        paths, n = argv[1:], RANK_N
+        if paths[:1] == ["-n"]:
+            if len(paths) < 2 or not DEC.match(paths[1]):
+                print("rank: -n takes a number", file=sys.stderr)
+                return 2
+            n, paths = int(paths[1]), paths[2:]
+        paths = paths or sorted(glob.glob(os.path.join("games", "*", "gamedata*.tsv")))
+        datas = []
+        for p in paths:
+            data, err = unpack(read(p))
+            errors, _ = ([err], None) if err else check(data)
+            if errors:
+                print("rank: %s left out: %s" % (p, errors[0]), file=sys.stderr)
+                continue
+            datas.append(data)
+        print("\n".join(rank(datas, n)))
         return 0
     print(__doc__.split("\n\n")[1], file=sys.stderr)
     return 2
