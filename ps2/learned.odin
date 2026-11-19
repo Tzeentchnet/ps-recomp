@@ -214,6 +214,7 @@ learned_steps_add :: proc(code: ^core.Native_Code) {
 	}
 	slice.sort_by(learned_steps[:], proc(a, b: Learned_Step) -> bool {return a.lo < b.lo})
 	learned_entry_cache = {}
+	learned_pc_cache = {}
 	// A load mid-run (play/midload_learned.odin) may hold a function for
 	// the pc last checked.
 	learned_ran()
@@ -344,9 +345,41 @@ learned_row_held :: proc(row: Learned_Row) -> bool {
 // lookup of an entry compares its words again.
 learned_ran :: #force_inline proc() {learned_checked.pc = ~u32(0)}
 
+// learned_search's cache, by pc: pc | 1 (0 for none), and the index in
+// learned_steps of the first function the search looks at there, the one
+// with the highest lo whose words hold pc (-1: none holds it, so the search
+// finds none). A return into a function, which no single-entry check
+// keeps, so takes no search while that function's words stay clean (it is
+// the search's answer then, as learned_entry's cache says). Host state,
+// made again at a load.
+@(private = "file")
+learned_pc_cache: [4096]struct {
+	key: u32,
+	k:   i32,
+}
+
 @(private = "file")
 learned_search :: proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 	if pc == learned_checked.pc && learned_checked.epoch == cpu.learned_epoch {return learned_checked.fn}
+	c := &learned_pc_cache[pc >> 2 & (len(learned_pc_cache) - 1)]
+	if c.key == pc | 1 {
+		if c.k < 0 {
+			cpu.learned_stale += 1
+			return nil
+		}
+		// The search's first function, its words equal at this code_writes:
+		// the search returns it, and changes what it would.
+		l := &learned_steps[c.k]
+		if l.clean == mem.code_writes {
+			l.epoch = cpu.learned_epoch
+			if pc == l.entry {
+				cpu.learned_calls += 1
+				learned_checked = {pc, l.epoch, l.fn}
+			}
+			return l.fn
+		}
+	}
+	c^ = {pc | 1, -1}
 	// The first function starting above pc.
 	k, _ := slice.binary_search_by(learned_steps[:], pc + 1, proc(l: Learned_Step, t: u32) -> slice.Ordering {
 		return l.lo < t ? .Less : .Greater
@@ -356,6 +389,7 @@ learned_search :: proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 		if pc - l.lo >= 4 * learned_most {break}
 		n := len(l.words)
 		if pc - l.lo >= 4 * u32(n) {continue}
+		if c.k < 0 {c.k = i32(k)}
 		if pc != l.entry && l.epoch == cpu.learned_epoch {return l.fn}
 		if l.miss == mem.code_writes {continue}
 		if l.clean != mem.code_writes {
