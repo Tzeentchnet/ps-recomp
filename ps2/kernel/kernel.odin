@@ -154,14 +154,13 @@ kernel_init :: proc() {
 // number, ps2sdk names, handler, size, verdict against this file, note):
 //   awk -F'\t' '$5=="UNHANDLED" {n=$2; gsub(/-/,"",n); if (n=="") n="?";
 //     printf "\t%s = \"%s\",\n", $1, n}' ee_syscalls.tsv
-// then 0x75 (_print), 0x0d and 0x0e removed, since this file implements them.
+// then 0x75 (_print), 0x0b, 0x0d and 0x0e removed, since this file implements them.
 @(rodata)
 ROM_ONLY_SYSCALLS := [0x83]string {
 	0x01 = "ResetEE",
 	0x05 = "ResumeIntrDispatch",
 	0x09 = "RFU009",
 	0x0a = "AddSbusIntcHandler",
-	0x0b = "RemoveSbusIntcHandler",
 	0x0c = "Interrupt2Iop",
 	0x0f = "SetVInterruptHandler",
 	0x3b = "RFU059",
@@ -233,6 +232,12 @@ syscall :: proc(pc: u32) {
 	case 0x07: exec_ps2(a0, a2, a3); return
 	case 0x04: // Exit
 		cpu.fatal("program exited with %d", i32(a0))
+	case 0x0b:
+		// RemoveSbusIntcHandler(cause): retail clears the cause's slot and
+		// returns the cause, or -1 for a cause of 16 or more. AddSbusIntcHandler
+		// stops the run, so no slot is ever set here, and only the return
+		// remains. Gran Turismo 4 removes cause 0 at start-up.
+		ret = a0 < 16 ? i64(a0) : -1
 	case 0x0d: ret = i64(set_exception_handler(a0, a1, 1, 3)) // SetVTLBRefillHandler
 	case 0x0e: ret = i64(set_exception_handler(a0, a1, 4, EXC_LAST)) // SetVCommonHandler
 	case 0x10: ret = add_handler(&k.intc, a0, a1, a3)
