@@ -92,6 +92,17 @@ hw_write :: proc(addr: u32, v: u64, size: int) {
 			iop.sif_reg_write(o, w)
 			return
 		}
+		// The channel whose CHCR word this write touches, if any, and that
+		// word before the write.
+		chcr := -1
+		old: u32
+		for base, ch in mem.DMA_BASE {
+			if o &~ 3 == base {
+				chcr = ch
+				old = (^u32)(&mem.hwregs[base])^
+				break
+			}
+		}
 		switch size {
 		case 1: mem.hwregs[o] = u8(v)
 		case 2: (^u16)(&mem.hwregs[o])^ = u16(v)
@@ -99,10 +110,19 @@ hw_write :: proc(addr: u32, v: u64, size: int) {
 		case 8: (^u64)(&mem.hwregs[o])^ = v
 		}
 		if o &~ 3 == 0x3010 {gif.gif_mask_changed()} // GIF_MODE.M3R
-		// A write to a channel's CHCR with STR set starts it.
-		for base, ch in mem.DMA_BASE {
-			if o == base && w & 0x100 != 0 {
-				dma_start(u32(ch))
+		if chcr >= 0 {
+			p := (^u32)(&mem.hwregs[mem.DMA_BASE[chcr]])
+			if old & 0x100 != 0 {
+				// While a channel runs (STR=1), a CHCR write changes only STR:
+				// MOD, ASP, TTE, TIE, DIR and TAG keep their values, so a
+				// suspend-and-restart (libmpeg StopDMA/RestartDMA) resumes
+				// the chain where it was. Writing STR=0 still stops the
+				// channel. Narrow writes follow the same rule on the bytes
+				// they touch. Source: PCSX2 pcsx2/Dmac.cpp, DmaExec.
+				p^ = (old &~ 0x100) | (p^ & 0x100)
+			} else if o == mem.DMA_BASE[chcr] && w & 0x100 != 0 {
+				// A write to a stopped channel's CHCR with STR set starts it.
+				dma_start(u32(chcr))
 			}
 		}
 		return
