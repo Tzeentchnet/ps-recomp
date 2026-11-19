@@ -48,9 +48,11 @@ Px_Fast :: struct {
 // passes, 99.3 % of its generic pixels (SWGS-PX-2): a Z-only pass (ATST
 // NEVER to ZB_ONLY), two frame-only passes (ATST NEVER to FB_ONLY) and a
 // CT24 textured layer. The rest are the generic contexts drawing most
-// pixels over 30 s of each of seven more titles (SWGS-PX-3). The last
+// pixels over 30 s of each of seven more titles (SWGS-PX-3). The next
 // nineteen are the generic contexts drawing 93 % of another title's
-// generic pixels over its menus, a race and its replay (SWGS-PX-4).
+// generic pixels over its menus, a race and its replay (SWGS-PX-4). The
+// last is that title's textured pass into a Z24 buffer drawn as a frame,
+// 2.2 % more (SWGS-PX-5).
 PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 2, zmsk = false, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = false, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x68, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
@@ -137,6 +139,7 @@ PX_FAST :: [?]Px_Fast {
 	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x44, fpsm = PSMCT32, fbmsk = true, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0x64, fpsm = PSMCT32, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 	{tfx = 0, tcc = true, ztst = 2, zmsk = true, zpsm = PSMZ24, bl = 0x44, fpsm = PSMCT24, fbmsk = true, atst = 1, afail = 0, fge = true, date = 0},
+	{tfx = 0, tcc = true, ztst = 1, zmsk = true, zpsm = PSMZ16S, bl = 0xff, fpsm = PSMZ24, fbmsk = false, atst = 1, afail = 0, fge = false, date = 0},
 }
 
 // PX_FAST's procs, in its order.
@@ -146,7 +149,7 @@ px_procs := [len(PX_FAST)]Pixel_Proc {
 	px_17, px_18, px_19, px_20, px_21, px_22, px_23, px_24, px_25, px_26, px_27, px_28, px_29, px_30, px_31,
 	px_32, px_33, px_34, px_35, px_36, px_37, px_38, px_39, px_40, px_41, px_42, px_43, px_44,
 	px_45, px_46, px_47, px_48, px_49, px_50, px_51, px_52, px_53, px_54, px_55, px_56, px_57, px_58, px_59, px_60, px_61, px_62, px_63, px_64, px_65,
-	px_66, px_67, px_68, px_69, px_70, px_71, px_72, px_73, px_74, px_75, px_76, px_77, px_78, px_79, px_80, px_81, px_82, px_83, px_84,
+	px_66, px_67, px_68, px_69, px_70, px_71, px_72, px_73, px_74, px_75, px_76, px_77, px_78, px_79, px_80, px_81, px_82, px_83, px_84, px_85,
 }
 
 @(private)
@@ -322,6 +325,8 @@ px_82 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fog
 px_83 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 83)}
 @(private)
 px_84 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 84)}
+@(private)
+px_85 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 85)}
 
 @(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
@@ -406,7 +411,7 @@ px_atst :: #force_inline proc "contextless" ($ATST: u32, a, aref: u32) -> bool {
 pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
 	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
 	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) #no_bounds_check {
-	#assert(FPSM == PSMCT32 || FPSM == PSMCT24)
+	#assert(FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24)
 	#assert(ZTST >= 1)
 	#assert(ATST <= 7 && AFAIL <= 3)
 	#assert(ATST != 1 || AFAIL == 0)
@@ -488,7 +493,7 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 
 	when UNPACK {
 		dst := expand(dst_raw)
-		when FPSM == PSMCT24 {dst = simd.replace(dst, 3, 0x80)}
+		when FPSM == PSMCT24 || FPSM == PSMZ24 {dst = simd.replace(dst, 3, 0x80)}
 	} else when BLEND {
 		dst: #simd[4]i32 // not read
 	}

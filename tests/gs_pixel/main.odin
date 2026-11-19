@@ -405,6 +405,8 @@ tile_trials :: proc() {
 		gs.gs_write(0x4e, 1 << 32) // ZBUF: masked
 		gs.gs_write(0x40, 63 << 16 | 63 << 48) // SCISSOR 0..63
 		gs.gs_write(0x47, 1 << 16 | 1 << 17) // TEST: Z ALWAYS
+		gs.gs_write(0x49, 0) // PABE off
+		gs.gs_write(0x4a, 0) // FBA_1 off: the random trials before leave it set
 		gs.gs_write(0x18, 0) // XYZOFFSET
 		gs.gs_write(0x08, 0) // CLAMP: repeat
 		gs.gs_write(0x14, 0) // TEX1: nearest
