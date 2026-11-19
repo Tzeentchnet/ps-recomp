@@ -50,6 +50,10 @@ Wasm :: struct {
 	call:     Wasm_Call,
 	call_at:  Label,
 	has_call: bool,
+	// The shared in-place jump routine (inline_jump), placed after it.
+	jump:     Wasm_Call,
+	jump_at:  Label,
+	has_jump: bool,
 }
 
 // What the shared in-line call routine checks and keeps: a guest CPU's
@@ -76,6 +80,8 @@ Wasm_Call :: struct {
 	resolve:                string, // runtime procedure (t) -> fn, or "": native code at t the call table holds none for, else 0
 	pending:                string, // import: the u32 count of frames left; a fast return needs 0
 	fast, returns:          string, // imports: u64 counters of calls and returns made
+	exit_none:              u32, // the exit reason of a jump left to the runner (inline_jump)
+	jumps:                  string, // import: the u64 counter of jumps made in place
 	fall:                   [4]string, // imports: u64 counters of calls left for events, a mod, the depth, no code
 }
 
@@ -1367,6 +1373,89 @@ wasm_inline_call :: proc(a: ^Asm, c: Wasm_Call, t: Reg, link: u32, back: Label) 
 	jmp(a, back)
 }
 
+// The jump to the guest address in t outside the function's blocks (a
+// tail call, or a branch into another function's code) through the shared
+// routine c describes: in place, as the runner would go on there, when
+// native code is at t, no mod is in play and the in-line depth is under
+// its cap, the code at t's way out being the function's own; else with
+// the exit_none exit at t. Either way the function returns after it.
+wasm_inline_jump :: proc(a: ^Asm, c: Wasm_Call, t: Reg) {
+	assert(!a.ctx_only, "native: wasm32 inline_jump under ctx_only")
+	w := &a.wa
+	if !w.has_jump {
+		w.jump = c
+		w.jump_at = new_label(a)
+		w.has_jump = true
+	}
+	assert(w.jump == c, "native: wasm32 inline_jump with two routines")
+	cache_sync(a, true)
+	wa_get(a, wa_reg(t))
+	wa_get(a, wa_ctx(a))
+	wa_call_label(a, w.jump_at)
+	// The state is the code at t's (or the runner's to go on with): no
+	// cached field goes back over it.
+	emit8(a, OP_RETURN)
+}
+
+// The shared in-place jump routine's locals: its parameters, then 3 i32.
+@(private = "file")
+J_T :: 0
+@(private = "file")
+J_CTX :: 1
+@(private = "file")
+J_FN :: 2
+@(private = "file")
+J_D :: 3
+@(private = "file")
+J_OK :: 4
+
+// The body of the shared in-place jump routine (inline_jump), of type
+// (t, ctx: i32).
+@(private = "file")
+wasm_emit_jump :: proc(a: ^Asm, c: Wasm_Call) {
+	dk, ek := imp(a, c.depth), imp(a, c.exit)
+	emit8(a, OP_BLOCK, VOID) // the checks; a failed one leaves it
+	wa_global(a, imp(a, c.mod_on))
+	wa_mem(a, I32_LOAD8_U, 0, 0)
+	emit8(a, OP_BR_IF, 0)
+	wa_global(a, dk)
+	wa_mem(a, I32_LOAD, 2, 0)
+	wa_i32(a, c.max_depth)
+	emit8(a, I32_GE_U, OP_BR_IF, 0)
+	wa_table_slot(a, J_FN, J_T, J_D, J_OK, imp(a, c.table), imp(a, c.text_lo))
+	if c.resolve != "" {
+		wa_get(a, J_FN)
+		emit8(a, I32_EQZ, OP_IF, VOID)
+		wa_get(a, J_T)
+		wa_get(a, J_CTX)
+		wa_global(a, imp(a, c.resolve))
+		emit8(a, OP_CALL_INDIRECT)
+		wa_uleb(&a.code, u64(wa_type(a, {I32, I32}, I32)))
+		emit8(a, 0x00)
+		wa_set(a, J_FN)
+		emit8(a, OP_END)
+	}
+	wa_get(a, J_FN)
+	emit8(a, I32_EQZ, OP_BR_IF, 0)
+	wa_imp_add32(a, dk, 1)
+	wasm_imp_inc64(a, c.jumps)
+	wa_get(a, J_T)
+	wa_get(a, J_CTX)
+	wa_get(a, J_FN)
+	emit8(a, OP_CALL_INDIRECT)
+	wa_uleb(&a.code, u64(wa_type(a, {I32, I32}, 0)))
+	emit8(a, 0x00)
+	wa_imp_add32(a, dk, 0xffffffff)
+	emit8(a, OP_RETURN, OP_END)
+	wa_global(a, ek) // left: the runner goes on at t
+	wa_i32(a, c.exit_none)
+	wa_mem(a, I32_STORE, 2, 0)
+	wa_global(a, ek)
+	wa_get(a, J_T)
+	wa_mem(a, I32_STORE, 2, c.exit_pc)
+	emit8(a, OP_END) // the function
+}
+
 // The shared in-line call routine's locals: its parameters, then 4 i32.
 @(private = "file")
 H_T :: 0
@@ -2144,6 +2233,17 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 		append(&w.out, 4, I32)
 		append(&w.out, ..a.code[:])
 		append(&w.bodies, Wasm_Body{lo, len(w.out), wa_type(a, {I32, I32, I32}, I32)})
+	}
+	if w.has_jump {
+		bind_at(a, w.jump_at, w.n_funcs)
+		w.n_funcs += 1
+		clear(&a.code)
+		wasm_emit_jump(a, w.jump)
+		lo := len(w.out)
+		wa_uleb(&w.out, 1)
+		append(&w.out, 3, I32)
+		append(&w.out, ..a.code[:])
+		append(&w.bodies, Wasm_Body{lo, len(w.out), wa_type(a, {I32, I32}, 0)})
 	}
 	clear(&a.code)
 	for f in w.fixes {

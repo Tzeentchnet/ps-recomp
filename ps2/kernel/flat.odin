@@ -13,6 +13,7 @@ package ps2_kernel
 import "ps:core"
 
 import cpu "../cpu"
+import mem "../mem"
 
 // Shadow return stack entries a run starts with. It grows by doubling, on
 // the emulated heap, up to FLAT_DEPTH_MAX: deeper guest recursion is fatal.
@@ -312,6 +313,28 @@ events_in_place :: proc(back: u32) -> u32 {
 		if back == 0 || cpu.state.cycles < cpu.next_event {return 1}
 		back = 0
 	}
+}
+
+// wasm32 native code's SYSCALL, in place (recomp/r5900/native.odin
+// sys_exit): what the runner does for the .Sys exit (flat_sys), without
+// leaving native code. 1 when the code goes on past it. 0 when it leaves to
+// the runner with the .Sys exit: before running it in a nested run or a
+// mod's hook, or for a syscall that moves the run elsewhere (the program's
+// own handler, LoadExecPS2, ExecPS2, Exit); or after running it when a
+// thread switch or an idle is owed, with events_owed set so the runner
+// commits and does not run it again.
+sys_in_place :: proc(pc: u32) -> u32 {
+	if flat.nest_depth > 0 || cpu.mod_depth > 0 {return 0}
+	n := u32(abs(i32(i16(cpu.state.r[3].d[0])))) & 0xff
+	if n == 0x04 || n == 0x06 || n == 0x07 || mem.rd32(SYSCALL_TABLE + n * 4) < 0x80000000 {return 0}
+	flat_sync()
+	syscall(pc)
+	if flat.from != nil || flat.idle != .None {
+		events_owed = .Commit
+		return 0
+	}
+	flat_commit()
+	return 1
 }
 
 // reschedule's idle, done after the syscall that owed it: skip to the next

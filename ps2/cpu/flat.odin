@@ -21,15 +21,17 @@ ipu_reruns, ipu_replayed: u64
 ipu_journal_max: u32
 
 // Why wasm32 native code (recomp/r5900/native.odin) returned to the FLAT
-// runner, which does the rest: compiled code never runs events or a
-// syscall in-line, since only the runner may switch threads. A guest call
-// it makes in-line (wasm_depth) leaves the runner its frame (wasm_pend).
+// runner, which does the rest: compiled code runs events and a syscall
+// in place only when no thread switch follows (kernel.events_in_place,
+// kernel.sys_in_place), since only the runner may switch threads. A guest
+// call it makes in-line (wasm_depth) leaves the runner its frame
+// (wasm_pend).
 Native_Exit_Reason :: enum u32 {
 	None,   // go on at pc
 	Events, // run the due events, then go on at pc; back: a backward jr's second check is owed
 	Call,   // a call of pc returning to arg (the runner's flat_enter)
 	Return, // `jr $ra` to pc (flat_return)
-	Sys,    // the SYSCALL at pc - 4 is to run, then go on at pc
+	Sys,    // the SYSCALL at pc - 4 is to run (or ran, kernel.sys_in_place with events_owed set), then go on at pc
 	Eret,   // ERET ran: return from the exception (flat_return)
 }
 
@@ -53,6 +55,7 @@ native_exit: Native_Exit
 WASM_CALL_MAX :: 64
 wasm_depth: u32
 wasm_fast_calls: u64
+wasm_fast_jumps: u64 // jumps out of a function made in place (native.inline_jump)
 wasm_fall_events, wasm_fall_mod, wasm_fall_nil, wasm_fall_depth, wasm_fall_left: u64
 
 // The frames of in-line calls whose callee left for the runner, innermost
@@ -77,7 +80,7 @@ flat_print :: proc() {
 	when core.FLAT {
 		fmt.eprintfln("ee flat: %d returns, %d with $ra not the call's return address, %d deep at most", flat_returns, flat_mismatch, flat_max_depth)
 		when ODIN_ARCH == .wasm32 {
-			fmt.eprintfln("ee flat: %d native calls in-line; left to the runner: %d events due, %d mods, %d no native code, %d at the cap, %d returned otherwise", wasm_fast_calls, wasm_fall_events, wasm_fall_mod, wasm_fall_nil, wasm_fall_depth, wasm_fall_left)
+			fmt.eprintfln("ee flat: %d native calls in-line; left to the runner: %d events due, %d mods, %d no native code, %d at the cap, %d returned otherwise; %d jumps in place", wasm_fast_calls, wasm_fall_events, wasm_fall_mod, wasm_fall_nil, wasm_fall_depth, wasm_fall_left, wasm_fast_jumps)
 		}
 		fmt.eprintfln("ipu flat: %d re-runs, %d quadwords replayed, %d quadwords since a checkpoint at most", ipu_reruns, ipu_replayed, ipu_journal_max)
 		if iop_flat_print != nil {iop_flat_print()}

@@ -77,6 +77,7 @@ EE_SIGS := [?]native.Sig {
 	{"kernel.trace_call", 1, false},
 	{"kernel.run_events", 0, false},
 	{"kernel.events_in_place", 1, true}, // wasm32 only
+	{"kernel.sys_in_place", 1, true}, // wasm32 only
 	{"ps2.mod_call_original", 0, false}, // mods blobs only
 	{"ps2.learned_jr", 1, false}, // learned blobs only, not wasm32's
 	{"ps2.learned_jr_to", 2, false}, // the same
@@ -1539,6 +1540,8 @@ WASM_CALL := native.Wasm_Call {
 	pending     = "cpu.wasm_npending",
 	fast        = "cpu.wasm_fast_calls",
 	returns     = "cpu.flat_returns",
+	exit_none   = u32(Exit.None),
+	jumps       = "cpu.wasm_fast_jumps",
 	fall        = {"cpu.wasm_fall_events", "cpu.wasm_fall_mod", "cpu.wasm_fall_depth", "cpu.wasm_fall_nil"},
 }
 
@@ -1554,6 +1557,19 @@ events_exit :: proc(a: ^native.Asm, t: native.Reg) {
 	native.bind(a, skip)
 }
 
+// wasm32: the SYSCALL at pc, run in place, else leave to run it (the
+// block at pc + 4 goes on after either). Loses A and T.
+@(private = "file")
+sys_exit :: proc(a: ^native.Asm, pc: u32) {
+	skip := native.new_label(a)
+	native.mov_imm(a, .A, pc)
+	native.call(a, "kernel.sys_in_place", .A)
+	native.br_zero(a, .A, skip, nonzero = true)
+	native.mov_imm(a, .T, pc + 4)
+	exit(a, .Sys)
+	native.bind(a, skip)
+}
+
 // pc = t: the block at t, or outside the function's blocks (learned: in
 // a learned function, jump_out).
 @(private = "file")
@@ -1564,7 +1580,7 @@ go :: proc(a: ^native.Asm, f: ^Func, labels: map[u32]native.Label, t: u32, learn
 	}
 	if a.arch == .Wasm32 {
 		native.mov_imm(a, .T, t)
-		exit(a, .None)
+		native.inline_jump(a, WASM_CALL, .T)
 		return
 	}
 	native.mov_imm(a, .A, f.entry)
@@ -1686,9 +1702,7 @@ native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow:
 			native.bind(a, block)
 		case .Op:
 			if wasm && s.i.op == .SYSCALL {
-				native.mov_imm(a, .T, s.i.pc + 4)
-				exit(a, .Sys)
-				leaves = true
+				sys_exit(a, s.i.pc)
 			} else if op(a, s.i) {count_slow(slow, s.i)}
 		case .Cycles:
 			native.state_add64(a, CYCLES, s.n)
@@ -1808,7 +1822,7 @@ native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow:
 		native.search(a, pcs[:], labels, miss)
 		native.bind(a, miss)
 		if wasm {
-			exit(a, .None)
+			native.inline_jump(a, WASM_CALL, .T)
 		} else {
 			native.mov_imm(a, .A, f.entry)
 			native.mov(a, .B, .T)

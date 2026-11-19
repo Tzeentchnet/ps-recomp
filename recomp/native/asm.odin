@@ -1115,6 +1115,15 @@ inline_call :: proc(a: ^Asm, c: Wasm_Call, t: Reg, link: u32, back: Label) {
 	wasm_inline_call(a, c, t, link, back)
 }
 
+// wasm32 only: the jump to the guest address in t outside the function's
+// blocks, made in place through the shared routine c describes when native
+// code is there (the runner's way on), else left with the exit; the
+// function returns after it either way.
+inline_jump :: proc(a: ^Asm, c: Wasm_Call, t: Reg) {
+	assert(a.arch == .Wasm32, "native: inline_jump is wasm32's")
+	wasm_inline_jump(a, c, t)
+}
+
 // Call the function at label l (bound with bind_at), passing the context
 // as the runtime's call table does, so the callee's prologue is entered the
 // same way. As call, the cached fields go to the state and come back after,

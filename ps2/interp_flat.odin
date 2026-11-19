@@ -349,8 +349,14 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 				flat_unwind(x, L, e.pc)
 				if !flat_return(x, L, true, e.pc) {return}
 			case .Sys:
+				// Run here, or by kernel.sys_in_place with the commit owed.
 				x.pc = e.pc
-				flat_sys(decode_cached(e.pc - 4, mem.rd32(e.pc - 4)))
+				if kernel.events_owed != .None {
+					kernel.events_owed = .None
+					kernel.flat_commit()
+				} else {
+					flat_sys(decode_cached(e.pc - 4, mem.rd32(e.pc - 4)))
+				}
 			case .Eret:
 				if !flat_return(x, L, false, 0) {return}
 			}
