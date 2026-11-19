@@ -272,6 +272,13 @@ padman :: proc(sid: u32, buf: []u8) -> bool {
 	case 0x0d: // GetSlotMax {cmd, port}: the multitap's 4 once libmtap opened it
 		w[3] = 4 if w[1] == 0 && tap_present() && mtap.open[2] else 1
 	case 0x12: w[3] = 0x400 // GetModuleVersion
+	// End {cmd}: closes every open port, as padman's end does; it answers 1.
+	case 0x0f:
+		pad_area = {}
+		w[3] = 1
+	// {cmd, on}: picks which SIF DMA call sends the pad frames; pad_update
+	// writes them either way. It answers 1 in the third word.
+	case 0x18: w[2] = 1
 	case:
 		// The command word is padman's function: the row's function number.
 		if !core.compat_unknown(.Sif_Rpc, sid, sub = cmd) {fmt.eprintfln("pad: unhandled command %08x", cmd)}

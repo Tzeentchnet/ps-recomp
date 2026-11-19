@@ -2279,7 +2279,14 @@ test_padman :: proc() {
 	clear(&core.compat.calls)
 	cmd(buf[:], 0x30)
 	check(w[3] == 0 && core.compat.calls[key].n == 1, "padman: an unknown command is a row, 0")
-	cmd(buf[:], 0x0e, 0, 0)
+	cmd(buf[:], 0x18, 1)
+	check(w[2] == 1, "padman 0x18: the DMA-variant flag, 1")
+	cmd(buf[:], 0x09, 0, 0)
+	check(w[3] != 0, "padman: port 0 open before End")
+	cmd(buf[:], 0x0f)
+	check(w[3] == 1, "padman 0x0f: End, 1")
+	cmd(buf[:], 0x09, 0, 0)
+	check(w[3] == 0, "padman 0x0f: End closed port 0")
 }
 
 // stat6c as PCSX2 builds it: the ports a pad frame opened, the MISSING bits
