@@ -505,6 +505,12 @@ learn_co_gone :: proc(co: rawptr) {
 	}
 }
 
+// Whether f's range, taking in the word at pc, would pass LEARN_SPAN_MAX:
+// its run would be written .Large, with no words, and never compiled.
+learn_past_span :: #force_inline proc(f: ^Learn_Frame, pc: u32) -> bool {
+	return max(f.hi, pc) - min(f.lo, pc) + 4 > LEARN_SPAN_MAX
+}
+
 @(private = "file")
 learn_free :: proc(f: ^Learn_Frame) {
 	learn.used[f.slot] = false

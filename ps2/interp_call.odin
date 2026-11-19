@@ -249,6 +249,7 @@ learned_left :: proc() {
 @(private = "file")
 interp_body :: proc(entry: u32, lf_in: ^core.Learn_Frame, run: cpu.Interp_Run, start: u32) -> (lf: ^core.Learn_Frame) {
 	lf = lf_in
+	entry := entry
 	c := &cpu.state
 	pc := start
 	ra, sp, direct, gaps := run.ra, run.sp, run.direct, run.gaps
@@ -283,7 +284,32 @@ interp_body :: proc(entry: u32, lf_in: ^core.Learn_Frame, run: cpu.Interp_Run, s
 		case .Jump:
 			delay_slot(pc + 4, lf)
 			if goto_pc(entry, pc, i.target) {return}
-			pc = i.target
+			t := i.target
+			// A tail call: the run's frame is gone ($ra and sp as at its
+			// call), so the code at t returns for it, as learned_goto's.
+			// Learned code there runs it. Else, when taking t in would
+			// make the run .Large (a C++ thunk's `jal; j` to a function
+			// far away), the run returns here for LEARN and one from t
+			// begins, so each is compiled on its own.
+			if u32(c.r[31].d[0]) == ra && u32(c.r[29].d[0]) == sp && (t < entry || t > pc) {
+				if fn := c.cycles < cpu.next_event ? learned_find(t) : nil; fn != nil {
+					if lf != nil {
+						core.learn_end(lf)
+						lf = nil
+					}
+					lr := cpu.Learned_Run{run, t, cpu.learned_top}
+					cpu.learned_top = &lr
+					fn()
+					cpu.learned_top = lr.prev
+					return
+				}
+				if lf != nil && core.learn_past_span(lf, t) {
+					core.learn_end(lf)
+					lf = core.learn_begin(.Ee, t)
+					entry = t
+				}
+			}
+			pc = t
 		case .Call:
 			c.r[31].d[0] = u64(ret)
 			delay_slot(pc + 4, lf)
