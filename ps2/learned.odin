@@ -1,7 +1,8 @@
 // Learned EE functions: native code compiled from runs the EE interpreter
 // learned (recomp/r5900/learned.odin). One is never put in the call table:
 // only a call the table misses looks it up (interp_call), and it runs only
-// while RAM holds its words, compared on every call. Code loaded over them
+// while RAM holds its words, compared on a call after a write to one of
+// their pages (mem.code_pages) and skipped otherwise. Code loaded over them
 // (an overlay a game copies in, a DMA, a snapshot load) is interpreted
 // instead, and runs native again once the words are back. An entry can
 // have several, one per code loaded there. The words are compared on entry
@@ -12,10 +13,11 @@
 // (interp_flat.odin), which looks it up at every pc it goes on at
 // (learned_at), not only at an entry: a step leaves at each call, and the
 // function goes on at the return address. The words are compared at its
-// entry, as on a call above, and elsewhere in it only when they were not
-// since cpu.learned_epoch last moved (an instruction-cache flush, a
-// snapshot load): a function big enough to call often would compare its
-// words again at every return.
+// entry, as on a call above (a version whose compare missed is skipped,
+// its pages armed too, until a write to them), and elsewhere in it only
+// when they were not since cpu.learned_epoch last moved (an
+// instruction-cache flush, a snapshot load): a function big enough to call
+// often would compare its words again at every return.
 package ps2
 
 import "core:fmt"
@@ -32,7 +34,7 @@ Learned_Fn :: struct {
 	lo:    u32,
 	words: []u32,
 	fn:    cpu.Func_Proc,
-	// Native: mem.code_writes when its words were last found in RAM, its
+	// mem.code_writes when its words were last found in RAM, its
 	// pages armed then (mem.code_arm); while it is current no armed page
 	// was written, so RAM holds them still. 0: not since loaded.
 	clean: u32,
@@ -133,8 +135,7 @@ load_learned_blob :: proc(blob: []u8, name: string) -> bool {
 	} else {
 		if learned_fns == nil {
 			learned_fns = make(map[u32][dynamic]Learned_Fn, core.long_allocator())
-			// A load puts other code under the armed pages.
-			append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {mem.code_write_all()}})
+			learned_epoch_hook()
 		}
 		for s in code.spans {
 			r := code.ranges[s.range_first]
@@ -162,6 +163,9 @@ Learned_Step :: struct {
 	using f:  Learned_Fn,
 	entry:    u32,
 	epoch:    u32, // cpu.learned_epoch when RAM last held its words; 0 never
+	// mem.code_writes when its words last compared unequal, its pages
+	// armed: while the count stays, RAM still does not hold them. 0 never.
+	miss:     u32,
 }
 @(private = "file")
 learned_steps: [dynamic]Learned_Step
@@ -181,13 +185,17 @@ learned_checked: struct {
 
 // Moves cpu.learned_epoch on every snapshot load, once registered: a
 // load puts other code in RAM under the words compared (learned_search) and
-// the verdicts kept (learned_refused_at).
+// the verdicts kept (learned_refused_at), and under the armed pages
+// (mem.code_write_all).
 @(private = "file")
 learned_epoch_hook :: proc() {
 	@(static) on: bool
 	if on {return}
 	on = true
-	append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {cpu.learned_epoch += 1}})
+	append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {
+			cpu.learned_epoch += 1
+			mem.code_write_all()
+		}})
 }
 
 @(private = "file")
@@ -349,16 +357,23 @@ learned_search :: proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 		n := len(l.words)
 		if pc - l.lo >= 4 * u32(n) {continue}
 		if pc != l.entry && l.epoch == cpu.learned_epoch {return l.fn}
-		cpu.learned_words += u64(n)
-		if string(mem.ram[l.lo:][:4 * n]) == string(([^]u8)(raw_data(l.words))[:4 * n]) {
-			l.epoch = cpu.learned_epoch
-			if pc == l.entry {
-				cpu.learned_calls += 1
-				learned_checked = {pc, l.epoch, l.fn}
+		if l.miss == mem.code_writes {continue}
+		if l.clean != mem.code_writes {
+			cpu.learned_words += u64(n)
+			mem.code_arm(l.lo, 4 * u32(n))
+			if string(mem.ram[l.lo:][:4 * n]) != string(([^]u8)(raw_data(l.words))[:4 * n]) {
+				l.epoch = 0
+				l.miss = mem.code_writes
+				continue
 			}
-			return l.fn
+			l.clean = mem.code_writes
 		}
-		l.epoch = 0
+		l.epoch = cpu.learned_epoch
+		if pc == l.entry {
+			cpu.learned_calls += 1
+			learned_checked = {pc, l.epoch, l.fn}
+		}
+		return l.fn
 	}
 	cpu.learned_stale += 1
 	return nil
@@ -367,24 +382,22 @@ learned_search :: proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 // wasm32: the learned code the FLAT runner would run for a call to pc,
 // else nil: the in-line call routine's lookup of a call the call table
 // holds no code for (recomp/r5900 WASM_CALL), which runs it in place of a
-// trip through the runner. Its words are compared on every call, as the
-// runner's lookup of an entry compares them (learned_ran). The cache keeps,
-// for a pc, the first function learned_search looks at there, when pc is
-// its entry: the search compares its words first and returns it when RAM
-// holds them, whatever RAM holds elsewhere, so a hit whose words match is
-// the search's answer, and the cache saves the search and not the compare.
-// A hit whose words do not match goes on to the search, which looks past
-// it. Spans that hold other functions whole (a function learned again with
-// more of its code, or one holding a callee in-line) cover many entries,
-// so the search's first function is cached, not only a sole one. The
+// trip through the runner. The cache keeps, for a pc, the first function
+// learned_search looks at there, when pc is its entry: the search returns
+// it when RAM holds its words, whatever RAM holds elsewhere, so a hit that
+// is clean (no write to its pages since its words last compared equal) is
+// the search's answer, and takes neither the search nor a compare. Any
+// other hit goes on to the search, which compares the words (learned_ran)
+// and looks past it when they differ. Spans that hold other functions
+// whole (a function learned again with more of its code, or one holding a
+// callee in-line) cover many entries, so the search's first function is
+// cached, not only a sole one. The
 // function as the routine calls it: its table index, 0 for none.
 learned_entry :: proc(pc: u32) -> uintptr #no_bounds_check {
 	c := &learned_entry_cache[pc >> 2 & (len(learned_entry_cache) - 1)]
 	if pc == c.pc && c.ok {
 		l := &learned_steps[c.k]
-		n := len(l.words)
-		cpu.learned_words += u64(n)
-		if string(mem.ram[l.lo:][:4 * n]) == string(([^]u8)(raw_data(l.words))[:4 * n]) {
+		if l.clean == mem.code_writes {
 			l.epoch = cpu.learned_epoch
 			cpu.learned_calls += 1
 			return uintptr(rawptr(l.fn))
