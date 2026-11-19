@@ -674,6 +674,56 @@ lib_name32 :: proc(n: ^[32]u8) -> string {
 	return strings.truncate_to_byte(string(n[:]), 0)
 }
 
+// ------------------------------------------------------------- heaplib
+
+// heaplib's heaps over sysmem. Retail carves a heap's blocks out of chunks
+// it takes from sysmem; here each block is its own sysmem block, HEAP_LINK
+// bytes longer, which starts with the next block of the heap and the heap.
+// A heap is a sysmem block holding its first block, 0 for none. The chain
+// is in IOP RAM, so save states and rollback carry it with the blocks.
+@(private = "file")
+HEAP_LINK :: 8
+
+// heaplib's CreateHeap (4), DeleteHeap (5), AllocHeapMemory (6) and
+// FreeHeapMemory (7). Numbers as heaplib's export table.
+@(private = "file")
+heaplib_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
+	r := &r3000.state.r
+	switch fno {
+	case 4: // CreateHeap(size, flags): the heap, 0 when sysmem is full
+		heap := sys_alloc(.Low, 4)
+		if heap != 0 {w32(heap, 0)}
+		return heap, true
+	case 5: // DeleteHeap(heap): its blocks go back to sysmem with it
+		heap := phys(r[4])
+		for b := r32(heap); b != 0; {
+			next := r32(b)
+			sys_free(b)
+			b = next
+		}
+		return sys_free(heap) ? KE_OK : ke(KE_ERROR), true
+	case 6: // AllocHeapMemory(heap, size): the block, 0 when sysmem is full
+		heap := phys(r[4])
+		b := sys_alloc(.Low, r[5] + HEAP_LINK)
+		if b == 0 {return 0, true}
+		w32(b, r32(heap))
+		w32(b + 4, heap)
+		w32(heap, b)
+		return b + HEAP_LINK, true
+	case 7: // FreeHeapMemory(heap, block)
+		heap, want := phys(r[4]), phys(r[5]) - HEAP_LINK
+		for at := heap; r32(at) != 0; at = r32(at) {
+			if b := r32(at); b == want {
+				w32(at, r32(b))
+				sys_free(b)
+				return KE_OK, true
+			}
+		}
+		return ke(KE_ERROR), true
+	}
+	return 0, false
+}
+
 // ------------------------------------------------------------- modload
 
 // The id LOADFILE and LoadModuleBuffer answer for a module not run here.
@@ -698,6 +748,15 @@ modload_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 		return module_start_call(r[4], r[5], r[6], r[7], r32(r[29] + 16))
 	case 10: // LoadModuleBuffer(buffer)
 		return module_buffer_load(r[4]), true
+	case 16: // GetModuleIdList(int *list, int max, int *count)
+		// The ids of the modules run here, up to max of them; count gets
+		// how many there are. A Sony module has no record of its own.
+		l := &iop_loader
+		for m, i in l.modules {
+			if i32(i) < i32(r[5]) {w32(r[4] + u32(i) * 4, m.id)}
+		}
+		if r[6] != 0 {w32(r[6], u32(len(l.modules)))}
+		return KE_OK, true
 	}
 	return 0, false
 }
@@ -1047,6 +1106,8 @@ hle_fn :: proc(name: string, fno: u32) -> (v0: u32, ok: bool) {
 		}
 	case "modload":
 		return modload_fn(fno)
+	case "heaplib":
+		return heaplib_fn(fno)
 	case "loadcore":
 		switch fno {
 		case 4, 5: // FlushIcache, FlushDcache: no caches here
