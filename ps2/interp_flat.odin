@@ -141,6 +141,16 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 			} else if flat_goto(x, pc, i.target) {
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
+				when N {
+					// interp_body's split of a tail call that would make
+					// the run .Large: it returns for LEARN, one from the
+					// target begins at the same depth.
+					if core.learn_past_span(lf, i.target) && flat_frame_gone(x) {
+						kernel.flat_learn_begin(x, i.target)
+						lf = kernel.flat_learn_top(x)
+						if lf == nil {return x, i.target, nil, true}
+					}
+				}
 				pc = i.target
 				if flat_native_at(pc) {
 					x.pc = pc
@@ -222,6 +232,16 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 			}
 		}
 	}
+}
+
+// Whether the run's frame is gone: $ra and sp are as at its call (the
+// innermost record's, or the run's own at depth 0), so a `j` away is a tail
+// call.
+@(private = "file")
+flat_frame_gone :: proc(x: ^kernel.Flat_Ctx) -> bool {
+	ra, sp := x.ra, x.ra_sp
+	if x.depth > 0 {ra, sp = x.ret[x.depth - 1], x.sp[x.depth - 1]}
+	return u32(cpu.state.r[31].d[0]) == ra && u32(cpu.state.r[29].d[0]) == sp
 }
 
 // wasm32: whether native code is loaded (load_native), which flat_resume
