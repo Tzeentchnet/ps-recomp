@@ -62,6 +62,8 @@ BAND_MAPS :: 8
 BAND_PAGES :: 8 // pages written outside the workers: they validate again
 @(private)
 BAND_FLUSH :: 9 // drop every cache entry (tc_flush)
+@(private)
+BAND_SCAN :: 10 // scanout: each worker fills its share of the rows
 // Idle spins before a thread sleeps on a futex.
 @(private)
 BAND_SPIN :: 4000
@@ -73,6 +75,7 @@ Band_Job :: struct {
 	using u:   struct #raw_union {
 		v:     [3]Vertex,
 		pages: Page_Set,
+		scan:  Scan_Rect,
 	},
 }
 
@@ -493,6 +496,9 @@ band_job :: proc(w: ^Band_Worker, j: ^Band_Job) #no_bounds_check {
 		tc.last_key = TC_NO_TILE
 	case BAND_FLUSH:
 		tc_drop_all(&w.tc)
+	case BAND_SCAN:
+		s, n, i := j.scan, int(band.n), int(w.id)
+		scanout_part(s, s.h * i / n, s.h * (i + 1) / n)
 	case:
 		if j.ctx != w.ctx_seq {
 			w.ctx = band.ctxs[j.ctx % BAND_CTXS]

@@ -243,12 +243,20 @@ scanout :: proc() -> (w, h: int) {
 		scan_ok = false
 		return
 	}
-	if scan_same(Scan_Rect{fbp, fbw, psm, dbx, dby, w, h}) {return}
-	r := row_init(psm)
-	switch {
-	case r.ok && r.wide: scanout_rows(&r, fbp, fbw, dbx, dby, w, h, true)
-	case psm == PSMCT16 || psm == PSMCT16S: scanout_rows(&r, fbp, fbw, dbx, dby, w, h, false)
-	case:
+	rect := Scan_Rect{fbp, fbw, psm, dbx, dby, w, h}
+	if scan_same(rect) {return}
+	if r := row_init(psm); r.ok && (r.wide || psm == PSMCT16 || psm == PSMCT16S) {
+		// The band workers each fill a share of the rows (band_job); the
+		// join above left them idle, the one after makes `screen` whole.
+		if band.n > 0 && h > 1 {
+			j := band_slot(BAND_SCAN)
+			j.scan = rect
+			band_publish()
+			band_join()
+		} else {
+			scanout_part(rect, 0, h)
+		}
+	} else {
 		for y in 0 ..< h {
 			row := screen[y * DISP_W:]
 			for x in 0 ..< w {
@@ -296,6 +304,17 @@ scanout_rgba :: #force_inline proc(c: u32, narrow: bool) -> u32 {
 	return c | 0xff000000
 }
 
+// Rows [y0, y1) of scanout's rect s, a 32-, 24- or 16-bit colour buffer.
+@(private)
+scanout_part :: proc(s: Scan_Rect, y0, y1: int) {
+	r := row_init(s.psm)
+	if r.wide {
+		scanout_rows(&r, s.fbp, s.fbw, s.dbx, s.dby, s.w, y0, y1, true)
+	} else {
+		scanout_rows(&r, s.fbp, s.fbw, s.dbx, s.dby, s.w, y0, y1, false)
+	}
+}
+
 // scanout for a 32- or 24-bit buffer, or a 16-bit colour one: each row's
 // address math once (row_seek), then two table reads per pixel, as draw
 // does. A wide row's 8 pixels from a column's start are one block's four
@@ -303,8 +322,8 @@ scanout_rgba :: #force_inline proc(c: u32, narrow: bool) -> u32 {
 // one address. Reads the same words read_raw would; alpha is forced, so
 // a 24-bit format's mask changes nothing.
 @(private)
-scanout_rows :: proc(r: ^Row, fbp, fbw, dbx, dby: u32, w, h: int, $WIDE: bool) #no_bounds_check {
-	for y in 0 ..< h {
+scanout_rows :: proc(r: ^Row, fbp, fbw, dbx, dby: u32, w, y0, y1: int, $WIDE: bool) #no_bounds_check {
+	for y in y0 ..< y1 {
 		row := screen[y * DISP_W:]
 		row_seek(r, fbp, fbw, dby + u32(y))
 		x := 0
