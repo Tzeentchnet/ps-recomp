@@ -18,7 +18,9 @@
 //   - An entry the blob's records hold but the compiler left to the
 //     interpreter (ps2.learned_refuse) opens no run, at a lookup miss or
 //     an interpreted call: each run there would be recorded again, and
-//     refused again.
+//     refused again. Only while RAM holds the code of one of its records
+//     (a .Smc one's whatever RAM holds): another overlay's code at R is
+//     no longer refused once the epoch moves, and R's is again.
 //   - A transfer whose delay slot is a BREAK or SYSCALL is left to the
 //     interpreter at its pc; a branch-likely's only when taken. D is the EE
 //     compilers' divide-by-zero trap (`beql a1, zero; break 7`), S a
@@ -364,8 +366,24 @@ main :: proc() {
 	check(skipped == 0, fmt.tprintf("%d runs not lowered", skipped))
 	check(os.write_entire_file(BLOB, blob) == nil, "write the blob")
 	check(ps2.load_learned(BLOB), "load the blob")
-	ps2.learned_refuse({L, N, R, N2, R})
+	rw := [?]u32{addiu_v0(2, 16), JR_RA, NOP}
+	r_row := ps2.Learned_Row{R, R, len(rw), xxhash.XXH3_64_default(slice.to_bytes(rw[:]))}
+	ps2.learned_refuse({{L, L, 0, 0}, {N, N, 0, 0}, r_row, {N2, N2, 0, 0}, r_row})
 	check(!ps2.learned_refused_at(L) && !ps2.learned_refused_at(N2) && ps2.learned_refused_at(R), "the refused set is R alone")
+	// Another overlay's code at R is code the compiler has not seen: once
+	// the epoch moves (its load flushes the cache) R is no longer refused,
+	// and is again when R's own code comes back.
+	{
+		other := [?]u32{addiu_v0(2, 32), JR_RA, NOP}
+		put(R, other[:])
+		check(ps2.learned_refused_at(R), "variant: the verdict holds until the epoch moves")
+		cpu.learned_epoch += 1
+		check(!ps2.learned_refused_at(R), "variant: other code at R is not refused")
+		put(R, rw[:])
+		check(!ps2.learned_refused_at(R), "variant: the verdict holds until the epoch moves, back")
+		cpu.learned_epoch += 1
+		check(ps2.learned_refused_at(R), "variant: R's own code is refused again")
+	}
 
 	v0, ran = call(A2)
 	check(v0 == 7 && ran, fmt.tprintf("A2: v0 %d, learned code ran %v; want 7, L", v0, ran))
@@ -513,10 +531,15 @@ main :: proc() {
 		compact, n := core.learn_compact(stale[:])
 		crecs, _ := core.learn_read(compact, context.allocator)
 		check(n == 1 && crecs[0].entry == S2 && crecs[0].flags == {.Smc}, fmt.tprintf("stale: compacted to %d records %v; want S2's .Smc alone", n, crecs[:]))
-		entries := make([dynamic]u32, context.allocator)
-		for r in crecs {append(&entries, r.entry)}
-		ps2.learned_refuse(entries[:])
+		rows := make([dynamic]ps2.Learned_Row, context.allocator)
+		for r in crecs {append(&rows, ps2.learned_row(r))}
+		ps2.learned_refuse(rows[:])
+		// A .Smc row is refused whatever RAM holds: S2's run stores into
+		// its own words, so RAM rarely holds those it ran.
+		mem.wr32(S2, 0)
+		cpu.learned_epoch += 1
 		check(!ps2.learned_refused_at(S3) && ps2.learned_refused_at(S2), "stale: S2 alone left to the interpreter")
+		put(S2, s2[:])
 		relearn_path :: "relearn.bin"
 		check(os.write_entire_file(relearn_path, compact) == nil, "write the compacted records")
 		check(core.learn_open_path(relearn_path, {.Ee}), "open for the relearn")
@@ -560,7 +583,7 @@ main :: proc() {
 		put(Q, q[:])
 		eblob, eskipped := r5900.learned_blob({{L, L, l[:]}, {Q, Q, q[:]}}, .Wasm32)
 		check(eskipped == 0 && os.write_entire_file("entered.bin", eblob) == nil && ps2.load_learned("entered.bin"), "load L's and Q's blob")
-		ps2.learned_refuse({L, Q})
+		ps2.learned_refuse({{L, L, 0, 0}, {Q, Q, 0, 0}})
 		put(A14, {PUSH_1, PUSH_2, jal(L + 16), NOP, LOAD_RA, JR_RA, POP})
 		entered_path :: "entered-learn.bin"
 		check(core.learn_open_path(entered_path, {.Ee}), "open for the entered call")

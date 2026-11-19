@@ -192,40 +192,107 @@ learned_at :: #force_inline proc(pc: u32) -> cpu.Func_Proc #no_bounds_check {
 	return learned_search(pc)
 }
 
-// The entries of the loaded blob's records that it holds no function for:
-// the compiler left them to the interpreter (code stored into, too large,
-// not lowered). Sorted; host state. Game data's refused rows name them
+// One EE record of a blob's: its entry and the words it ran, the RAM words
+// [lo, lo+4n) whose bytes hash to hash (XXH3-64, as core/learn.odin writes
+// it). n is 0 when the words do not tell its code apart: a .Large record
+// holds none, and code that stores into itself (.Smc, .Smc_Unknown) leaves
+// other words in RAM than it ran.
+Learned_Row :: struct {
+	entry, lo, n: u32,
+	hash:         u64,
+}
+
+// r's row (an EE record's, as core.learn_read gives it).
+learned_row :: proc(r: core.Learn_Record) -> Learned_Row {
+	n := r.flags & {.Smc, .Smc_Unknown, .Large} == {} ? u32(len(r.words)) : 0
+	return {r.entry, r.lo, n, r.hash}
+}
+
+// An entry of the loaded blob's records that it holds no function for: the
+// compiler left it to the interpreter (code stored into, too large, not
+// lowered). Its rows are learned_refused_rows[first:][:count]. refused is
+// whether RAM held one of their code at epoch (cpu.learned_epoch; 0 never
+// checked): RAM holding other code there, a later overlay's, is code the
+// compiler has not seen, so its run is recorded.
+@(private = "file")
+Learned_Refused :: struct {
+	first, count, epoch: u32,
+	refused:             bool,
+}
+
+// The entries, sorted, and each one's Learned_Refused at the same index;
+// host state. Game data's refused rows name them
 // (natively made only with game data on). On wasm32 the FLAT runner opens
-// no LEARN run at one (interp_flat.odin): recording it again every run
-// would be all cost, since the next compile refuses it again. Made only at
-// load, so code loaded there later, which the compiler might take, is not
-// recorded either until a load finds no record of it.
+// no LEARN run at one whose code RAM holds (interp_flat.odin): recording it
+// again every run would be all cost, since the next compile refuses it
+// again. Made only at load.
 @(private = "file")
 learned_refused: []u32
+@(private = "file")
+learned_refused_of: []Learned_Refused
+@(private = "file")
+learned_refused_rows: []Learned_Row
 
-// Keep entries (a blob's records', in any order, repeats too) that no
-// loaded learned function starts at, as learned_refused.
-learned_refuse :: proc(entries: []u32) {
+// Keep the rows (a blob's records', in any order, repeats too) of entries
+// no loaded learned function starts at, as learned_refused.
+learned_refuse :: proc(rows: []Learned_Row) {
 	has := make(map[u32]struct{}, context.temp_allocator)
 	when ODIN_ARCH == .wasm32 {
 		for &l in learned_steps {has[l.entry] = {}}
 	} else {
 		for e in learned_fns {has[e] = {}}
 	}
-	out := make([dynamic]u32, core.long_allocator())
-	for e in entries {
-		if e not_in has {append(&out, e)}
+	kept := make([dynamic]Learned_Row, core.long_allocator())
+	for r in rows {
+		if r.entry not_in has {append(&kept, r)}
 	}
-	slice.sort(out[:])
+	slice.sort_by(kept[:], proc(a, b: Learned_Row) -> bool {return a.entry < b.entry})
+	entries := make([dynamic]u32, core.long_allocator())
+	of := make([dynamic]Learned_Refused, core.long_allocator())
+	for r, i in kept {
+		if len(entries) == 0 || entries[len(entries) - 1] != r.entry {
+			append(&entries, r.entry)
+			append(&of, Learned_Refused{first = u32(i)})
+		}
+		of[len(of) - 1].count += 1
+	}
 	delete(learned_refused, core.long_allocator())
-	learned_refused = slice.unique(out[:])
+	delete(learned_refused_of, core.long_allocator())
+	delete(learned_refused_rows, core.long_allocator())
+	learned_refused = entries[:]
+	learned_refused_of = of[:]
+	learned_refused_rows = kept[:]
 	fmt.eprintfln("learned: %d EE entries left to the interpreter open no LEARN run", len(learned_refused))
 }
 
-// wasm32: whether pc is an entry of learned_refused.
+// wasm32: whether pc is an entry of learned_refused and RAM holds the code
+// of one of its rows. The answer is kept until cpu.learned_epoch moves (an
+// instruction-cache flush, a snapshot load), since a refused entry is
+// looked up on every call: the words are hashed once per overlay load.
 learned_refused_at :: proc(pc: u32) -> bool {
-	_, found := slice.binary_search(learned_refused, pc)
-	return found
+	i, found := slice.binary_search(learned_refused, pc)
+	if !found {return false}
+	r := &learned_refused_of[i]
+	if r.epoch != cpu.learned_epoch {
+		r.epoch = cpu.learned_epoch
+		r.refused = false
+		for row in learned_refused_rows[r.first:][:r.count] {
+			if learned_row_held(row) {
+				r.refused = true
+				break
+			}
+		}
+	}
+	return r.refused
+}
+
+// Whether RAM holds row's words, or they cannot be told apart (n 0, or a
+// span past RAM, which keeps the entry refused as before).
+@(private = "file")
+learned_row_held :: proc(row: Learned_Row) -> bool {
+	span := u64(row.n) * 4
+	if row.n == 0 || u64(row.lo) + span > u64(len(mem.ram)) {return true}
+	return u64(xxhash.XXH3_64_default(mem.ram[row.lo:][:span])) == row.hash
 }
 
 // wasm32: the runner runs the native code it looked up last; the next

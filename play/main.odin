@@ -229,19 +229,19 @@ learned_set :: proc(recs: []core.Learn_Record, cpu: core.Learn_Cpu, interp: []na
 	return fmt.tprintf("%016x", xxhash.XXH3_64_default(key[:])), true
 }
 
-// The entries of cpu's records in the disc directory dir's learn
-// directory, as learned_blob left the file, in context.temp_allocator; nil
-// when it does not read.
+// The rows of cpu's records in the disc directory dir's learn directory,
+// as learned_blob left the file, in context.temp_allocator; nil when it
+// does not read.
 @(private)
-learned_entries :: proc(dir: string, cpu: core.Learn_Cpu) -> []u32 {
+learned_entries :: proc(dir: string, cpu: core.Learn_Cpu) -> []ps2.Learned_Row {
 	data, err := os.read_entire_file(learn_records(dir, learned_files(cpu).records), context.temp_allocator)
 	if err != nil {return nil}
 	recs, _ := core.learn_read(data, context.temp_allocator)
-	entries := make([dynamic]u32, context.temp_allocator)
+	rows := make([dynamic]ps2.Learned_Row, context.temp_allocator)
 	for r in recs {
-		if r.cpu == cpu {append(&entries, r.entry)}
+		if r.cpu == cpu {append(&rows, ps2.learned_row(r))}
 	}
-	return entries[:]
+	return rows[:]
 }
 
 // The learned blob for cpu's records in the disc directory dir's learn
@@ -487,7 +487,7 @@ play :: proc(image: string) -> int {
 	// A wasm32 build's FLAT runner opens no LEARN run at an entry the blob
 	// was compiled from records of but has no function for (ps2
 	// learned_refuse), and game data's refused rows name them.
-	learned_ee_entries: []u32
+	learned_ee_entries: []ps2.Learned_Row
 	if learned_ee != "" && (core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 || gamedata) {learned_ee_entries = learned_entries(dir, .Ee)}
 	learned_key = core.disc_path(dir, learned_files(learn_cpu).key)
 	learned_ee_key = core.disc_path(dir, learned_files(.Ee).key)

@@ -40,11 +40,11 @@ Boot :: struct {
 	// no function is registered while RAM holds their code.
 	learned_ee:        string,
 	learned_ee_failed: proc(),
-	// The entries of the records learned_ee was compiled from (wasm32, or
+	// The rows of the records learned_ee was compiled from (wasm32, or
 	// natively with game data on, for its refused rows). Those it holds no
 	// function for are left to the interpreter, which opens no LEARN run at
 	// them under FLAT (learned_refuse).
-	learned_ee_entries: []u32,
+	learned_ee_entries: []Learned_Row,
 	// The directory the memory card directories go in (iop.mc_root); left
 	// empty, the runtime's.
 	cards:          string,
