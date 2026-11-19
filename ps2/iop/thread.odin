@@ -126,6 +126,7 @@ Th_Status :: enum u8 {
 	Run,
 	Wait, // on a semaphore
 	Evf, // on an event flag
+	Mbx, // on a message box (ReceiveMbx)
 	Lock, // on sio2man's transfer lock (th_lock)
 	Sleep,
 	Delay, // on DelayThread, until wake_at
@@ -150,9 +151,10 @@ Iop_Thread :: struct {
 	start:                  bool, // a module's start
 	exit_delete:            bool, // removed once it is dormant
 	seq:                    i64, // its place in its ready or wait queue
-	sema:                   u32, // what it waits on: a semaphore's or event flag's id
+	sema:                   u32, // what it waits on: a semaphore's, event flag's or message box's id
 	evf_bits, evf_mode:     u32, // an event flag wait's pattern and mode
 	evf_res:                u32, // and where its met bits go, 0 for nowhere
+	msg_res:                u32, // where a ReceiveMbx wait's message goes
 	wakeups:                u32, // WakeupThread calls while it was awake
 	intr_off:               bool, // it turned interrupts off (th_intr_off)
 	wake:                   u32, // what its wait returns
@@ -803,7 +805,7 @@ th_release_wait :: proc(id: u32) -> u32 {
 	t := th_find(id)
 	if t == nil {return ke(KE_UNKNOWN_THID)}
 	#partial switch t.status {
-	case .Wait, .Evf, .Lock, .Sleep, .Delay, .Start:
+	case .Wait, .Evf, .Mbx, .Lock, .Sleep, .Delay, .Start:
 		th_wake(t, ke(KE_RELEASE_WAIT))
 		return KE_OK
 	}
@@ -955,7 +957,7 @@ th_undo :: proc(m: Th_Mark) {
 		if s.evfs[i].id >= m.evfid {evf_delete(i)}
 	}
 	for i := len(s.mbxs) - 1; i >= 0; i -= 1 {
-		if s.mbxs[i].id >= m.mbxid {ordered_remove(&s.mbxs, i)}
+		if s.mbxs[i].id >= m.mbxid {mbx_delete(i)}
 	}
 	for i := len(s.threads) - 1; i >= 0; i -= 1 {
 		t := &s.threads[i]
@@ -1042,6 +1044,7 @@ th_refer :: proc(id, info: u32) -> u32 {
 	TSW_DELAY :: 2
 	TSW_SEMA :: 3
 	TSW_EVENTFLAG :: 4
+	TSW_MBX :: 5
 	t := th_find(id)
 	if t == nil && id != 0 {return ke(KE_UNKNOWN_THID)}
 	for &b in iop_ram_at(info, 0x44) {b = 0}
@@ -1063,6 +1066,7 @@ th_refer :: proc(id, info: u32) -> u32 {
 		status, wait_type, wait_id = TS_WAIT, TSW_SEMA, t.sema
 		if t.sema == 0 {wait_type = TSW_EVENTFLAG} // th_rpc_wait
 	case .Evf: status, wait_type, wait_id = TS_WAIT, TSW_EVENTFLAG, t.sema
+	case .Mbx: status, wait_type, wait_id = TS_WAIT, TSW_MBX, t.sema
 	case .Lock: status, wait_type = TS_WAIT, TSW_SEMA
 	}
 	w32(info, t.attr)
@@ -1087,14 +1091,14 @@ TH_CHECKED := [Th_Lib]Fno_Set {
 	.Base  = {4, 5, 6, 7, 8, 9, 10, 11, 14, 16, 19, 20, 22, 24, 25, 26, 27, 33, 35, 36, 37, 38, 42},
 	.Semap = {4, 5, 6, 7, 8, 9, 11, 12},
 	.Event = {4, 5, 6, 7, 8, 9, 10, 11, 13, 14},
-	.Msgbx = {4, 6, 9},
+	.Msgbx = {4, 5, 6, 7, 8, 9},
 }
 @(rodata)
 TH_IVAR := [Th_Lib]Fno_Set {
 	.Base  = {11, 19, 26, 36, 38},
 	.Semap = {7, 12},
 	.Event = {7, 9, 14},
-	.Msgbx = {},
+	.Msgbx = {7},
 }
 
 // The calls refused so far, each shown once under PS_DEBUG; not state.
@@ -1352,7 +1356,7 @@ sema_waiter :: proc(m: Iop_Sema) -> ^Iop_Thread {
 
 // ------------------------------------------------------------- thmsgbx
 
-MBA_THPRI :: 1 // waiters by priority, else first come: no waiter here
+MBA_THPRI :: 1 // waiters by priority, else first come
 MBA_MSPRI :: 4 // a box's messages queue by priority, else first come
 // The most messages an MBA_MSPRI send walks over: as many as IOP RAM holds,
 // so a ring the guest broke by hand ends.
@@ -1363,8 +1367,9 @@ MBX_WALK_MAX :: IOP_RAM_SIZE / 8
 @(private = "file")
 mbx_ring_broken: bool
 
-// Function fno of thmsgbx, as th_base: CreateMbx, SendMbx and PollMbx. No
-// ReceiveMbx here, so no thread ever waits on a box and a send only queues.
+// Function fno of thmsgbx, as th_base: CreateMbx, DeleteMbx, SendMbx and
+// iSendMbx, ReceiveMbx and PollMbx. A send to a box a thread waits on hands
+// the message to that thread and queues nothing, as retail's.
 th_msgbx :: proc(fno: u32) -> (v0: u32, ok: bool) {
 	s := &iop_sched
 	a0, a1 := r3000.state.r[4], r3000.state.r[5]
@@ -1375,25 +1380,79 @@ th_msgbx :: proc(fno: u32) -> (v0: u32, ok: bool) {
 		append(&s.mbxs, Iop_Mbx{id = s.next_mbxid, attr = r32(a0), option = r32(a0 + 4)})
 		s.next_mbxid += 1
 		return s.next_mbxid - 1, true
-	case 6: // SendMbx(mbxid, iop_message_t *): next word, then a priority byte
+	case 5: // DeleteMbx(mbxid): its waiters wake with KE_WAIT_DELETE
+		for m, i in s.mbxs {
+			if m.id == a0 {
+				mbx_delete(i)
+				return KE_OK, true
+			}
+		}
+		return ke(KE_UNKNOWN_MBXID), true
+	case 6, 7: // SendMbx(mbxid, iop_message_t *), iSendMbx: next word, then a priority byte
 		m := mbx_find(a0)
 		if m == nil {return ke(KE_UNKNOWN_MBXID), true}
-		mbx_put(m, a1)
+		if w := mbx_waiter(m^); w != nil {
+			w32(w.msg_res, a1)
+			th_wake(w, KE_OK)
+		} else {
+			mbx_put(m, a1)
+		}
 		return KE_OK, true
+	case 8: // ReceiveMbx(void **recvmsg, mbxid): the first message, or a wait for one
+		m := mbx_find(a1)
+		if m == nil {return ke(KE_UNKNOWN_MBXID), true}
+		if m.count > 0 {
+			w32(a0, mbx_take(m))
+			return KE_OK, true
+		}
+		if t := th_find(s.cur); t != nil {t.msg_res = a0}
+		return th_wait(.Mbx, m.id), true
 	// recvmsg is written unchecked, null too, as retail's PollMbx does.
 	// The oldest is `last`'s next word, read now: what retail takes.
 	case 9: // PollMbx(void **recvmsg, mbxid): the first message, or NOMSG
 		m := mbx_find(a1)
 		if m == nil {return ke(KE_UNKNOWN_MBXID), true}
 		if m.count <= 0 {return ke(KE_MBOX_NOMSG), true}
-		m.count -= 1
-		first := r32(m.last)
-		after := r32(first)
-		if after == first {m.last = 0} else {w32(m.last, after)}
-		w32(a0, first)
+		w32(a0, mbx_take(m))
 		return KE_OK, true
 	}
 	return 0, false
+}
+
+// Takes box m's oldest message, which the caller checked is there.
+@(private = "file")
+mbx_take :: proc(m: ^Iop_Mbx) -> u32 {
+	m.count -= 1
+	first := r32(m.last)
+	after := r32(first)
+	if after == first {m.last = 0} else {w32(m.last, after)}
+	return first
+}
+
+// The waiter a send hands its message to: first by priority for
+// MBA_THPRI, else first come.
+@(private = "file")
+mbx_waiter :: proc(m: Iop_Mbx) -> ^Iop_Thread {
+	best: ^Iop_Thread
+	for &t in iop_sched.threads {
+		if t.status != .Mbx || t.sema != m.id {continue}
+		better := best == nil || t.seq < best.seq
+		if m.attr & MBA_THPRI != 0 && best != nil {
+			better = t.prio < best.prio || t.prio == best.prio && t.seq < best.seq
+		}
+		if better {best = &t}
+	}
+	return best
+}
+
+@(private = "file")
+mbx_delete :: proc(i: int) {
+	s := &iop_sched
+	id := s.mbxs[i].id
+	ordered_remove(&s.mbxs, i)
+	for &t in s.threads {
+		if t.status == .Mbx && t.sema == id {th_wake(&t, ke(KE_WAIT_DELETE))}
+	}
 }
 
 @(private = "file")

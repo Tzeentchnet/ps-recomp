@@ -123,6 +123,9 @@ cdvdman_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 		return cd_disk_type(), true
 	case 13: // sceCdDiskReady(mode): mode 8, the drive's ready register as read; any other, 2, ready
 		return CD_READY_REG if a0 == 8 else 2, true
+	case 14: // sceCdTrayReq(mode, u32 *traychk): 1, and no tray change seen, as cdvdfsv's S-command answers; the tray never moves here
+		if a1 != 0 {iop_u32(a1)^ = 0}
+		return 1, true
 	case 15: // sceCdStop: stops the disc, done here; 1, the command accepted
 		iop_cd.stopped = true
 		cd_done(CD_FUNC_STOP)
