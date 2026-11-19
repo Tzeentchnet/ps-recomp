@@ -20,6 +20,9 @@
 //     would depend on and nothing checks.
 //   - A `jr $ra` whose delay slot writes $ra returns to $ra as it was before
 //     the slot, compiled as interpreted.
+//   - A switch (a computed `jr`): a case before the first `jr $ra` after it
+//     is a label, one past it is not; each leaves the registers the
+//     interpreter does, the second through cpu.jump_unknown.
 package main
 
 import "core:fmt"
@@ -31,6 +34,7 @@ import "ps:ps2"
 import cpu "ps:ps2/cpu"
 import dma "ps:ps2/dma"
 import mem "ps:ps2/mem"
+import "ps:recomp/mips"
 import "ps:recomp/native"
 import "ps:recomp/r5900"
 
@@ -85,6 +89,28 @@ CODE_LANDING := [?]u32 {
 @(private = "file")
 CHANGED :: 0x24020001
 
+// v0 = 10 for a0 0, 20 for a0 1, by the jump table at SWITCH_TABLE: case 0
+// before the first `jr $ra` after the `jr t1`, case 1 past it.
+@(private = "file")
+SWITCH :: 0x00102000
+@(private = "file")
+SWITCH_TABLE :: 0x00103000
+@(rodata, private = "file")
+CODE_SWITCH := [?]u32 {
+	0x00044080, // sll t0, a0, 2
+	0x3c090010, // lui t1, 0x10
+	0x01284821, // addu t1, t1, t0
+	0x8d293000, // lw t1, 0x3000(t1)
+	0x01200008, // jr t1
+	0x00000000,
+	0x2402000a, // case 0: addiu v0, zero, 10
+	0x03e00008, // jr ra
+	0x00000000,
+	0x24020014, // case 1: addiu v0, zero, 20
+	0x03e00008, // jr ra
+	0x00000000,
+}
+
 // Where the calls return to.
 @(private = "file")
 RA :: 0x00000ff0
@@ -121,6 +147,28 @@ run_slot_ra :: proc() -> (type_of(cpu.state.r), bool) {
 	calls := cpu.learned_calls
 	cpu.call(SLOT_RA)
 	return cpu.state.r, cpu.learned_calls != calls
+}
+
+// Call SWITCH with a0 = c: v0, and whether a learned function ran it.
+@(private = "file")
+run_switch :: proc(c: u64) -> (u32, bool) {
+	cpu.state.r = {}
+	cpu.state.r[4].d[0], cpu.state.r[29].d[0], cpu.state.r[31].d[0] = c, 0x001ff000, RA
+	calls := cpu.learned_calls
+	cpu.call(SWITCH)
+	return u32(cpu.state.r[2].d[0]), cpu.learned_calls != calls
+}
+
+// The switch's run discovered (r5900.learned_func): case 0 a label, case 1
+// past the first `jr $ra` none, and no word in between walked.
+@(private = "file")
+test_switch_labels :: proc() {
+	code := CODE_SWITCH
+	f := r5900.learned_func({SWITCH, SWITCH, code[:]})
+	defer mips.func_free(f)
+	check(f.computed, "switch not computed")
+	check(SWITCH + 0x18 in f.labels, "case 0 before the first jr ra not a label")
+	check(SWITCH + 0x24 not_in f.labels && SWITCH + 0x24 not_in f.insns, "case 1 past the first jr ra discovered")
 }
 
 // fromSPR: the quadword at the scratchpad's start to LOOP, its first word w.
@@ -294,13 +342,27 @@ game :: proc(_: rawptr) {
 	check(slot_ran, "return with ra written in its delay slot not run native")
 	check(got == want, fmt.tprintf("learned jr ra with ra written in its delay slot: v0 %x v1 %x ra %x, interpreted v0 %x v1 %x ra %x", got[2].d[0], got[3].d[0], got[31].d[0], want[2].d[0], want[3].d[0], want[31].d[0]))
 
+	// A switch, interpreted and then learned: each case as interpreted.
+	for w, k in CODE_SWITCH {put(SWITCH + 4 * u32(k), w)}
+	put(SWITCH_TABLE, SWITCH + 0x18)
+	put(SWITCH_TABLE + 4, SWITCH + 0x24)
+	want0, ran0 := run_switch(0)
+	want1, ran1 := run_switch(1)
+	check(want0 == 10 && want1 == 20 && !ran0 && !ran1, fmt.tprintf("interpreted switch: %d %d", want0, want1))
+	switch_code := CODE_SWITCH
+	check(ps2.load_learned(write_blob(tmp, "d.bin", {{SWITCH, SWITCH, switch_code[:]}})), "load the switch")
+	got0, nat0 := run_switch(0)
+	check(nat0 && got0 == want0, fmt.tprintf("learned switch case 0 (a label): v0 %d native %v, want %d", got0, nat0, want0))
+	got1, nat1 := run_switch(1)
+	check(nat1 && got1 == want1, fmt.tprintf("learned switch case 1 (through jump_unknown): v0 %d native %v, want %d", got1, nat1, want1))
+
 	if os.remove_all(tmp) != nil {
 		check(false, fmt.tprintf("cannot remove %s", tmp))
 	}
 	if failed != 0 {
 		os.exit(1)
 	}
-	fmt.println("ok ee_learned: learned EE code runs native only while RAM holds its words, through host and DMA writes and snapshot loads, one version per code at an entry; a return whose delay slot writes $ra goes where the interpreter's does")
+	fmt.println("ok ee_learned: learned EE code runs native only while RAM holds its words, through host and DMA writes and snapshot loads, one version per code at an entry; a return whose delay slot writes $ra goes where the interpreter's does; a switch's case past its first jr ra runs as interpreted")
 	os.exit(0)
 }
 

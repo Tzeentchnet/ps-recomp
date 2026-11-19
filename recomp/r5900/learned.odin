@@ -39,13 +39,7 @@ learned_spans :: proc(runs: []Learned, arch: native.Arch, blocks: bool) -> (blob
 	slow: map[string]int
 	defer delete(slow)
 	for r in runs {
-		img := mips.Image {
-			base  = r.lo,
-			data  = ([^]u8)(raw_data(r.words))[:4 * len(r.words)],
-			entry = r.entry,
-		}
-		f := mips.func_make(r.entry, r.lo + 4 * u32(len(r.words)), r.lo)
-		mips.discover(RULES, img, f, nil)
+		f := learned_func(r)
 		fs := slot_past_words(f) ? nil : native_func(&a, f, nil, CYCLES_PER_INSN, &slow, learned = true)
 		if fs == nil {
 			skipped += 1
@@ -60,6 +54,64 @@ learned_spans :: proc(runs: []Learned, arch: native.Arch, blocks: bool) -> (blob
 	blob = native.make_blob(&a, funcs[:], nil, spans[:])
 	for s in spans {delete(s.ranges)}
 	return blob, skipped
+}
+
+// The function run r is, discovered from its entry. A run's words are all
+// those between the lowest and highest pc it fetched, often other
+// functions' too (a jump table's case can be a tail jump away), so a
+// computed `jr` (not `$ra`) is not left to discover's Duff rule, which
+// would walk and label every word of them (Okami's run at 0x01454290: 68
+// words of its own in 5895, 560 KB of wasm32). Its cases are taken to lie
+// in [jr + 8, the first `jr $ra` after it + 8), each one where a jump table
+// can land: a leader, the word after an unconditional jump's delay slot
+// (`j`, `jr`, `b`). A case elsewhere is no label and goes out through
+// cpu.jump_unknown (go): interpreted, not wrong. In context.allocator.
+learned_func :: proc(r: Learned) -> ^Func {
+	img := mips.Image {
+		base  = r.lo,
+		data  = ([^]u8)(raw_data(r.words))[:4 * len(r.words)],
+		entry = r.entry,
+	}
+	end := r.lo + 4 * u32(len(r.words))
+	// The entry as an extra label turns the Duff rule off (discover).
+	seeds := make([dynamic]u32, 0, 16, context.temp_allocator)
+	append(&seeds, r.entry)
+	f := mips.func_make(r.entry, end, r.lo)
+	mips.discover(RULES, img, f, seeds[:])
+	if !f.computed {return f}
+	jr := end
+	for pc, i in f.insns {
+		if i.kind == .Jr && i.rs != 31 {jr = min(jr, pc)}
+	}
+	assert(jr < end)
+	word := proc(r: Learned, pc: u32) -> u32 {return r.words[(pc - r.lo) / 4]}
+	hi := end
+	for pc := jr + 8; pc < end; pc += 4 {
+		if word(r, pc) == JR_RA {
+			hi = min(end, pc + 8)
+			break
+		}
+	}
+	for pc := jr + 8; pc < hi; pc += 4 {
+		if ends_flow(word(r, pc - 8)) {append(&seeds, pc)}
+	}
+	if len(seeds) == 1 {return f}
+	mips.func_free(f)
+	f = mips.func_make(r.entry, end, r.lo)
+	mips.discover(RULES, img, f, seeds[:])
+	return f
+}
+
+// `jr $ra`.
+@(private = "file")
+JR_RA :: 0x03e00008
+
+// Whether w never goes on to the word after its delay slot: `j`, `jr`, or
+// `b` (`beq $0, $0`).
+@(private = "file")
+ends_flow :: proc(w: u32) -> bool {
+	op := w >> 26
+	return op == 0x02 || (op == 0 && w & 0x3f == 0x08) || w >> 16 == 0x1000
 }
 
 // Whether a delay slot f reaches is past its words: a run noted with its
