@@ -18,9 +18,10 @@ foreign import ps_native "system:ps_native"
 foreign ps_native {
 	// Compile and instantiate the module code[:n], its import slot k the
 	// global env.s<k> = slots[k], its functions put in the table from the
-	// index returned (0 when the host cannot); n_funcs^ = how many.
+	// index returned (0 when the host cannot); n_funcs^ = how many. warm:
+	// whether and when the host compiles them ahead (Native_Warm).
 	@(link_name = "instantiate")
-	wasm_instantiate :: proc(code: [^]u8, n: u32, slots: [^]u32, n_slots: u32, n_funcs: ^u32) -> u32 ---
+	wasm_instantiate :: proc(code: [^]u8, n: u32, slots: [^]u32, n_slots: u32, n_funcs: ^u32, warm: Native_Warm) -> u32 ---
 	// Clear the table range instantiate returned at base and free it for
 	// the next one.
 	@(link_name = "release")

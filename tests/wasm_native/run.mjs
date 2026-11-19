@@ -183,5 +183,36 @@ if (native.imports.instantiate(CODE, 4, SLOTS, 1, N_FUNCS) !== 0) fail("a bad mo
 native.imports.instantiate(CODE, 4, SLOTS, 1, N_FUNCS);
 if (logs.length !== 1) fail(`a bad module twice: ${logs.length} messages, want 1`);
 
+// A module instantiated warm is queued, First (1) ones ahead of After (2)
+// ones, each slot with its body's bytes (12 here); warm calls each queued
+// function (pc 1) on a second instance, whose memory is its own: the
+// runtime's bytes at 1 stay as they were, and a deadline already past calls
+// none.
+{
+	const b = blob(3);
+	new Uint8Array(memory.buffer).set(b, CODE);
+	view.setUint32(SLOTS, S0, true);
+	view.setUint32(1, 0, true);
+	native.imports.instantiate(CODE, b.length, SLOTS, 1, N_FUNCS, 2);
+	const c = blob(2);
+	new Uint8Array(memory.buffer).set(c, CODE);
+	native.imports.instantiate(CODE, c.length, SLOTS, 1, N_FUNCS, 1);
+	native.imports.instantiate(CODE, c.length, SLOTS, 1, N_FUNCS, 0);
+	const q = native.queue.map((d) => `${d.order}:${d.sizes.join(",")}`).join(" ");
+	if (q !== "1:12,12 2:12,12,12") fail(`warm: queue ${q}, want 1:12,12 2:12,12,12 (${logs.join("")})`);
+	native.warm(performance.now() - 1);
+	if (native.queue[0]?.next !== 0) fail("warm: a past deadline called a function");
+	const d = native.queue.slice();
+	native.warm(Infinity);
+	if (native.queue.length !== 0 || d[0].next !== 2 || d[1].next !== 3) fail(`warm: ${d.map((e) => e.next)} called, ${native.queue.length} queued`);
+	if (view.getUint32(1, true) !== 0) fail(`warm: the runtime's memory at 1 is ${view.getUint32(1, true)}`);
+	// A function guessed over WARM_MAX_MS is skipped, even with time left.
+	native.imports.instantiate(CODE, c.length, SLOTS, 1, N_FUNCS, 1);
+	const e = native.queue[0];
+	e.sizes.fill(1e9);
+	native.warm(performance.now() + 1000);
+	if (native.queue.length !== 0 || e.next !== 2) fail(`warm: ${e.next} of 2 too big skipped, ${native.queue.length} queued`);
+}
+
 if (fails > 0) exit(1);
 console.log("ok native: 200 cycles, table length", size);

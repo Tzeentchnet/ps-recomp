@@ -140,9 +140,20 @@ native_interp :: proc(blob: []u8) -> (interp: []Native_Interp, err: string) {
 	return interp, ""
 }
 
+// Whether a wasm32 host compiles a blob's functions ahead of their first
+// call, in idle time (web/native.js warm), and in what order: all First
+// blobs' before any After one's. A function first called mid-game compiles
+// inside that frame otherwise.
+Native_Warm :: enum u32 {
+	None,
+	First, // learned EE code: first run mid-game, a few hundred functions
+	After, // the native blob: its functions first run through the run
+}
+
 // Map the blob's code; `imports` gives each slot's value (an address or a
-// constant). The tables are allocated with context.allocator.
-native_load :: proc(blob: []u8, imports: map[string]u64) -> (code: Native_Code, err: string) {
+// constant). The tables are allocated with context.allocator. warm: see
+// Native_Warm; the blob's code is the same either way.
+native_load :: proc(blob: []u8, imports: map[string]u64, warm := Native_Warm.None) -> (code: Native_Code, err: string) {
 	word :: proc(blob: []u8, at: ^int) -> (u32, bool) {
 		if at^ + 4 > len(blob) {return 0, false}
 		b := blob[at^:]
@@ -223,7 +234,7 @@ native_load :: proc(blob: []u8, imports: map[string]u64) -> (code: Native_Code, 
 			vals[k] = u32(v)
 		}
 		n: u32
-		base := wasm_instantiate(raw_data(blob[at:]), size, raw_data(vals), n_imports, &n)
+		base := wasm_instantiate(raw_data(blob[at:]), size, raw_data(vals), n_imports, &n, warm)
 		if base == 0 {return code, "the host cannot instantiate wasm32 code"}
 		code.base, code.size = uintptr(base), int(n)
 		outside := false

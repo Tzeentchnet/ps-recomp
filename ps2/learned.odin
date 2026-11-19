@@ -110,7 +110,7 @@ load_learned_blob :: proc(blob: []u8, name: string) -> bool {
 		fmt.eprintln("learned: load_learned comes after init, which maps RAM")
 		return false
 	}
-	code, msg := core.native_load(blob, native_imports())
+	code, msg := core.native_load(blob, native_imports(), warm = .First)
 	// wasm32's functions are its spans' blocks (r5900.learned_blob).
 	if msg == "" && ((ODIN_ARCH != .wasm32 && len(code.funcs) != 0) || len(code.ovls) != 0) {
 		msg = "not a learned blob"

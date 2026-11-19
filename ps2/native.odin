@@ -426,7 +426,7 @@ load_native :: proc(path: string, hooked: u64 = 0) -> bool {
 	}
 	imports := native_imports()
 	if hooked != 0 {imports[native_hooked_slot(hooked)] = 0}
-	code, msg := core.native_load(blob, imports)
+	code, msg := core.native_load(blob, imports, warm = .After)
 	if msg != "" {
 		fmt.eprintfln("native: %s: %s", path, msg)
 		return false

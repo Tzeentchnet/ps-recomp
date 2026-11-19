@@ -170,7 +170,12 @@ onmessage = async ({ data }) => {
 			const copy = bytes.slice();
 			postMessage({ gamedata: copy }, [copy.buffer]);
 		};
-		wasi = new Wasi({ args: [wasm.replace(/\.wasm$/, ""), ...args], env, disc: disc.disc, log, renamed });
+		// Learned code, then the native blob, is compiled in the pace sleep
+		// before the run first calls it (web/native.js warm); PS_WARM=0
+		// turns that off.
+		const native = new Native({ log: (text) => postMessage({ log: text }) });
+		const idle = env.PS_WARM === "0" ? null : (deadline) => native.warm(deadline);
+		wasi = new Wasi({ args: [wasm.replace(/\.wasm$/, ""), ...args], env, disc: disc.disc, log, renamed, idle });
 		// /data from the store (readers.js), but in test mode, whose runs start
 		// from an empty /data so they compare with native ones (unless useStore).
 		if (seed) wasi.seed(seed);
@@ -185,7 +190,6 @@ onmessage = async ({ data }) => {
 		}
 		const tee = test ? (samples) => ring.push(samples.slice()) : null;
 		const sdl = out ? null : new Sdl({ control, audio, present, post: (m) => postMessage(m), tee });
-		const native = new Native({ log: (text) => postMessage({ log: text }) });
 		const instance = await WebAssembly.instantiate(module, {
 			...wasi.imports,
 			...(memory && { env: { memory } }),
