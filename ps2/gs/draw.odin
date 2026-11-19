@@ -515,8 +515,10 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 		u, v: f32
 		lod: i32
 		when FAST {
+			zok, zv, za := px_zinst(c, x, z, N)
+			if !zok {continue}
 			when TME {u, v, lod = tex_at(tm, sprite_stuv(&s, x, vv, tt), q)}
-			px_inst(c, x, z, col, u, v, lod, fog, N)
+			px_shade_inst(c, x, zv, za, col, u, v, lod, fog, N)
 		} else {
 			u, v, lod = sprite_tex(c, &s, x, vv, tt, q)
 			c.px(c, x, y, z, col, u, v, lod, fog)
