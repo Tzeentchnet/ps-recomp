@@ -1361,31 +1361,44 @@ ipu_vdec :: proc(v: u32) {
 // YCbCr macroblock (mb8) to RGBA32, with the SETTH alpha thresholds.
 @(private)
 ipu_csc :: proc(sgn: bool) #no_bounds_check {
-	// Eight pixels of a row at a time; each chroma sample covers two.
+	// Eight pixels of a row at a time; each chroma sample covers two. The
+	// rows load as byte vectors and widen, and one shuffle doubles each
+	// chroma sample: built lane by lane, the vectors took a lane insert per
+	// pixel and component.
 	V :: #simd[8]i32
 	U :: #simd[8]u32
+	B :: #simd[8]u8
 	sra :: #force_inline proc(v: V, $N: u32) -> V {return intrinsics.simd_shr(v, U(N))}
 	t0, t1 := V(ipu.th0), V(ipu.th1)
 	for y in 0 ..< 16 {
+		cbr := intrinsics.unaligned_load((^B)(&ipu.mb8.cb[y >> 1]))
+		crr := intrinsics.unaligned_load((^B)(&ipu.mb8.cr[y >> 1]))
 		for h in 0 ..< 2 {
-			yr := ipu.mb8.y[y][h * 8:]
-			cbr, crr := ipu.mb8.cb[y >> 1][h * 4:], ipu.mb8.cr[y >> 1][h * 4:]
-			yv := V{i32(yr[0]), i32(yr[1]), i32(yr[2]), i32(yr[3]), i32(yr[4]), i32(yr[5]), i32(yr[6]), i32(yr[7])}
-			cb := V{i32(cbr[0]), i32(cbr[0]), i32(cbr[1]), i32(cbr[1]), i32(cbr[2]), i32(cbr[2]), i32(cbr[3]), i32(cbr[3])} - 128
-			cr := V{i32(crr[0]), i32(crr[0]), i32(crr[1]), i32(crr[1]), i32(crr[2]), i32(crr[2]), i32(crr[3]), i32(crr[3])} - 128
+			yv := V(intrinsics.unaligned_load((^B)(&ipu.mb8.y[y][h * 8])))
+			cbh, crh: B
+			if h == 0 {
+				cbh = swizzle(cbr, 0, 0, 1, 1, 2, 2, 3, 3)
+				crh = swizzle(crr, 0, 0, 1, 1, 2, 2, 3, 3)
+			} else {
+				cbh = swizzle(cbr, 4, 4, 5, 5, 6, 6, 7, 7)
+				crh = swizzle(crr, 4, 4, 5, 5, 6, 6, 7, 7)
+			}
+			cb := V(cbh) - 128
+			cr := V(crh) - 128
 			lum := sra(0x95 * intrinsics.simd_max(V(0), yv - 16), 6)
 			r := intrinsics.simd_clamp(sra(lum + sra(0xcc * cr, 6) + 1, 1), V(0), V(255))
 			g := intrinsics.simd_clamp(sra(lum + sra(-0x68 * cr, 6) + sra(-0x32 * cb, 6) + 1, 1), V(0), V(255))
 			b := intrinsics.simd_clamp(sra(lum + sra(0x102 * cb, 6) + 1, 1), V(0), V(255))
 			px := transmute(U)(r | intrinsics.simd_shl(g, U(8)) | intrinsics.simd_shl(b, U(16)))
 			// Alpha 0x40 below TH1, else 0x80; below TH0 (when set) the
-			// pixel is transparent black.
-			below1 := intrinsics.simd_lanes_lt(r, t1) & intrinsics.simd_lanes_lt(g, t1) & intrinsics.simd_lanes_lt(b, t1)
-			px |= intrinsics.simd_select(below1, U(0x40 << 24), U(0x80 << 24))
+			// pixel is transparent black. All three are below a threshold
+			// when the largest is: one compare, where ANDing three masks
+			// went through a lane at a time.
+			top := intrinsics.simd_max(r, intrinsics.simd_max(g, b))
+			px |= intrinsics.simd_select(intrinsics.simd_lanes_lt(top, t1), U(0x40 << 24), U(0x80 << 24))
 			if sgn {px ~= 0x808080}
 			if ipu.th0 > 0 {
-				below0 := intrinsics.simd_lanes_lt(r, t0) & intrinsics.simd_lanes_lt(g, t0) & intrinsics.simd_lanes_lt(b, t0)
-				px = intrinsics.simd_select(below0, U(sgn ? 0x808080 : 0), px)
+				px = intrinsics.simd_select(intrinsics.simd_lanes_lt(top, t0), U(sgn ? 0x808080 : 0), px)
 			}
 			intrinsics.unaligned_store((^U)(&ipu.rgb32[y * 16 + h * 8]), px)
 		}

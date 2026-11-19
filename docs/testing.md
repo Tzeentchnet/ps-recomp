@@ -16,6 +16,7 @@ odin run tests/discover -collection:ps=.
 odin run tests/vu -collection:ps=.
 odin run tests/gs -collection:ps=.
 odin run tests/gs_tex -collection:ps=.
+odin run tests/ipu -collection:ps=.
 odin run tests/gs_pixel -collection:ps=.
 odin run tests/gs_span -collection:ps=.
 odin run tests/gs_clut -collection:ps=.
