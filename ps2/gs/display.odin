@@ -298,13 +298,29 @@ scanout_rgba :: #force_inline proc(c: u32, narrow: bool) -> u32 {
 
 // scanout for a 32- or 24-bit buffer, or a 16-bit colour one: each row's
 // address math once (row_seek), then two table reads per pixel, as draw
-// does. Reads the same words read_raw would.
+// does. A wide row's 8 pixels from a column's start are one block's four
+// word pairs at its first word + 0, 4, 8, 12 (col32_pairs), so they take
+// one address. Reads the same words read_raw would; alpha is forced, so
+// a 24-bit format's mask changes nothing.
 @(private)
 scanout_rows :: proc(r: ^Row, fbp, fbw, dbx, dby: u32, w, h: int, $WIDE: bool) #no_bounds_check {
 	for y in 0 ..< h {
 		row := screen[y * DISP_W:]
 		row_seek(r, fbp, fbw, dby + u32(y))
-		for x in 0 ..< w {
+		x := 0
+		when WIDE {
+			for ; x < w && (dbx + u32(x)) & 7 != 0; x += 1 {
+				row[x] = scanout_rgba(row_read_w(r, row_addr_w(r, dbx + u32(x), true), true), false)
+			}
+			for ; x + 8 <= w; x += 8 {
+				a := row_addr_w(r, dbx + u32(x), true)
+				for j in 0 ..< 4 {
+					row[x + 2 * j] = vram[a + u32(4 * j)] | 0xff000000
+					row[x + 2 * j + 1] = vram[a + u32(4 * j) + 1] | 0xff000000
+				}
+			}
+		}
+		for ; x < w; x += 1 {
 			a := row_addr_w(r, dbx + u32(x), WIDE)
 			row[x] = scanout_rgba(row_read_w(r, a, WIDE), !WIDE)
 		}
