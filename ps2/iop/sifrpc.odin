@@ -420,7 +420,7 @@ rpc_req_remove :: proc(i: int) {
 @(private = "file")
 rpc_exec :: proc(req: Iop_Rpc_Req) {
 	saved := rpc_exec_begin(req)
-	r3000.call(r32(req.sd + 4))
+	th_host_call(r32(req.sd + 4))
 	rpc_exec_end(req, saved)
 }
 

@@ -194,13 +194,27 @@ sysclib_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 	a0, a1, a2 := r[4], r[5], r[6]
 	switch fno {
 	case 4: // setjmp(jmp_buf {ra, sp, fp, s0..s7, gp}): 0
-		// longjmp (fno 5) is not served: it returns across host frames.
 		w32(a0, r[31])
 		w32(a0 + 4, r[29])
 		w32(a0 + 8, r[30])
 		for i in u32(0) ..< 8 {w32(a0 + 12 + i * 4, r[16 + i])}
 		w32(a0 + 44, r[28])
 		return 0, true
+	case 5: // longjmp(jmp_buf, v): setjmp's caller goes on at its return with v (1 for 0)
+		// The thread goes on there on a new host stack (th_longjmp); not
+		// served where that is refused.
+		v := a1 == 0 ? 1 : a1
+		ra, sp := r32(a0), r32(a0 + 4)
+		saved := r^
+		r[31], r[29], r[30] = ra, sp, r32(a0 + 8)
+		for i in u32(0) ..< 8 {r[16 + i] = r32(a0 + 12 + i * 4)}
+		r[28] = r32(a0 + 44)
+		r[2] = v
+		if !th_longjmp(ra, sp) {
+			r^ = saved
+			return 0, false
+		}
+		return v, true
 	case 8: // look_ctype_table(c): its class bits
 		// Past -1..158 the kernel reads its own code and data: a row, and 0.
 		c := i32(a0)

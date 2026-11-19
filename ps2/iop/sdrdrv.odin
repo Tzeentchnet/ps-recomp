@@ -132,7 +132,7 @@ sdr_serve :: proc(fno, buf, size: u32) -> u32 {
 	} else {
 		r := &r3000.state.r
 		r[4], r[5] = fno, buf
-		r3000.call(h)
+		th_host_call(h)
 		sdr_reply(res)
 		return res
 	}

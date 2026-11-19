@@ -163,6 +163,13 @@ Iop_Thread :: struct {
 	wake:                   u32, // what its wait returns
 	wake_at:                u64, // when its Delay ends, IOP cycles
 	ctx:                    Th_Context,
+	// Where a longjmp left it to go on, on a new host stack (th_longjmp); 0 none.
+	resume:                 u32,
+	// A longjmp restarted it: a run that ends with $ra not 0 goes on there.
+	jumped:                 bool,
+	// The $sp at the innermost guest call host code made in it and has open
+	// (th_host_call); 0 none.
+	host_sp:                u32,
 	co:                     ^core.Coroutine,
 	flat:                   Iop_Flat,
 }
@@ -321,6 +328,7 @@ th_reset :: proc(t: ^Iop_Thread) {
 	t.ctx.r[29] = t.stack + t.stacksize - 16
 	t.wakeups = 0
 	t.intr_off = false
+	t.resume, t.jumped, t.host_sp = 0, false, 0
 }
 
 // The interrupt state CpuSuspendIntr stores when interrupts were on, as
@@ -413,6 +421,8 @@ th_schedule :: proc(until: u64, idle := false) {
 		} else {
 			if t.co == nil {t.co = core.co_create(th_main, rawptr(uintptr(id)))}
 			core.co_switch(t.co)
+			// A longjmp left its host stack for good: dropped, a new one next time.
+			if t = th_find(id); t != nil && t.resume != 0 {th_drop(t)}
 		}
 		s.cur = 0
 		if t = th_find(id); t != nil && t.status == .Dormant {
@@ -520,10 +530,66 @@ th_pick :: proc() -> ^Iop_Thread {
 @(private = "file")
 th_main :: proc(arg: rawptr) {
 	t := th_find(u32(uintptr(arg)))
-	entry := t.entry
+	entry, resume := t.entry, t.resume
+	t.resume = 0
 	th_restore(t)
-	r3000.call(entry)
+	if resume != 0 {
+		// Learned and recompiled code returns at each `jr $ra`, wherever
+		// it goes: no host frame below is its caller's, so go on there,
+		// until the entry's return to 0.
+		for pc := resume; pc != 0; pc = r3000.state.r[31] {
+			r3000.jump_unknown(0, pc)
+		}
+	} else {
+		r3000.call(entry)
+	}
 	th_exit()
+}
+
+// longjmp in the running thread to pc with sp, its registers already the
+// jmp_buf's and v0 setjmp's second return: the thread goes on at pc on a
+// new host stack, the one it ran on dropped with every host frame on it
+// (interpreted runs, learned and recompiled code, this HLE call). The
+// guest stack holds all those frames' code still needs: each `jr $ra`
+// into them goes on as a jump (no interpreted call is open to return to),
+// and the thread ends at its entry's return as before (frame_ret 0, th_reset
+// leaves $ra 0). False, nothing changed, in a handler, or when the setjmp
+// was made inside a guest call host code has open (th_host_call): that host
+// code would never go on.
+th_longjmp :: proc(pc, sp: u32) -> bool {
+	s := &iop_sched
+	if s.intr || s.cur == 0 {return false}
+	t := th_find(s.cur)
+	if t == nil || t.host_sp != 0 && sp < t.host_sp {return false}
+	if cpu.debug >= 1 {fmt.eprintfln("iop: thread %d longjmp to %08x", t.id, pc)}
+	th_save(t)
+	t.ctx.frame_ret, t.ctx.tail_depth, t.ctx.interp = 0, 0, nil
+	t.host_sp = 0
+	t.resume = pc
+	t.jumped = true
+	th_ready(t, head = true)
+	when core.FLAT {
+		r3000.flat_block("an IOP longjmp")
+	} else {
+		core.co_switch(th_loader)
+		unreachable()
+	}
+	return true
+}
+
+// Host code's call of guest code at addr in the running thread (an RPC
+// server's function, a handler sdrdrv serves): a longjmp to a setjmp made
+// inside it is refused (th_longjmp).
+th_host_call :: proc(addr: u32) {
+	t := th_find(iop_sched.cur)
+	if t == nil {
+		r3000.call(addr)
+		return
+	}
+	id, outer := t.id, t.host_sp
+	t.host_sp = r3000.state.r[29]
+	r3000.call(addr)
+	if t = th_find(id); t != nil {t.host_sp = outer}
 }
 
 // FLAT: th_main and th_yield's resume for the running thread t (a pointer
@@ -537,7 +603,13 @@ th_flat_run :: proc(t: ^Iop_Thread) {
 	when core.FLAT {
 		f := &t.flat
 		th_restore(t)
-		if f.run == nil {
+		if t.resume != 0 {
+			// A longjmp: its run is dropped, a new one goes on there (th_longjmp).
+			th_drop(t)
+			f.run = new(r3000.Flat_Ctx, core.emu_allocator())
+			r3000.flat_start(f.run, t.resume)
+			t.resume = 0
+		} else if f.run == nil {
 			f.run = new(r3000.Flat_Ctx, core.emu_allocator())
 			r3000.flat_start(f.run, t.entry)
 		} else {
@@ -558,6 +630,13 @@ th_flat_run :: proc(t: ^Iop_Thread) {
 		if r3000.flat_run(f.run) {
 			now := th_find(id)
 			assert(now != nil, "iop: the running thread gone during its run")
+			if ra := r3000.state.r[31]; now.jumped && ra != 0 {
+				// As th_main's loop: the guest goes on at $ra, on a new run.
+				th_save(now)
+				now.resume = ra
+				th_ready(now, head = true)
+				return
+			}
 			th_end(now)
 		}
 	}
