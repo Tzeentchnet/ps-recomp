@@ -682,6 +682,12 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 	t := t^
 	TME :: !FAST || PX_FAST[N].tfx >= 0
 	FGE :: !FAST || PX_FAST[N].fge
+	// Not on wasm32: there the four-lane row ran 0.84% more instructions on
+	// GT4 with no cycles gain measured (2026-11-19), so it keeps this loop.
+	when FAST && ODIN_ARCH != .wasm32 {when TME {
+		tri_span4(c, &t, x0, x1, w, N)
+		return
+	}}
 	w0, w1, w2 := w[0], w[1], w[2]
 	for x in x0 ..= x1 {
 		defer {w0 -= t.dy[0]; w1 -= t.dy[1]; w2 -= t.dy[2]}
@@ -711,6 +717,53 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 			px_shade_inst(c, x, zv, za, col, u, v, lod, fog, N)
 		} else {
 			c.px(c, x, y, z, col, u, v, lod, fog)
+		}
+	}
+}
+
+// tri_span's fast textured row, four pixels at a time: their weights,
+// depth and texel coordinates in vectors, one divide chain per four. Each
+// lane does the scalar pixel's operations in its order, so it gets the
+// scalar result: an edge weight at x0 + k is exactly w - k * dy (draw_tri),
+// the value tri_span's stepping reaches.
+@(private)
+tri_span4 :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1: i32, w: [3]f64, $N: int) #no_bounds_check {
+	D :: #force_inline proc "contextless" (f: f64) -> #simd[4]f64 {return {f, f, f, f}}
+	F :: #force_inline proc "contextless" (f: f32) -> #simd[4]f32 {return {f, f, f, f}}
+	m := t.tm
+	s := transmute([3][4]f32)t.s
+	sc := transmute([4]f32)m.sc
+	// U and V under FST, else S and T.
+	a := m.fst ? 2 : 0
+	for xb := x0; xb <= x1; xb += 4 {
+		k := f64(xb - x0)
+		kk := #simd[4]f64{k, k + 1, k + 2, k + 3}
+		l0 := (D(w[0]) - kk * D(t.dy[0])) * D(t.inv)
+		l1 := (D(w[1]) - kk * D(t.dy[1])) * D(t.inv)
+		l2 := (D(w[2]) - kk * D(t.dy[2])) * D(t.inv)
+		z := transmute([4]f64)(D(t.z[0]) * l0 + D(t.z[1]) * l1 + D(t.z[2]) * l2)
+		la, lb, lc := transmute([4]f64)l0, transmute([4]f64)l1, transmute([4]f64)l2
+		f0 := #simd[4]f32{f32(la[0]), f32(la[1]), f32(la[2]), f32(la[3])}
+		f1 := #simd[4]f32{f32(lb[0]), f32(lb[1]), f32(lb[2]), f32(lb[3])}
+		f2 := #simd[4]f32{f32(lc[0]), f32(lc[1]), f32(lc[2]), f32(lc[3])}
+		su := F(s[0][a]) * f0 + F(s[1][a]) * f1 + F(s[2][a]) * f2
+		tv := F(s[0][a + 1]) * f0 + F(s[1][a + 1]) * f1 + F(s[2][a + 1]) * f2
+		q := transmute([4]f32)(F(t.q[0]) * f0 + F(t.q[1]) * f1 + F(t.q[2]) * f2)
+		d := F(1)
+		if !m.fst {d = {q[0] != 0 ? q[0] : 1, q[1] != 0 ? q[1] : 1, q[2] != 0 ? q[2] : 1, q[3] != 0 ? q[3] : 1}}
+		u := transmute([4]f32)(su / d * F(sc[a]))
+		v := transmute([4]f32)(tv / d * F(sc[a + 1]))
+		g0, g1, g2 := transmute([4]f32)f0, transmute([4]f32)f1, transmute([4]f32)f2
+		for i in 0 ..< min(4, x1 - xb + 1) {
+			x := xb + i32(i)
+			zok, zv, za := px_zinst(c, x, z[i], N)
+			if !zok {continue}
+			col := t.flat
+			if t.iip {col = t.c[0] * g0[i] + t.c[1] * g1[i] + t.c[2] * g2[i]}
+			lod := tex_lod(m, m.fst ? 1 : q[i])
+			fog: f32
+			when PX_FAST[N].fge {fog = t.fog[0] * g0[i] + t.fog[1] * g1[i] + t.fog[2] * g2[i]}
+			px_shade_inst(c, x, zv, za, col, u[i], v[i], lod, fog, N)
 		}
 	}
 }
