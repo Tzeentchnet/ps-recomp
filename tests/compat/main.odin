@@ -8,7 +8,8 @@
 //   line is printed;
 // - ps2: under COMPAT a syscall only the retail ROM has returns 0, a bind to
 //   a SIF server the HLE lacks goes on, a function is interpreted twice,
-//   and the run ends at FRAMES.
+//   and the run ends at FRAMES. A syscall the retail table leaves undefined
+//   is not listed.
 // Each unimplemented call is named with where the first was made: ra, the
 // pc of a syscall, and the client data of a SIF bind. Neither run shows a
 // picture, and main RAM is the same at the end as at FRAMES/2.
@@ -228,6 +229,10 @@ child :: proc(name: string) -> ! {
 		ps2_cpu.state.r[3].d[0] = 1 // ResetEE
 		kernel.syscall(PS2_FUNC)
 		if ps2_cpu.state.r[2].d[0] != 0 {os.exit(3)}
+		// SetTLBEntry, a number the retail table leaves undefined: retail
+		// only prints and returns, so it is no gap and goes uncounted.
+		ps2_cpu.state.r[3].d[0] = 0x56
+		kernel.syscall(PS2_FUNC)
 		// SifSetDma of an RPC bind packet {header, rec_id, pkt, rpc_id,
 		// client, sid} to the IOP's command buffer.
 		PKT :: 0x00200100

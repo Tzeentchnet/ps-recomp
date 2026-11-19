@@ -336,11 +336,17 @@ syscall :: proc(pc: u32) {
 	case 0x7f: ret = mem.RAM_SIZE // GetMemorySize
 	case:
 		// One the retail ROM has stops the game, except under COMPAT: it
-		// returns 0 like the rest.
+		// returns 0 like the rest, and compat counts it as a gap. One the
+		// retail table leaves undefined (the TLB calls 0x55-0x58 among them)
+		// only prints and returns there too, so it is no gap and goes
+		// uncounted. A number past the table is counted: it was never checked.
 		// pc is in the library's stub, a leaf: ra is its caller.
-		stub := core.compat_unknown(.Syscall, u32(n), pc = pc, ra = u32(cpu.state.r[31].d[0]))
-		if m := abs(n); m < len(ROM_ONLY_SYSCALLS) && ROM_ONLY_SYSCALLS[m] != "" && !stub {
-			cpu.fatal("unimplemented syscall %d %s (a0 %08x a1 %08x) at %08x", n, ROM_ONLY_SYSCALLS[m], a0, a1, pc)
+		m := abs(n)
+		if m >= len(ROM_ONLY_SYSCALLS) || ROM_ONLY_SYSCALLS[m] != "" {
+			stub := core.compat_unknown(.Syscall, u32(n), pc = pc, ra = u32(cpu.state.r[31].d[0]))
+			if m < len(ROM_ONLY_SYSCALLS) && !stub {
+				cpu.fatal("unimplemented syscall %d %s (a0 %08x a1 %08x) at %08x", n, ROM_ONLY_SYSCALLS[m], a0, a1, pc)
+			}
 		}
 		fmt.eprintfln("kernel: undefined syscall %d (a0 %08x a1 %08x) at %08x ra %08x",
 			n, a0, a1, pc, u32(c.r[31].d[0]))
