@@ -107,6 +107,7 @@ mcserv_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 	case 0x10, 0x11: r = MC_OK // Format, Unformat
 	case 0x12: r = mc_get_ent_space(w[0], mc_name(buf))
 	case 0x14: r = MC_OK // ChangeThreadPriority
+	case 0x15: r = 1 // GetSlotMax: no multitap, one slot per port
 	case 0xfe, 0x70: // Init {result, mcserv version, mcman version}
 		w[0], w[1], w[2] = 0, 0x20a, 0x20e
 		return true
