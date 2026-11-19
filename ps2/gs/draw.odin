@@ -527,6 +527,22 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 	}
 	when FAST {when TME {
 		// Four pixels' texel U in one vector: one divide chain per four.
+		// The LOD is the sprite's, so a row whose sample is level 0 and
+		// nearest wraps four pixels' texel X at once (sample4_nearest).
+		if _, _, lod := sprite_tex4(tm, &s, s.px0, vv, tt, q); lod <= 0 && !c.tex.bilinear {
+			for x0 := s.px0; x0 <= s.px1; x0 += 4 {
+				u4, v, _ := sprite_tex4(tm, &s, x0, vv, tt, q)
+				xs, ty := sample4_nearest(&c.tex, u4, v)
+				for i in 0 ..< min(4, s.px1 - x0 + 1) {
+					x := x0 + i32(i)
+					zok, zv, za := px_zinst(c, &zr, x, z, N)
+					if !zok {continue}
+					tc := expand(texel(&c.tex, 0, xs[i], ty))
+					px_shade_inst(c, &fr, &zr, x, zv, za, col, 0, 0, 0, fog, N, tc, true)
+				}
+			}
+			return
+		}
 		for x0 := s.px0; x0 <= s.px1; x0 += 4 {
 			u4, v, lod := sprite_tex4(tm, &s, x0, vv, tt, q)
 			u := transmute([4]f32)u4
@@ -534,7 +550,7 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 				x := x0 + i32(i)
 				zok, zv, za := px_zinst(c, &zr, x, z, N)
 				if !zok {continue}
-				px_shade_inst(c, &fr, &zr, x, zv, za, col, u[i], v, lod, fog, N)
+				px_shade_inst(c, &fr, &zr, x, zv, za, col, u[i], v, lod, fog, N, {}, false)
 			}
 		}
 		return
@@ -545,7 +561,7 @@ spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: 
 		when FAST {
 			zok, zv, za := px_zinst(c, &zr, x, z, N)
 			if !zok {continue}
-			px_shade_inst(c, &fr, &zr, x, zv, za, col, u, v, lod, fog, N)
+			px_shade_inst(c, &fr, &zr, x, zv, za, col, u, v, lod, fog, N, {}, false)
 		} else {
 			u, v, lod = sprite_tex(c, &s, x, vv, tt, q)
 			c.px(c, x, y, z, col, u, v, lod, fog)
@@ -716,7 +732,7 @@ tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64
 		fog: f32
 		if FGE && (FAST || t.fge) {fog = t.fog[0] * f0 + t.fog[1] * f1 + t.fog[2] * f2}
 		when FAST {
-			px_shade_inst(c, &fr, &zr, x, zv, za, col, u, v, lod, fog, N)
+			px_shade_inst(c, &fr, &zr, x, zv, za, col, u, v, lod, fog, N, {}, false)
 		} else {
 			c.px(c, x, y, z, col, u, v, lod, fog)
 		}
@@ -766,7 +782,7 @@ tri_span4 :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1: i32, w: [3]f64, 
 			lod := tex_lod(m, m.fst ? 1 : q[i])
 			fog: f32
 			when PX_FAST[N].fge {fog = t.fog[0] * g0[i] + t.fog[1] * g1[i] + t.fog[2] * g2[i]}
-			px_shade_inst(c, &fr, &zr, x, zv, za, col, u[i], v[i], lod, fog, N)
+			px_shade_inst(c, &fr, &zr, x, zv, za, col, u[i], v[i], lod, fog, N, {}, false)
 		}
 	}
 }
@@ -819,6 +835,18 @@ tex_wrap :: proc(t: ^Tex) {
 @(private)
 wrap :: #force_inline proc "contextless" (i: #simd[4]i32, w: ^Tex_Wrap) -> #simd[4]i32 {
 	return (simd.min(simd.max(i, w.lo), w.hi) & w.mask) | w.fix
+}
+
+// sample_level's nearest level-0 texel coordinates for four pixels of one
+// row, u their texel U and v the row's V: each lane's X the operations
+// sample_level does on its lane 0, Y its lane 2's, done once.
+@(private)
+sample4_nearest :: #force_inline proc(t: ^Tex, u: #simd[4]f32, v: f32) -> (xs: [4]u32, y: u32) {
+	w := &t.wrap[0]
+	X :: #force_inline proc "contextless" (a: #simd[4]i32) -> #simd[4]i32 {return simd.swizzle(a, 0, 0, 0, 0)}
+	x := (simd.min(simd.max(cast(#simd[4]i32)simd.floor(u), X(w.lo)), X(w.hi)) & X(w.mask)) | X(w.fix)
+	yv := wrap(cast(#simd[4]i32)simd.floor(#simd[4]f32{v, v, v, v}), w)
+	return transmute([4]u32)x, u32(simd.extract(yv, 2))
 }
 
 // Texel as RGBA8888 (R in the low byte).

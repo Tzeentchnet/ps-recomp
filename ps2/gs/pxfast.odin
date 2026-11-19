@@ -811,10 +811,11 @@ px_zinst :: #force_inline proc(c: ^Ctx, zr: ^Row, x: i32, zf: f64, $N: int) -> (
 
 // px_inst after px_zinst passed: z and za are what it returned.
 @(private)
-px_shade_inst :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
+px_shade_inst :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int,
+	ts: #simd[4]i32, $TS: bool) {
 	F :: PX_FAST
 	px_shade(c, fr, zr, x, z, za, col, u, v, lod, fogf,
-		F[N].tfx, F[N].tcc, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].bl, F[N].fpsm, F[N].fbmsk, F[N].atst, F[N].afail, F[N].fge, F[N].date)
+		F[N].tfx, F[N].tcc, F[N].ztst, F[N].zmsk, F[N].zpsm, F[N].bl, F[N].fpsm, F[N].fbmsk, F[N].atst, F[N].afail, F[N].fge, F[N].date, ts, TS)
 }
 
 // The pixel proc of every context decoded from now on, when not nil: the
@@ -896,7 +897,7 @@ pixel_fast :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f3
 	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) {
 	ok, z, za := px_depth(c, &c.zrow, x, zf, ZTST, ZMSK, ZPSM, ATST, AFAIL)
 	if !ok {return}
-	px_shade(c, &c.frow, &c.zrow, x, z, za, col, u, v, lod, fogf, TFX, TCC, ZTST, ZMSK, ZPSM, BL, FPSM, FBMSK, ATST, AFAIL, FGE, DATE)
+	px_shade(c, &c.frow, &c.zrow, x, z, za, col, u, v, lod, fogf, TFX, TCC, ZTST, ZMSK, ZPSM, BL, FPSM, FBMSK, ATST, AFAIL, FGE, DATE, {}, false)
 }
 
 // pixel_fast's depth test, which runs first: a pixel failing it writes
@@ -922,12 +923,13 @@ px_depth :: #force_inline proc(c: ^Ctx, zr: ^Row, x: i32, zf: f64, $ZTST: u32, $
 }
 
 // pixel_fast after px_depth passed: z and za are what it returned, fr and
-// zr the frame and Z rows as px_depth's zr. Z is written after the alpha
+// zr the frame and Z rows as px_depth's zr. Under TS, ts is the texel
+// sample(u, v, lod) would give, and u, v and lod are unused. Z is written after the alpha
 // test.
 @(private)
 px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [4]f32, u, v: f32, lod: i32, fogf: f32,
 	$TFX: i32, $TCC: bool, $ZTST: u32, $ZMSK: bool, $ZPSM: u32, $BL: u32, $FPSM: u32, $FBMSK: bool,
-	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32) #no_bounds_check {
+	$ATST: u32, $AFAIL: u32, $FGE: bool, $DATE: u32, ts: #simd[4]i32, $TS: bool) #no_bounds_check {
 	#assert(FPSM == PSMCT32 || FPSM == PSMCT24 || FPSM == PSMZ32 || FPSM == PSMZ24)
 	#assert(ATST <= 7 && AFAIL <= 3)
 	#assert(ATST != 1 || AFAIL == 0)
@@ -942,10 +944,12 @@ px_shade :: #force_inline proc(c: ^Ctx, fr, zr: ^Row, x: i32, z, za: u32, col: [
 	src := col_int(col)
 	when TFX == 0 { // MODULATE
 		sm := transmute(#simd[4]i32)src
-		m := simd.min(simd.shr(sample(&c.tex, u, v, lod) * sm, 7), B255)
+		when TS {tx := ts} else {tx := sample(&c.tex, u, v, lod)}
+		m := simd.min(simd.shr(tx * sm, 7), B255)
 		src = transmute([4]i32)simd.select(#simd[4]bool{true, true, true, TCC}, m, sm)
 	} else when TFX == 1 { // DECAL
-		t := transmute([4]i32)sample(&c.tex, u, v, lod)
+		when TS {tx := ts} else {tx := sample(&c.tex, u, v, lod)}
+		t := transmute([4]i32)tx
 		src.rgb = t.rgb
 		when TCC {src.a = t.a}
 	} else {
