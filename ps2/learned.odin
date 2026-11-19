@@ -280,19 +280,25 @@ learned_refuse :: proc(rows: []Learned_Row) {
 // wasm32: whether pc is an entry of learned_refused and RAM holds the code
 // of one of its rows. The answer is kept until cpu.learned_epoch moves (an
 // instruction-cache flush, a snapshot load), since a refused entry is
-// looked up on every call: the words are hashed once per overlay load.
-learned_refused_at :: proc(pc: u32) -> bool {
+// looked up on every call: the words are hashed once per overlay load. The
+// check inlines into the FLAT runner; the rehash is its own proc.
+learned_refused_at :: #force_inline proc(pc: u32) -> bool {
 	i, found := slice.binary_search(learned_refused, pc)
 	if !found {return false}
 	r := &learned_refused_of[i]
-	if r.epoch != cpu.learned_epoch {
-		r.epoch = cpu.learned_epoch
-		r.refused = false
-		for row in learned_refused_rows[r.first:][:r.count] {
-			if learned_row_held(row) {
-				r.refused = true
-				break
-			}
+	if r.epoch == cpu.learned_epoch {return r.refused}
+	return learned_refused_redo(r)
+}
+
+// Hash r's rows again under the current epoch and keep the answer.
+@(private = "file")
+learned_refused_redo :: #force_no_inline proc(r: ^Learned_Refused) -> bool {
+	r.epoch = cpu.learned_epoch
+	r.refused = false
+	for row in learned_refused_rows[r.first:][:r.count] {
+		if learned_row_held(row) {
+			r.refused = true
+			break
 		}
 	}
 	return r.refused
