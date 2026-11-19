@@ -368,8 +368,17 @@ main :: proc() {
 	check(ps2.load_learned(BLOB), "load the blob")
 	rw := [?]u32{addiu_v0(2, 16), JR_RA, NOP}
 	r_row := ps2.Learned_Row{R, R, len(rw), xxhash.XXH3_64_default(slice.to_bytes(rw[:]))}
-	ps2.learned_refuse({{L, L, 0, 0}, {N, N, 0, 0}, r_row, {N2, N2, 0, 0}, r_row})
+	// learned_row: a record whose words cannot be told apart (stored into,
+	// or too large to keep) gets n 0.
+	for f in ([?]core.Learn_Flags{{.Smc}, {.Smc_Unknown}, {.Large}, {}}) {
+		row := ps2.learned_row({flags = f, entry = R, lo = R, hash = 5, words = rw[:]})
+		check(row == {R, R, f == {} ? len(rw) : 0, 5}, fmt.tprintf("learned_row of %v: %v", f, row))
+	}
+	// R0 (n 0) and RE (a span past RAM) are refused whatever RAM holds.
+	R0, RE := R + 0x100, R + 0x200
+	ps2.learned_refuse({{L, L, 0, 0}, {N, N, 0, 0}, r_row, {N2, N2, 0, 0}, r_row, {R0, R0, 0, 0}, {RE, mem.RAM_SIZE - 4, 2, 0}})
 	check(!ps2.learned_refused_at(L) && !ps2.learned_refused_at(N2) && ps2.learned_refused_at(R), "the refused set is R alone")
+	check(ps2.learned_refused_at(R0) && ps2.learned_refused_at(RE), "n 0 and a span past RAM are refused")
 	// Another overlay's code at R is code the compiler has not seen: once
 	// the epoch moves (its load flushes the cache) R is no longer refused,
 	// and is again when R's own code comes back.
@@ -383,6 +392,7 @@ main :: proc() {
 		check(!ps2.learned_refused_at(R), "variant: the verdict holds until the epoch moves, back")
 		cpu.learned_epoch += 1
 		check(ps2.learned_refused_at(R), "variant: R's own code is refused again")
+		check(ps2.learned_refused_at(R0) && ps2.learned_refused_at(RE), "n 0 and a span past RAM stay refused as the epoch moves")
 	}
 
 	v0, ran = call(A2)

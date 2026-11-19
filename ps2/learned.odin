@@ -161,12 +161,23 @@ learned_checked: struct {
 	fn:        cpu.Func_Proc,
 } = {pc = ~u32(0)}
 
+// Moves cpu.learned_epoch on every snapshot load, once registered: a
+// load puts other code in RAM under the words compared (learned_search) and
+// the verdicts kept (learned_refused_at).
+@(private = "file")
+learned_epoch_hook :: proc() {
+	@(static) on: bool
+	if on {return}
+	on = true
+	append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {cpu.learned_epoch += 1}})
+}
+
 @(private = "file")
 learned_steps_add :: proc(code: ^core.Native_Code) {
 	if learned_marks == nil {
 		learned_marks = make([]u64, mem.RAM_SIZE / 4 / 64, core.long_allocator())
 		learned_steps = make([dynamic]Learned_Step, core.long_allocator())
-		append(&core.snap_hooks, core.Snap_Hook{save = proc(_: int) {}, load = proc(_: int) {cpu.learned_epoch += 1}})
+		learned_epoch_hook()
 	}
 	for s in code.spans {
 		r := code.ranges[s.range_first]
@@ -256,6 +267,7 @@ learned_refuse :: proc(rows: []Learned_Row) {
 		}
 		of[len(of) - 1].count += 1
 	}
+	if len(kept) > 0 {learned_epoch_hook()}
 	delete(learned_refused, core.long_allocator())
 	delete(learned_refused_of, core.long_allocator())
 	delete(learned_refused_rows, core.long_allocator())
@@ -287,7 +299,8 @@ learned_refused_at :: proc(pc: u32) -> bool {
 }
 
 // Whether RAM holds row's words, or they cannot be told apart (n 0, or a
-// span past RAM, which keeps the entry refused as before).
+// span past RAM, which keeps the entry refused as before). An n 0 row so keeps
+// its entry refused under every overlay, also one whose code there is clean.
 @(private = "file")
 learned_row_held :: proc(row: Learned_Row) -> bool {
 	span := u64(row.n) * 4
