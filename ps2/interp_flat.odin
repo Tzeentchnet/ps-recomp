@@ -79,7 +79,17 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 	slot :: #force_inline proc($N: bool, pc: u32, lf: ^core.Learn_Frame) {
 		when N {delay_slot(pc, lf)} else {delay_slot(pc, nil)}
 	}
+	// On wasm32 the loop leaves to flat_loop every 2^20 instructions, which
+	// calls it again with the same state. A wasm engine has no on-stack
+	// replacement: a call that never returns runs its first, baseline code
+	// for the whole run, and V8 left this loop in Liftoff (16.6% of GT4's
+	// cycles, 2026-11-19). Each new call takes the optimized code.
+	when ODIN_ARCH == .wasm32 {budget := 1 << 20}
 	for {
+		when ODIN_ARCH == .wasm32 {
+			budget -= 1
+			if budget == 0 {return x, pc, lf, true}
+		}
 		i := decode_cached(pc, mem.rd32(pc))
 		when N {learn_note(lf, i)}
 		c.cycles += cpu.CYCLES_PER_INSN
