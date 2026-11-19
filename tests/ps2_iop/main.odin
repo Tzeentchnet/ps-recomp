@@ -3187,7 +3187,8 @@ test_rpc_remove :: proc() {
 	// server goes with it, a row too, and its request is lost.
 	QN :: 0x1f0f00
 	reset()
-	for i in 3 ..< iop.IOP_RPC_QUEUES {s.queues[i] = {qd = Q1 + 0x100 * u32(i)}}
+	// Past every other address here: the queues are as many as the servers.
+	for i in 3 ..< iop.IOP_RPC_QUEUES {s.queues[i] = {qd = 0x1f6000 + 0x100 * u32(i)}}
 	s.n_queues = iop.IOP_RPC_QUEUES
 	for &q in s.queues[:s.n_queues] {
 		q.thread = iop.iop_sched.next_thid
