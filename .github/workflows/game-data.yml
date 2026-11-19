@@ -1,0 +1,80 @@
+# A player's game data (web/play.js Send, docs: PLAN GAME-DATA) arrives as
+# an issue with a gamedata.tsv.gz attached. This workflow turns that issue
+# into a pull request adding games/<serial>/gamedata-<sha7>-<issue>.tsv.
+#
+# The review gate is the label. GitHub ignores a ?labels= param on the new
+# issue link for a user without triage rights, so only a maintainer can
+# apply game-data; applying it is the maintainer's manual review of the
+# issue, and nothing here runs before that. The job runs on that one label
+# event only: it does not run on push or pull_request, so ci.yml staying
+# disabled (CI is off, tests run locally) is unchanged by this file.
+#
+# Everything from the issue is untrusted: the body, the title, the
+# attachment. The body reaches the shell only through env (never as
+# ${{ }} inside run:). The one attachment link must match ATTACHMENT in
+# tools/gamedata/gamedata.py and is matched again here; it is fetched over
+# https only, with no auth header, at most 1 MB. tools/gamedata checks the
+# gunzipped file against the writer's schema before any git command, and
+# the branch, file and title are built only from fields it validated (the
+# serial or disc id, the build's hex, the issue number). The build must be
+# a commit in this repository.
+#
+# Creating the pull request needs the repository setting "Allow GitHub
+# Actions to create and approve pull requests" (Settings, Actions, General);
+# without it the branch is pushed and gh pr create fails.
+
+name: game-data
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: game-data-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  place:
+    if: github.event.label.name == 'game-data'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: place the sent file
+        shell: bash
+        env:
+          BODY: ${{ github.event.issue.body }}
+          ISSUE: ${{ github.event.issue.number }}
+          BASE: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ $ISSUE =~ ^[1-9][0-9]{0,9}$ ]]
+          url=$(printf '%s' "$BODY" | python3 -I tools/gamedata/gamedata.py url)
+          [[ $url =~ ^https://github\.com/user-attachments/files/[0-9]+/[A-Za-z0-9._-]+$ ]]
+          sent="$RUNNER_TEMP/sent"
+          curl --fail --silent --show-error --location --proto =https --proto-redir =https \
+            --max-filesize 1048576 --max-time 60 "$url" | head -c 1048577 > "$sent"
+          placed=$(python3 -I tools/gamedata/gamedata.py place "$sent" "$ISSUE" "$GITHUB_WORKSPACE")
+          IFS=$'\t' read -r path build <<< "$placed"
+          [[ $build =~ ^[0-9a-f]{7,40}$ ]]
+          git cat-file -e "$build^{commit}"
+          dir=${path#games/}
+          dir=${dir%%/*}
+          branch="game-data/$ISSUE"
+          git switch -c "$branch"
+          git add -- "$path"
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "games/$dir: game data from #$ISSUE, build ${build:0:7}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$branch"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" \
+            --title "Game data: $dir ${build:0:7}" \
+            --body "Game data sent in #$ISSUE, checked by tools/gamedata. Closes #$ISSUE."
