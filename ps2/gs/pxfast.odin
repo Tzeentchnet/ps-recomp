@@ -328,6 +328,191 @@ px_84 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fog
 @(private)
 px_85 :: proc(c: ^Ctx, x, y: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32) {px_inst(c, x, zf, col, u, v, lod, fogf, 85)}
 
+// PX_FAST's triangle row procs, in its order.
+@(private, rodata)
+tri_procs := [len(PX_FAST)]Tri_Row_Proc {
+	tri_0, tri_1, tri_2, tri_3, tri_4, tri_5, tri_6, tri_7, tri_8, tri_9, tri_10, tri_11, tri_12, tri_13, tri_14,
+	tri_15, tri_16, tri_17, tri_18, tri_19, tri_20, tri_21, tri_22, tri_23, tri_24, tri_25, tri_26, tri_27,
+	tri_28, tri_29, tri_30, tri_31, tri_32, tri_33, tri_34, tri_35, tri_36, tri_37, tri_38, tri_39, tri_40,
+	tri_41, tri_42, tri_43, tri_44, tri_45, tri_46, tri_47, tri_48, tri_49, tri_50, tri_51, tri_52, tri_53,
+	tri_54, tri_55, tri_56, tri_57, tri_58, tri_59, tri_60, tri_61, tri_62, tri_63, tri_64, tri_65, tri_66,
+	tri_67, tri_68, tri_69, tri_70, tri_71, tri_72, tri_73, tri_74, tri_75, tri_76, tri_77, tri_78, tri_79,
+	tri_80, tri_81, tri_82, tri_83, tri_84, tri_85,
+}
+
+@(private)
+tri_0 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 0)}
+@(private)
+tri_1 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 1)}
+@(private)
+tri_2 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 2)}
+@(private)
+tri_3 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 3)}
+@(private)
+tri_4 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 4)}
+@(private)
+tri_5 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 5)}
+@(private)
+tri_6 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 6)}
+@(private)
+tri_7 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 7)}
+@(private)
+tri_8 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 8)}
+@(private)
+tri_9 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 9)}
+@(private)
+tri_10 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 10)}
+@(private)
+tri_11 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 11)}
+@(private)
+tri_12 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 12)}
+@(private)
+tri_13 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 13)}
+@(private)
+tri_14 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 14)}
+@(private)
+tri_15 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 15)}
+@(private)
+tri_16 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 16)}
+@(private)
+tri_17 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 17)}
+@(private)
+tri_18 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 18)}
+@(private)
+tri_19 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 19)}
+@(private)
+tri_20 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 20)}
+@(private)
+tri_21 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 21)}
+@(private)
+tri_22 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 22)}
+@(private)
+tri_23 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 23)}
+@(private)
+tri_24 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 24)}
+@(private)
+tri_25 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 25)}
+@(private)
+tri_26 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 26)}
+@(private)
+tri_27 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 27)}
+@(private)
+tri_28 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 28)}
+@(private)
+tri_29 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 29)}
+@(private)
+tri_30 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 30)}
+@(private)
+tri_31 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 31)}
+@(private)
+tri_32 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 32)}
+@(private)
+tri_33 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 33)}
+@(private)
+tri_34 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 34)}
+@(private)
+tri_35 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 35)}
+@(private)
+tri_36 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 36)}
+@(private)
+tri_37 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 37)}
+@(private)
+tri_38 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 38)}
+@(private)
+tri_39 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 39)}
+@(private)
+tri_40 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 40)}
+@(private)
+tri_41 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 41)}
+@(private)
+tri_42 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 42)}
+@(private)
+tri_43 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 43)}
+@(private)
+tri_44 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 44)}
+@(private)
+tri_45 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 45)}
+@(private)
+tri_46 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 46)}
+@(private)
+tri_47 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 47)}
+@(private)
+tri_48 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 48)}
+@(private)
+tri_49 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 49)}
+@(private)
+tri_50 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 50)}
+@(private)
+tri_51 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 51)}
+@(private)
+tri_52 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 52)}
+@(private)
+tri_53 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 53)}
+@(private)
+tri_54 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 54)}
+@(private)
+tri_55 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 55)}
+@(private)
+tri_56 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 56)}
+@(private)
+tri_57 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 57)}
+@(private)
+tri_58 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 58)}
+@(private)
+tri_59 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 59)}
+@(private)
+tri_60 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 60)}
+@(private)
+tri_61 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 61)}
+@(private)
+tri_62 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 62)}
+@(private)
+tri_63 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 63)}
+@(private)
+tri_64 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 64)}
+@(private)
+tri_65 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 65)}
+@(private)
+tri_66 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 66)}
+@(private)
+tri_67 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 67)}
+@(private)
+tri_68 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 68)}
+@(private)
+tri_69 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 69)}
+@(private)
+tri_70 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 70)}
+@(private)
+tri_71 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 71)}
+@(private)
+tri_72 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 72)}
+@(private)
+tri_73 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 73)}
+@(private)
+tri_74 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 74)}
+@(private)
+tri_75 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 75)}
+@(private)
+tri_76 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 76)}
+@(private)
+tri_77 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 77)}
+@(private)
+tri_78 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 78)}
+@(private)
+tri_79 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 79)}
+@(private)
+tri_80 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 80)}
+@(private)
+tri_81 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 81)}
+@(private)
+tri_82 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 82)}
+@(private)
+tri_83 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 83)}
+@(private)
+tri_84 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 84)}
+@(private)
+tri_85 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 85)}
+
 @(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
 	F :: PX_FAST
@@ -340,16 +525,16 @@ px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, 
 @(private)
 px_force: Pixel_Proc
 
-// The pixel proc for a decoded context: a fast one when the context is one
-// of PX_FAST's, else `pixel`.
+// The pixel and triangle row procs for a decoded context: fast ones when
+// the context is one of PX_FAST's, else `pixel` and tri_row.
 @(private)
-px_pick :: proc(c: ^Ctx) -> Pixel_Proc {
-	if px_force != nil {return px_force}
-	if c.pabe || c.fba || !c.colclamp {return pixel}
+px_pick :: proc(c: ^Ctx) -> (Pixel_Proc, Tri_Row_Proc) {
+	if px_force != nil {return px_force, tri_row}
+	if c.pabe || c.fba || !c.colclamp {return pixel, tri_row}
 	// No Z read or write: `pixel` skips Z with the depth test off, as a
 	// fast proc does for ZTST ALWAYS with ZMSK.
 	z_off := !c.zte || (c.ztst == 1 && c.zmsk)
-	if !c.frow.ok || (!z_off && !c.zrow.ok) {return pixel}
+	if !c.frow.ok || (!z_off && !c.zrow.ok) {return pixel, tri_row}
 	atst, afail: u32 = 1, 0
 	if c.ate && c.atst != 1 {
 		atst, afail = c.atst, c.afail
@@ -371,9 +556,9 @@ px_pick :: proc(c: ^Ctx) -> Pixel_Proc {
 	for f, i in PX_FAST {
 		g := f
 		if g.ztst == 1 && g.zmsk {g.zpsm = 0}
-		if g == k {return px_procs[i]}
+		if g == k {return px_procs[i], tri_procs[i]}
 	}
-	return pixel
+	return pixel, tri_row
 }
 
 // Seeks the context's frame and Z rows to y, for the pixels of one row.

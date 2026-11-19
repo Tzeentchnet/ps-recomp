@@ -86,6 +86,7 @@ Ctx :: struct {
 	dst_read, z_read:        bool,
 	frow, zrow:              Row,
 	px:                      Pixel_Proc, // pixel or a fast proc (px_pick)
+	row:                     Tri_Row_Proc, // tri_row or a fast one (px_pick)
 	fogcol:                  [3]i32,
 	tex:                     Tex,
 	// A band worker draws the rows y of its band alone: (y >> 3) % nband
@@ -252,7 +253,7 @@ decode_ctx :: proc(prim: u64) -> (c: Ctx) #no_bounds_check {
 		}
 		tex_wrap(&c.tex)
 	}
-	c.px = px_pick(&c)
+	c.px, c.row = px_pick(&c)
 	c.tex.tc = &tc_main
 	return
 }
@@ -515,16 +516,20 @@ draw_tri :: proc(c: ^Ctx, v0, v1, v2: ^Vertex) {
 	sa := #simd[4]f32{a.s, a.t, a.u, a.v}
 	sb := #simd[4]f32{b.s, b.t, b.u, b.v}
 	sd := #simd[4]f32{d.s, d.t, d.u, d.v}
-	// What the pixels read of the vertices and the context, taken once: the
-	// pixel proc is called through a pointer, so nothing behind a pointer
-	// is known to outlive a call, and the swap of b and d would be made
-	// again for every field of every pixel.
-	az, bz, dz := a.z, b.z, d.z
-	ac, bc, dc := a.c, b.c, d.c
-	aq, bq, dq := a.q, b.q, d.q
-	af, bf, df := a.fog, b.fog, d.fog
-	iip, tme, fge := c.iip, c.tme, c.fge
-	tm := tex_map(c)
+	t := Tri_Setup {
+		inv  = inv,
+		dy   = {e0.dy, e1.dy, e2.dy},
+		z    = {a.z, b.z, d.z},
+		c    = {a.c, b.c, d.c},
+		flat = flat,
+		s    = {sa, sb, sd},
+		q    = {a.q, b.q, d.q},
+		fog  = {a.fog, b.fog, d.fog},
+		iip  = c.iip,
+		tme  = c.tme,
+		fge  = c.fge,
+		tm   = tex_map(c),
+	}
 	// Every step of an edge is exact. A vertex's x and y are sixteenths
 	// below 4096 in magnitude (vertex; lerp_vertex's output goes to draw_line
 	// only), so dx and dy are sixteenths below 8192, and the box lies in the
@@ -567,23 +572,68 @@ draw_tri :: proc(c: ^Ctx, v0, v1, v2: ^Vertex) {
 		k := f64(ks)
 		w0, w1, w2 := e0.w - k * e0.dy, e1.w - k * e1.dy, e2.w - k * e2.dy
 		ctx_seek(c, y)
-		for x in minx + i32(ks) ..= minx + i32(ke) {
-			defer {w0 -= e0.dy; w1 -= e1.dy; w2 -= e2.dy}
-			l0, l1, l2 := w0 * inv, w1 * inv, w2 * inv
-			f0, f1, f2 := f32(l0), f32(l1), f32(l2)
-			z := az * l0 + bz * l1 + dz * l2
-			col := flat
-			if iip {col = ac * f0 + bc * f1 + dc * f2}
-			u, v: f32
-			lod: i32
-			if tme {
-				u, v, lod = tex_at(tm,
-					sa * f0 + sb * f1 + sd * f2,
-					aq * f0 + bq * f1 + dq * f2)
-			}
-			// Pixel procs read fogf only under FGE (pixel, pixel_fast).
-			fog: f32
-			if fge {fog = af * f0 + bf * f1 + df * f2}
+		c.row(c, &t, minx + i32(ks), minx + i32(ke), y, {w0, w1, w2})
+	}
+}
+
+// What the pixels of one triangle read of its vertices and its context,
+// taken once, with b and d swapped as draw_tri wound them: vertex i's
+// fields at index i of a, b, d.
+@(private)
+Tri_Setup :: struct {
+	inv:           f64, // 1 / the doubled area
+	dy, z:         [3]f64, // dy: an edge's weight step per pixel of x
+	c:             [3][4]f32,
+	flat:          [4]f32, // the color when IIP is off
+	s:             [3]#simd[4]f32, // S, T, U and V
+	q, fog:        [3]f32,
+	iip, tme, fge: bool,
+	tm:            Tex_Map,
+}
+
+// Draws pixels x0 ..= x1 of row y of a triangle, w the edge weights at x0.
+@(private)
+Tri_Row_Proc :: #type proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64)
+
+// The row proc of a context with the generic pixel proc, or with one a
+// probe put in its place: each pixel through c.px.
+@(private)
+tri_row :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, false, 0)}
+
+// The pixels of one row. FAST draws them with PX_FAST[N] inline, whose
+// texture mapping and FGE are then constants; else each goes through
+// c.px. The weights step pixel by pixel as a walk from the box's left
+// edge would have stepped them, so every pixel gets the same arguments
+// either way.
+@(private)
+tri_span :: #force_inline proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64, $FAST: bool, $N: int) #no_bounds_check {
+	// A local copy: a pixel writes memory, and nothing behind a pointer is
+	// known to outlive that.
+	t := t^
+	TME :: !FAST || PX_FAST[N].tfx >= 0
+	FGE :: !FAST || PX_FAST[N].fge
+	w0, w1, w2 := w[0], w[1], w[2]
+	for x in x0 ..= x1 {
+		defer {w0 -= t.dy[0]; w1 -= t.dy[1]; w2 -= t.dy[2]}
+		l0, l1, l2 := w0 * t.inv, w1 * t.inv, w2 * t.inv
+		f0, f1, f2 := f32(l0), f32(l1), f32(l2)
+		z := t.z[0] * l0 + t.z[1] * l1 + t.z[2] * l2
+		col := t.flat
+		if t.iip {col = t.c[0] * f0 + t.c[1] * f1 + t.c[2] * f2}
+		u, v: f32
+		lod: i32
+		// A fast context maps a texture when its row's tfx is one (px_pick).
+		if TME && (FAST || t.tme) {
+			u, v, lod = tex_at(t.tm,
+				t.s[0] * f0 + t.s[1] * f1 + t.s[2] * f2,
+				t.q[0] * f0 + t.q[1] * f1 + t.q[2] * f2)
+		}
+		// Pixel procs read fogf only under FGE (pixel, pixel_fast).
+		fog: f32
+		if FGE && (FAST || t.fge) {fog = t.fog[0] * f0 + t.fog[1] * f1 + t.fog[2] * f2}
+		when FAST {
+			px_inst(c, x, z, col, u, v, lod, fog, N)
+		} else {
 			c.px(c, x, y, z, col, u, v, lod, fog)
 		}
 	}
