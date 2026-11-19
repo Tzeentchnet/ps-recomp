@@ -63,7 +63,6 @@ Interp :: struct {
 
 // An interpreted call still open, kept on the host stack of interp_call for
 // the time the callee runs. The records form a chain, innermost first.
-@(private)
 Interp_Frame :: struct {
 	// Where the caller goes on, and its $sp then.
 	ret, sp: u32,
@@ -77,8 +76,9 @@ Interp_Frame :: struct {
 	prev:    ^Interp_Frame,
 }
 
-// The innermost interpreted call open, nil none.
-@(private)
+// The innermost interpreted call open, nil none. Each IOP thread has its
+// own chain, on its coroutine's stack: the scheduler swaps it with the
+// thread's context (ps2/iop Th_Context).
 interp_top: ^Interp_Frame
 // The call a `jr $ra` unwinds to: the runs above it end, it goes on.
 @(private)

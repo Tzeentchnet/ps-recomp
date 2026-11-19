@@ -38,9 +38,9 @@
 // (iop_flat_step), not a nested call.
 //
 // A thread's context: the R3000's r[0..31], hi and lo, cop0's sr, cause and
-// epc, frame_ret and tail_depth, saved when it leaves the CPU and restored
-// when it gets it back. Its pc and branch state are the interpreter's
-// locals, on its coroutine's stack. The cycle count is global time: never saved.
+// epc, frame_ret, tail_depth and its interpreted calls open, saved when it
+// leaves the CPU and restored when it gets it back. Its pc and branch state
+// are the interpreter's locals, on its coroutine's stack. The cycle count is global time: never saved.
 //
 // The ready and wait queues are the thread table itself: a thread's status
 // says which it is in, and its seq orders it in there. Removing a thread from
@@ -139,6 +139,9 @@ Th_Context :: struct {
 	cop0:       type_of(r3000.cop0),
 	frame_ret:  u32,
 	tail_depth: int, // its own tail calls (r3000.jump), from 0 when it starts
+	// Its interpreted calls open (r3000.interp_top), on its own stack: another
+	// thread's records are no outer call of its own to unwind to.
+	interp:     ^r3000.Interp_Frame,
 }
 
 Iop_Thread :: struct {
@@ -388,7 +391,7 @@ th_schedule :: proc(until: u64, idle := false) {
 		assert(th_loader == nil && s.cur == 0, "iop: the scheduler entered while the IOP runs")
 		th_loader = core.co_current
 	}
-	frame, depth := r3000.frame_ret, r3000.tail_depth
+	frame, depth, interp := r3000.frame_ret, r3000.tail_depth, r3000.interp_top
 	s.budget = false
 	s.resched = false
 	r3000.next_event = until
@@ -423,7 +426,7 @@ th_schedule :: proc(until: u64, idle := false) {
 	r3000.next_event = IOP_EVENT_OFF
 	r3000.run_events = proc() {}
 	// A suspended thread's call has not restored them; a deleted one never will.
-	r3000.frame_ret, r3000.tail_depth = frame, depth
+	r3000.frame_ret, r3000.tail_depth, r3000.interp_top = frame, depth, interp
 	when core.FLAT {th_entered = false} else {th_loader = nil}
 }
 
@@ -626,6 +629,7 @@ th_save :: proc(t: ^Iop_Thread) {
 		cop0       = r3000.cop0,
 		frame_ret  = r3000.frame_ret,
 		tail_depth = r3000.tail_depth,
+		interp     = r3000.interp_top,
 	}
 }
 
@@ -637,6 +641,7 @@ th_restore :: proc(t: ^Iop_Thread) {
 	r3000.cop0 = t.ctx.cop0
 	r3000.frame_ret = t.ctx.frame_ret
 	r3000.tail_depth = t.ctx.tail_depth
+	r3000.interp_top = t.ctx.interp
 }
 
 // Takes the running thread, its status already set, off the CPU, and puts
@@ -867,12 +872,13 @@ th_intr :: proc(handler, a0, a1: u32) -> Intr_Stop {
 	} else {
 		assert(th_loader == nil && s.cur == 0, "iop: a handler run while the IOP runs")
 	}
-	saved := Th_Context{r3000.state.r, r3000.state.hi, r3000.state.lo, r3000.cop0, r3000.frame_ret, r3000.tail_depth}
+	saved := Th_Context{r3000.state.r, r3000.state.hi, r3000.state.lo, r3000.cop0, r3000.frame_ret, r3000.tail_depth, r3000.interp_top}
 	when !core.FLAT {
 		if s.intr_co == nil {s.intr_co = core.co_create(th_intr_main, nil)}
 	}
 	s.intr, s.intr_stop = true, .None
 	s.intr_handler, s.intr_a0, s.intr_a1 = handler, a0, a1
+	r3000.interp_top = nil // a handler has no outer interpreted call
 	when core.FLAT {th_entered = true} else {th_loader = core.co_current}
 	r3000.next_event = r3000.state.cycles + IOP_INTR_BUDGET
 	r3000.run_events = th_budget
@@ -900,6 +906,7 @@ th_intr :: proc(handler, a0, a1: u32) -> Intr_Stop {
 	}
 	r3000.state.r, r3000.state.hi, r3000.state.lo = saved.r, saved.hi, saved.lo
 	r3000.cop0, r3000.frame_ret, r3000.tail_depth = saved.cop0, saved.frame_ret, saved.tail_depth
+	r3000.interp_top = saved.interp
 	return s.intr_stop
 }
 
