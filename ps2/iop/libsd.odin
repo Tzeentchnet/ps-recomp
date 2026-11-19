@@ -94,8 +94,24 @@ libsd_fn :: proc(fno: u32) -> (v0: u32, ok: bool) {
 	case 24: // sceSdGetEffectAttr(core, sceSdEffectAttr *)
 		for v, i in sd_get_effect_attr(a0) {w32(a1 + u32(i) * 4, v)}
 		return 0, true
-	case 25, 31: // 25 sceSdClearEffectWorkArea / 31 sceSdCleanEffectWorkArea(core, channel, effect mode): LIBSD 1.5's 31 is 25 without one check; both zero the effect area
+	case 25: // sceSdClearEffectWorkArea(core, channel, effect mode): zeroes the effect area
+		// Retail (text 0x660) blocks: it takes the channel's two transfer
+		// callbacks off, zeroes the area chunk by chunk and waits for each,
+		// then puts them back, so neither runs.
 		sd_clear_effect(a0)
+		return 0, true
+	case 31: // sceSdCleanEffectWorkArea(core, channel, effect mode): zeroes the effect area
+		// Retail (text 0x97c) does not block: it starts a chained transfer
+		// on the channel and returns. Its transfer interrupt handler (text
+		// 0x27b8) runs the next chunk on each interrupt, and after the last
+		// one calls the channel's sceSdSetTransIntrHandler func as (channel,
+		// arg). Mode 10 and up returns -100; mode 0 returns 0 and clears
+		// nothing.
+		mode := a2 & 0xff
+		if mode >= 10 {return transmute(u32)i32(-100), true}
+		if mode == 0 {return 0, true}
+		sd_clear_effect(a0)
+		if s.trans[a1 & 1].func != 0 {s.pending |= SD_PENDING_TRANS << (a1 & 1)}
 		return 0, true
 	case 26: // sceSdSetTransIntrHandler(channel, func, arg): the previous func
 		h := &s.trans[a0 & 1]
