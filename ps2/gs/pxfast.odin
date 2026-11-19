@@ -513,6 +513,191 @@ tri_84 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t
 @(private)
 tri_85 :: proc(c: ^Ctx, t: ^Tri_Setup, x0, x1, y: i32, w: [3]f64) {tri_span(c, t, x0, x1, y, w, true, 85)}
 
+// PX_FAST's sprite row procs, in its order.
+@(private, rodata)
+spr_procs := [len(PX_FAST)]Sprite_Row_Proc {
+	spr_0, spr_1, spr_2, spr_3, spr_4, spr_5, spr_6, spr_7, spr_8, spr_9, spr_10, spr_11, spr_12, spr_13, spr_14,
+	spr_15, spr_16, spr_17, spr_18, spr_19, spr_20, spr_21, spr_22, spr_23, spr_24, spr_25, spr_26, spr_27,
+	spr_28, spr_29, spr_30, spr_31, spr_32, spr_33, spr_34, spr_35, spr_36, spr_37, spr_38, spr_39, spr_40,
+	spr_41, spr_42, spr_43, spr_44, spr_45, spr_46, spr_47, spr_48, spr_49, spr_50, spr_51, spr_52, spr_53,
+	spr_54, spr_55, spr_56, spr_57, spr_58, spr_59, spr_60, spr_61, spr_62, spr_63, spr_64, spr_65, spr_66,
+	spr_67, spr_68, spr_69, spr_70, spr_71, spr_72, spr_73, spr_74, spr_75, spr_76, spr_77, spr_78, spr_79,
+	spr_80, spr_81, spr_82, spr_83, spr_84, spr_85,
+}
+
+@(private)
+spr_0 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 0)}
+@(private)
+spr_1 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 1)}
+@(private)
+spr_2 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 2)}
+@(private)
+spr_3 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 3)}
+@(private)
+spr_4 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 4)}
+@(private)
+spr_5 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 5)}
+@(private)
+spr_6 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 6)}
+@(private)
+spr_7 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 7)}
+@(private)
+spr_8 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 8)}
+@(private)
+spr_9 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 9)}
+@(private)
+spr_10 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 10)}
+@(private)
+spr_11 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 11)}
+@(private)
+spr_12 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 12)}
+@(private)
+spr_13 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 13)}
+@(private)
+spr_14 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 14)}
+@(private)
+spr_15 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 15)}
+@(private)
+spr_16 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 16)}
+@(private)
+spr_17 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 17)}
+@(private)
+spr_18 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 18)}
+@(private)
+spr_19 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 19)}
+@(private)
+spr_20 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 20)}
+@(private)
+spr_21 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 21)}
+@(private)
+spr_22 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 22)}
+@(private)
+spr_23 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 23)}
+@(private)
+spr_24 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 24)}
+@(private)
+spr_25 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 25)}
+@(private)
+spr_26 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 26)}
+@(private)
+spr_27 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 27)}
+@(private)
+spr_28 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 28)}
+@(private)
+spr_29 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 29)}
+@(private)
+spr_30 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 30)}
+@(private)
+spr_31 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 31)}
+@(private)
+spr_32 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 32)}
+@(private)
+spr_33 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 33)}
+@(private)
+spr_34 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 34)}
+@(private)
+spr_35 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 35)}
+@(private)
+spr_36 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 36)}
+@(private)
+spr_37 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 37)}
+@(private)
+spr_38 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 38)}
+@(private)
+spr_39 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 39)}
+@(private)
+spr_40 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 40)}
+@(private)
+spr_41 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 41)}
+@(private)
+spr_42 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 42)}
+@(private)
+spr_43 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 43)}
+@(private)
+spr_44 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 44)}
+@(private)
+spr_45 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 45)}
+@(private)
+spr_46 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 46)}
+@(private)
+spr_47 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 47)}
+@(private)
+spr_48 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 48)}
+@(private)
+spr_49 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 49)}
+@(private)
+spr_50 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 50)}
+@(private)
+spr_51 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 51)}
+@(private)
+spr_52 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 52)}
+@(private)
+spr_53 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 53)}
+@(private)
+spr_54 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 54)}
+@(private)
+spr_55 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 55)}
+@(private)
+spr_56 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 56)}
+@(private)
+spr_57 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 57)}
+@(private)
+spr_58 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 58)}
+@(private)
+spr_59 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 59)}
+@(private)
+spr_60 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 60)}
+@(private)
+spr_61 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 61)}
+@(private)
+spr_62 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 62)}
+@(private)
+spr_63 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 63)}
+@(private)
+spr_64 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 64)}
+@(private)
+spr_65 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 65)}
+@(private)
+spr_66 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 66)}
+@(private)
+spr_67 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 67)}
+@(private)
+spr_68 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 68)}
+@(private)
+spr_69 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 69)}
+@(private)
+spr_70 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 70)}
+@(private)
+spr_71 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 71)}
+@(private)
+spr_72 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 72)}
+@(private)
+spr_73 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 73)}
+@(private)
+spr_74 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 74)}
+@(private)
+spr_75 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 75)}
+@(private)
+spr_76 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 76)}
+@(private)
+spr_77 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 77)}
+@(private)
+spr_78 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 78)}
+@(private)
+spr_79 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 79)}
+@(private)
+spr_80 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 80)}
+@(private)
+spr_81 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 81)}
+@(private)
+spr_82 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 82)}
+@(private)
+spr_83 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 83)}
+@(private)
+spr_84 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 84)}
+@(private)
+spr_85 :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, true, 85)}
+
 @(private)
 px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, lod: i32, fogf: f32, $N: int) {
 	F :: PX_FAST
@@ -525,16 +710,17 @@ px_inst :: #force_inline proc(c: ^Ctx, x: i32, zf: f64, col: [4]f32, u, v: f32, 
 @(private)
 px_force: Pixel_Proc
 
-// The pixel and triangle row procs for a decoded context: fast ones when
-// the context is one of PX_FAST's, else `pixel` and tri_row.
+// The pixel, triangle row and sprite row procs for a decoded context: fast
+// ones when the context is one of PX_FAST's, else `pixel`, tri_row and
+// spr_row.
 @(private)
-px_pick :: proc(c: ^Ctx) -> (Pixel_Proc, Tri_Row_Proc) {
-	if px_force != nil {return px_force, tri_row}
-	if c.pabe || c.fba || !c.colclamp {return pixel, tri_row}
+px_pick :: proc(c: ^Ctx) -> (Pixel_Proc, Tri_Row_Proc, Sprite_Row_Proc) {
+	if px_force != nil {return px_force, tri_row, spr_row}
+	if c.pabe || c.fba || !c.colclamp {return pixel, tri_row, spr_row}
 	// No Z read or write: `pixel` skips Z with the depth test off, as a
 	// fast proc does for ZTST ALWAYS with ZMSK.
 	z_off := !c.zte || (c.ztst == 1 && c.zmsk)
-	if !c.frow.ok || (!z_off && !c.zrow.ok) {return pixel, tri_row}
+	if !c.frow.ok || (!z_off && !c.zrow.ok) {return pixel, tri_row, spr_row}
 	atst, afail: u32 = 1, 0
 	if c.ate && c.atst != 1 {
 		atst, afail = c.atst, c.afail
@@ -556,9 +742,9 @@ px_pick :: proc(c: ^Ctx) -> (Pixel_Proc, Tri_Row_Proc) {
 	for f, i in PX_FAST {
 		g := f
 		if g.ztst == 1 && g.zmsk {g.zpsm = 0}
-		if g == k {return px_procs[i], tri_procs[i]}
+		if g == k {return px_procs[i], tri_procs[i], spr_procs[i]}
 	}
-	return pixel, tri_row
+	return pixel, tri_row, spr_row
 }
 
 // Seeks the context's frame and Z rows to y, for the pixels of one row.

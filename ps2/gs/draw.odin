@@ -87,6 +87,7 @@ Ctx :: struct {
 	frow, zrow:              Row,
 	px:                      Pixel_Proc, // pixel or a fast proc (px_pick)
 	row:                     Tri_Row_Proc, // tri_row or a fast one (px_pick)
+	srow:                    Sprite_Row_Proc, // spr_row or a fast one (px_pick)
 	fogcol:                  [3]i32,
 	tex:                     Tex,
 	// A band worker draws the rows y of its band alone: (y >> 3) % nband
@@ -253,7 +254,7 @@ decode_ctx :: proc(prim: u64) -> (c: Ctx) #no_bounds_check {
 		}
 		tex_wrap(&c.tex)
 	}
-	c.px, c.row = px_pick(&c)
+	c.px, c.row, c.srow = px_pick(&c)
 	c.tex.tc = &tc_main
 	return
 }
@@ -463,8 +464,14 @@ sprite_row :: #force_inline proc "contextless" (s: ^Sprite, y: i32) -> (vv, tt: 
 // for; q is the second vertex's.
 @(private)
 sprite_tex :: #force_inline proc(c: ^Ctx, s: ^Sprite, x: i32, vv, tt, q: f32) -> (f32, f32, i32) {
+	return tex_coord(c, sprite_stuv(s, x, vv, tt), q)
+}
+
+// Pixel x's S, T, U and V on the row sprite_row gave vv, tt for.
+@(private)
+sprite_stuv :: #force_inline proc "contextless" (s: ^Sprite, x: i32, vv, tt: f32) -> #simd[4]f32 {
 	fx := (f32(x) - s.x0) / (s.x1 - s.x0)
-	return tex_coord(c, {s.sa + (s.sb - s.sa) * fx, tt, s.ua + (s.ub - s.ua) * fx, vv}, q)
+	return {s.sa + (s.sb - s.sa) * fx, tt, s.ua + (s.ub - s.ua) * fx, vv}
 }
 
 @(private)
@@ -475,9 +482,44 @@ draw_sprite :: proc(c: ^Ctx, a, b: ^Vertex) {
 		if band_skip(c, y) {continue}
 		vv, tt := sprite_row(&s, y)
 		ctx_seek(c, y)
-		for x in s.px0 ..= s.px1 {
-			u, v, lod := sprite_tex(c, &s, x, vv, tt, b.q)
-			c.px(c, x, y, b.z, b.c, u, v, lod, b.fog)
+		c.srow(c, &s, b, y, vv, tt)
+	}
+}
+
+// Draws row y of a sprite, vv and tt its V and T (sprite_row), b the
+// vertex whose Z, color, Q and fog every pixel takes.
+@(private)
+Sprite_Row_Proc :: #type proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32)
+
+// The sprite row proc of a context with the generic pixel proc, or with
+// one a probe put in its place: each pixel through c.px.
+@(private)
+spr_row :: proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32) {spr_span(c, s, b, y, vv, tt, false, 0)}
+
+// The pixels of one sprite row. FAST draws them with PX_FAST[N] inline,
+// whose texture mapping is then a constant; else each goes through c.px.
+// Every pixel gets the arguments draw_sprite gave it.
+@(private)
+spr_span :: #force_inline proc(c: ^Ctx, s: ^Sprite, b: ^Vertex, y: i32, vv, tt: f32, $FAST: bool, $N: int) #no_bounds_check {
+	// Local copies: a pixel writes memory, and nothing behind a pointer is
+	// known to outlive that.
+	s := s^
+	z, col, fog := b.z, b.c, b.fog
+	when FAST {
+		TME :: PX_FAST[N].tfx >= 0 // as c.tme (px_pick)
+		when TME {tm, q := tex_map(c), b.q}
+	} else {
+		q := b.q
+	}
+	for x in s.px0 ..= s.px1 {
+		u, v: f32
+		lod: i32
+		when FAST {
+			when TME {u, v, lod = tex_at(tm, sprite_stuv(&s, x, vv, tt), q)}
+			px_inst(c, x, z, col, u, v, lod, fog, N)
+		} else {
+			u, v, lod = sprite_tex(c, &s, x, vv, tt, q)
+			c.px(c, x, y, z, col, u, v, lod, fog)
 		}
 	}
 }

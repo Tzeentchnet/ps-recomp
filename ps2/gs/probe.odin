@@ -123,7 +123,7 @@ Tri_Classes :: bit_set[Tri_Class]
 probe_tri :: proc(prim: u64, ref: bool) -> (cls: Tri_Classes) {
 	ctx_cur = decode_ctx(prim)
 	ctx_key = {~u64(0), ~u64(0)}
-	ctx_cur.px, ctx_cur.row = px_record, tri_row
+	ctx_cur.px, ctx_cur.row, ctx_cur.srow = px_record, tri_row, spr_row
 	clear(&probe_calls)
 	if ref {return draw_tri_ref(&ctx_cur, &queue[0], &queue[1], &queue[2])}
 	draw_tri(&ctx_cur, &queue[0], &queue[1], &queue[2])
