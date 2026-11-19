@@ -49,6 +49,7 @@ Midload_Start :: enum {
 Midload_Poll :: enum {
 	Running,
 	Done, // ended, and what it made taken (loaded or not)
+	More, // Done, and it left part of what it loads from for another job, which starts at the next vblank
 	Failed, // ended without code to load (said)
 	Lost, // cannot be waited for (said)
 }
@@ -82,6 +83,7 @@ Midload :: struct {
 	count:   u64, // job.grown() at the last vblank
 	pending: bool, // grown since the last job started
 	quiet:   int, // vblanks since it last grew
+	again:   bool, // the last job left part for another: the next starts without waiting MIDLOAD_FRAMES
 	fails:   int, // jobs that failed or were stopped
 }
 
@@ -154,8 +156,9 @@ midload_step :: proc(ml: ^Midload) {
 		return
 	}
 	ml.quiet += 1
-	if !ml.pending || ml.running || ml.quiet < MIDLOAD_FRAMES {return}
+	if !ml.pending || ml.running || (ml.quiet < MIDLOAD_FRAMES && !ml.again) {return}
 	ml.pending = false
+	ml.again = false
 	switch ml.job.start() {
 	case .Started:
 		ml.running = true
@@ -193,12 +196,16 @@ midload_end :: proc(ml: ^Midload, quit: bool) {
 // MIDLOAD_DEADLINE or cannot be waited for, a failed load.
 @(private = "file")
 midload_poll :: proc(ml: ^Midload, timeout: time.Duration) {
-	switch ml.job.poll(timeout) {
+	switch state := ml.job.poll(timeout); state {
 	case .Running:
 		if time.tick_since(ml.started) < MIDLOAD_DEADLINE {return}
 		fmt.eprintfln("play: mid-run %s %s took over %.0f s, stopped", ml.job.what, ml.job.noun, time.duration_seconds(MIDLOAD_DEADLINE))
-	case .Done:
+	case .Done, .More:
 		ml.running = false
+		if state == .More {
+			ml.pending = true
+			ml.again = true
+		}
 		fmt.eprintfln("play: mid-run %s %s done at vblank %d", ml.job.what, ml.job.noun, ml_vblanks)
 		return
 	case .Failed:

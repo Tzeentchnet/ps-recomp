@@ -17,7 +17,7 @@
 //
 // A compile takes at most MIDLEARN_RECORDS records (MIDLEARN_EE_RECORDS for
 // the EE), so a load costs this thread no more than the largest measured;
-// the rest go in another, after MIDLOAD_FRAMES more vblanks. A blob over
+// the rest go in another, started at the next vblank. A blob over
 // the host's size is not compiled again until the records grow. Each load's code stays loaded (in a wasm32
 // build with the wasm instance and table range it was linked into:
 // psx/native): one per load, which never repeats a record, so they are
@@ -77,7 +77,6 @@ Midload_Learned :: struct {
 	interp:    []native.Blob_Interp,
 	set:       string,
 	more:      bool,
-	rounds:    u64, // loads that left records for another (midlearn_grown)
 	oversized: u64, // the record count when a blob was over the host's size (0 none)
 	loads:     int, // blobs loaded
 	recs:      int, // the records they were compiled from
@@ -163,7 +162,7 @@ midlearn_interp :: proc() -> []native.Blob_Interp {
 
 @(private = "file")
 midlearn_grown :: proc() -> u64 {
-	return core.learn_count(mlrn.cpu) + mlrn.rounds
+	return core.learn_count(mlrn.cpu)
 }
 
 @(private = "file")
@@ -254,11 +253,10 @@ midlearn_take :: proc(blob: []u8, start: time.Tick) -> Midload_Poll {
 	}
 	if !loaded {return .Failed}
 	for k in mlrn.keys {mlrn.covered[k] = true}
-	if mlrn.more {mlrn.rounds += 1}
 	mlrn.loads += 1
 	mlrn.recs += len(recs)
 	fmt.eprintfln("play: mid-run learned load: %d records, %.1f ms on this thread", len(recs), time.duration_milliseconds(time.tick_since(start)))
-	return .Done
+	return .More if mlrn.more else .Done
 }
 
 // Forget the compile in flight, and its host's state.
