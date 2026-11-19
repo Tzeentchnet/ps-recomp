@@ -261,16 +261,16 @@ exact_steps :: proc() {
 	free_all(context.temp_allocator)
 }
 
-// r5900.lower for learned code (each): a `jr $ra` whose delay slot may write
+// r5900.lower for learned code (each, learned): a `jr $ra` whose delay slot may write
 // $ra reads it before the slot (a Jump_Reg, the Return's check); any other
 // `jr $ra` has the steps it had, and so has every one outside learned code.
 @(private = "file")
 learned_steps :: proc() {
 	Case :: struct {
 		name:  string,
-		slot:  u32,
-		each:  bool,
-		latch: bool,
+		slot:    u32,
+		learned: bool,
+		latch:   bool,
 	}
 	cases := [?]Case {
 		{"lui ra in the slot, learned", 0x3c1f7000, true, true},
@@ -282,7 +282,7 @@ learned_steps :: proc() {
 	}
 	for c in cases {
 		f := func_of(0x1000, {0x24020007, 0x03e00008, c.slot}) // addiu v0,zero,7; jr ra; the slot
-		steps := r5900.lower(f, 1, true, each = c.each)
+		steps := r5900.lower(f, 1, true, each = c.learned, learned = c.learned)
 		got := make([dynamic]Want, context.temp_allocator)
 		for s in steps {
 			if s.kind == .Cycles {continue}
