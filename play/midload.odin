@@ -29,7 +29,7 @@ import "core:time"
 import "ps:core"
 
 // The vblanks what a job loads from stays as it is before it starts.
-MIDLOAD_FRAMES :: 300
+MIDLOAD_FRAMES :: 60
 
 // How long a job may take, as convert_store's would in a compat run
 // (several minutes for the largest disc's whole conversion; a VU-only one

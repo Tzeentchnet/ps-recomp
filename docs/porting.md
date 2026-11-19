@@ -457,7 +457,7 @@ the environment alone.
 code too: the VUs then run only in the interpreter, so the run is slower.
 
 A run need not wait for the next one to run what it captured natively:
-once the captures have stopped growing for 300 frames, the player
+once the captures have stopped growing for 60 frames, the player
 converts their microcode in a child process (`play --convert-vu`) and
 loads the programs it did not have at the next frame after the child
 ends (play/midload.odin). The child's blob is a temporary file, removed
@@ -477,7 +477,7 @@ removing theirs.
 A PS1 game's run that records its code and runs learned code loads its
 new records the same way (play/midload_learned.odin), and so does a PS2
 game's EE in a native build, beside its VU job: once they have stopped
-growing for 300 frames, the records no loaded blob covers, at most 480
+growing for 60 frames, the records no loaded blob covers, at most 480
 per compile (2048 for the EE), go to a child (`play --learned-midload <psx | ee> <records>
 <out> <run pid>`) through a temporary file (`ps-learn-<pid>-*` in
 `TMPDIR`), and the run loads the blob the child writes. A PS2 game's IOP
