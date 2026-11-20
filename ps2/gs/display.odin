@@ -40,6 +40,10 @@ scan_last: Scan_Rect
 scan_gen: u64
 @(private)
 scan_ok: bool
+// Whether the last scanout may have changed `screen`: false only when
+// scan_same kept it as it was. The host uploads the screen only when this is
+// set, so the texture's version marks each new image (web/play.js).
+scan_fresh: bool
 
 // Buffers the display has shown since the last reset. A draw whose FRAME
 // FBP is one of them (exact base) is the picture itself, redrawn every
@@ -203,6 +207,7 @@ shown_read_blocks :: proc(lo, hi: u32) {
 // Copy the active read circuit into `screen`; returns the visible size.
 scanout :: proc() -> (w, h: int) {
 	band_join()
+	scan_fresh = true
 	pmode := gs_priv(0x00)
 	track_display(pmode)
 	circ: u32 = pmode & 1 != 0 ? 0 : 1
@@ -244,7 +249,10 @@ scanout :: proc() -> (w, h: int) {
 		return
 	}
 	rect := Scan_Rect{fbp, fbw, psm, dbx, dby, w, h}
-	if scan_same(rect) {return}
+	if scan_same(rect) {
+		scan_fresh = false
+		return
+	}
 	if r := row_init(psm); r.ok && (r.wide || psm == PSMCT16 || psm == PSMCT16S) {
 		// The band workers each fill a share of the rows (band_job); the
 		// join above left them idle, the one after makes `screen` whole.

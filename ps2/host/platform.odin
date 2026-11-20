@@ -26,6 +26,8 @@ ren: ^sdl.Renderer
 @(private)
 tex: ^sdl.Texture
 @(private)
+tex_stale: bool // the screen was filled since the texture's last upload
+@(private)
 hw: bool // the Vulkan GS draws and presents
 @(private)
 last: time.Tick
@@ -268,11 +270,16 @@ vblank_frame :: proc() {
 	w, h := gs.scanout()
 	shown = {w, h}
 	if w > 0 && h > 0 && !core.headless && !hw && !rerun {
-		sdl.UpdateTexture(tex, nil, &gs.screen, gs.DISP_W * 4)
+		// A screen scanout kept as it was is in the texture already, unless
+		// a frame since (a rerun) filled it without an upload.
+		if gs.scan_fresh || tex_stale {sdl.UpdateTexture(tex, nil, &gs.screen, gs.DISP_W * 4)}
+		tex_stale = false
 		src := sdl.Rect{0, 0, i32(w), i32(h)}
 		sdl.RenderClear(ren)
 		sdl.RenderCopy(ren, tex, &src, nil)
 		sdl.RenderPresent(ren)
+	} else if gs.scan_fresh {
+		tex_stale = true
 	}
 	cpu.prof_end(.PRESENT, pt)
 	core.compat_vblank(u64(vblank), w > 0 && h > 0, mem.ram)

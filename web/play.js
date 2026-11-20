@@ -645,6 +645,56 @@ function record(now) {
 	Object.assign(sample, { at: now, frames, ticks: 0, silent: audioStats.silent });
 }
 
+// Visible hitches. A new image is a tick whose frame() uploaded a texture:
+// the host uploads the screen only when the GS changed it (gs.scan_fresh).
+// A gap is the ticks since the previous new image. The cadence is the larger
+// of the medians of the last CADENCE_GAPS gaps and of the last 3, so a change
+// of rate (60 to 30 fps) costs at most 2 hitches. A hitch is a gap over the
+// cadence, its extra ticks gap - cadence. rafMs keeps the last RAF_KEEP tick
+// intervals, to show the rAF rate the ticks stand for.
+const CADENCE_GAPS = 31;
+const HITCH_LIST = 1000; // hitches listed, the first ones
+const RAF_KEEP = 1024;
+const hitch = { at: 0, tick: 0, last: -1, gaps: [], count: 0, extra: 0, list: [], next: null, images: 0, raf: new Float64Array(RAF_KEEP), nraf: 0 };
+const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+const cadence = (g) => Math.max(median(g), median(g.slice(-3)));
+
+function noteTick(now, fresh, frame) {
+	if (hitch.at > 0) hitch.raf[hitch.nraf++ % RAF_KEEP] = now - hitch.at;
+	hitch.at = now;
+	hitch.tick++;
+	if (!fresh) return;
+	hitch.images++;
+	if (hitch.last >= 0) {
+		const gap = hitch.tick - hitch.last;
+		if (hitch.next) hitch.next.push(gap);
+		hitch.next = null;
+		if (hitch.gaps.length > 0) {
+			const c = cadence(hitch.gaps);
+			if (gap > c) {
+				hitch.count++;
+				hitch.extra += gap - c;
+				if (hitch.list.length < HITCH_LIST) hitch.list.push((hitch.next = [frame, gap, c]));
+			}
+		}
+		hitch.gaps.push(gap);
+		if (hitch.gaps.length > CADENCE_GAPS) hitch.gaps.shift();
+	}
+	hitch.last = hitch.tick;
+}
+
+// The report's hitches: list entries are [present frame, gap, cadence,
+// the gap after it].
+function hitchState() {
+	const raf = hitch.raf.subarray(0, Math.min(hitch.nraf, RAF_KEEP));
+	return {
+		rafMedianMs: raf.length ? Math.round(median(raf) * 100) / 100 : null,
+		ticks: hitch.tick, images: hitch.images,
+		cadence: hitch.gaps.length ? cadence(hitch.gaps) : null,
+		count: hitch.count, extraTicks: hitch.extra, list: [...hitch.list],
+	};
+}
+
 function tick() {
 	const now = performance.now();
 	if (worker && firstPresentMs === null && Atomics.load(new Int32Array(shared.present, 0, 4), PRESENT.FRAMES_WORD) > 0)
@@ -652,7 +702,9 @@ function tick() {
 	if (worker && done === null) record(now);
 	if (present) {
 		try {
+			const images = present.images;
 			present.frame();
+			if (worker && done === null) noteTick(now, present.images !== images, present.shown);
 		} catch (e) {
 			errors.push(`present: ${e.message}`);
 			present = null;
@@ -707,6 +759,7 @@ async function testState() {
 		files: written.map(([name, bytes]) => ({ name, size: bytes.length })),
 		net: netLink && { player: netPlayer, ...netLink.stats },
 		history: [...history],
+		hitches: hitchState(),
 		log: $("log").textContent,
 		errors: [...errors],
 		userAgent: navigator.userAgent,
