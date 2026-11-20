@@ -45,6 +45,10 @@ Wasm :: struct {
 	ctx_only: bool, // the open function's Asm.ctx_only at its func_begin
 	n_funcs: int,
 	st:      int, // import index of the open function's state
+	// The last local.set in a.code, [set_lo, set_hi), for wa_local's
+	// set-get fusion; set_hi is -1 when there is none.
+	set_lo:  int,
+	set_hi:  int,
 	stats:   Wasm_Stats,
 	// The shared in-line call routine (inline_call), placed at finish
 	// after the slow routines when a function called it.
@@ -93,6 +97,7 @@ Wasm_Stats :: struct {
 	max_bytes, max_func: int, // the largest body and its function index
 	max_arms, arms_func: int, // the most dispatch regions and its function index
 	branches, via:       int, // all branches, and those through the dispatch
+	tees:                int, // local.set, local.get pairs fused to local.tee
 }
 
 @(private)
@@ -483,8 +488,30 @@ wa_sleb :: proc(buf: ^[dynamic]u8, v: i64) {
 
 @(private = "file")
 wa_local :: proc(a: ^Asm, op: u8, l: int) {
+	w := &a.wa
+	// local.set l right before, in the same item (w.mark), and local.get l
+	// now: local.tee l leaves the same stack and local. A label bound or a
+	// branch since moves w.mark past it, any other op moves len(a.code).
+	if op == 0x20 && w.set_hi == len(a.code) && w.mark <= w.set_lo && a.code[w.set_lo] == 0x21 {
+		k := w.set_lo + 1
+		v := u64(0)
+		for sh := u32(0);; sh += 7 {
+			b := a.code[k]
+			k += 1
+			v |= u64(b & 0x7f) << sh
+			if b & 0x80 == 0 {break}
+		}
+		if v == u64(l) {
+			a.code[w.set_lo] = 0x22
+			w.set_hi = -1
+			w.stats.tees += 1
+			return
+		}
+	}
+	lo := len(a.code)
 	emit8(a, op)
 	wa_uleb(&a.code, u64(l))
+	if op == 0x21 {w.set_lo, w.set_hi = lo, len(a.code)} else {w.set_hi = -1}
 }
 
 @(private = "file")
@@ -660,6 +687,7 @@ wasm_func_begin :: proc(a: ^Asm, state: string) -> int {
 	w.open = true
 	w.ctx_only = a.ctx_only
 	w.mark = len(a.code)
+	w.set_hi = -1
 	cache_sync(a, false)
 	return idx
 }
@@ -2197,6 +2225,7 @@ wasm_finalize :: proc(a: ^Asm) {
 	clear(&w.at_item)
 	clear(&a.code)
 	w.mark = 0
+	w.set_hi = -1
 	w.open = false
 }
 
@@ -2224,6 +2253,7 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 		bind_at(a, s.at, w.n_funcs)
 		w.n_funcs += 1
 		clear(&a.code)
+		w.set_hi = -1 // no fusion with the last routine's set
 		wasm_emit_slow(a, s)
 		lo := len(w.out)
 		wa_uleb(&w.out, 3)
@@ -2235,6 +2265,7 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 		bind_at(a, w.call_at, w.n_funcs)
 		w.n_funcs += 1
 		clear(&a.code)
+		w.set_hi = -1 // no fusion with the last routine's set
 		wasm_emit_call(a, w.call)
 		lo := len(w.out)
 		wa_uleb(&w.out, 1)
@@ -2246,6 +2277,7 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 		bind_at(a, w.jump_at, w.n_funcs)
 		w.n_funcs += 1
 		clear(&a.code)
+		w.set_hi = -1 // no fusion with the last routine's set
 		wasm_emit_jump(a, w.jump)
 		lo := len(w.out)
 		wa_uleb(&w.out, 1)

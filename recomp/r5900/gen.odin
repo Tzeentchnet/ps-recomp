@@ -569,7 +569,7 @@ wasm_report :: proc(s: native.Wasm_Stats, funcs: []native.Blob_Func) {
 		return 0
 	}
 	via := 0.0 if s.branches == 0 else 100 * f64(s.via) / f64(s.branches)
-	fmt.printfln("wasm32: %d functions; largest %d bytes (%08x); most dispatch arms %d (%08x); %d of %d branches through a dispatch (%.2f%%)", s.bodies, s.max_bytes, entry(funcs, s.max_func), s.max_arms, entry(funcs, s.arms_func), s.via, s.branches, via)
+	fmt.printfln("wasm32: %d functions; largest %d bytes (%08x); most dispatch arms %d (%08x); %d of %d branches through a dispatch (%.2f%%); %d local.tee fused", s.bodies, s.max_bytes, entry(funcs, s.max_func), s.max_arms, entry(funcs, s.arms_func), s.via, s.branches, via, s.tees)
 }
 
 // Print the ops of one backend that call the interpreter, the most sites
