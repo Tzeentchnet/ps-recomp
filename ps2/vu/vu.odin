@@ -12,9 +12,12 @@
 // op whose MAC a later op has overwritten by the time the read runs. Vu
 // keeps the three older values each flag passed through (old_mac and the
 // rest), shifted once per pair by every backend (vu_flags_shift), and the
-// reads take the oldest. Sticky status bits (6-11) are read as they are
-// now. A stall for Q or P (vu_before) shifts the flags once per cycle, as
-// an empty pair would. FMAC operand stalls are not modelled: hardware holds
+// reads take the oldest. Sticky status bits (6-11) are read four pairs late
+// too, from the same old value (PCSX2 microVU's FSAND/FSOR/FSEQ read
+// sFLAG.read, sticky bits included): SO3's VU0 cull at 0x0b60 clears them
+// with FSSET, then must not see the three ops before its FSAND. A stall
+// for Q or P (vu_before) shifts the flags once per cycle, as an empty pair
+// would. FMAC operand stalls are not modelled: hardware holds
 // a pair whose operand an earlier FMAC op has not yet written, which moves
 // later flags into the window, and integer waits likewise; VU_STALL_COUNT
 // counts the reads such a stall could reach. Macro mode reads the newest
@@ -1125,7 +1128,8 @@ vu_flags_seed :: proc "contextless" (v: ^Vu) {
 // doDivFlag once q is 4 or less (counting the pair's own cycle and its
 // stall) and mVUdivSet then writes them into that pair's status: the third
 // pair after a DIV or SQRT, the ninth after an RSQRT, so with no stall FSAND
-// reads the non-sticky bit at +7 (+13) and the sticky one at +3 (+9). The end of a microprogram (E bit) drains the unit, as microVU's
+// reads the non-sticky and sticky bits alike at +7 (+13). The end of a
+// microprogram (E bit) drains the unit, as microVU's
 // mVUendProgram does, and macro mode reads the newest Q and status. Every
 // backend runs vu_before before a pair and vu_tick after it, compiled code
 // only where a DIV or an EFU op can be pending.
@@ -1549,7 +1553,10 @@ vu_pair :: proc(v: ^Vu, uw, lw, pc: u32) -> (taken: bool, target: u32) #no_bound
 	taken, target = vu_lower(v, lw, pc)
 	if v.vf[ud].q == saved.q {v.vf[ud] = result}
 	if v.mac == flags[0] {v.mac = uflags[0]}
-	if v.status == flags[1] {v.status = uflags[1]}
+	// The lower writes status only by FSSET, which keeps the upper's
+	// non-sticky bits: PCSX2 microVU emits the upper first and gives the pair
+	// one flag instance (microVU_Compile.inl, microVU_Lower.inl FSSET).
+	if lw >> 25 == 0x15 {v.status = (uflags[1] & 0x3f) | (v.status & 0xfc0)} else {v.status = uflags[1]}
 	if v.clip == flags[2] {v.clip = uflags[2]}
 	return
 }
@@ -1579,10 +1586,10 @@ vu_lower :: proc(v: ^Vu, w, pc: u32) -> (taken: bool, target: u32) #no_bounds_ch
 	vi := &v.vi
 	branch := pc + 8 + u32(i32(i16(imm11))) * 8
 	set_vi :: #force_inline proc(vi: ^[16]u16, n: u32, x: u16) #no_bounds_check {if n != 0 {vi[n & 15] = x}}
-	// The flag reads see the flags after the pair four back (the header);
-	// FSSET and the sticky status bits act on the newest.
+	// The flag reads see the flags after the pair four back, sticky status
+	// bits included (the header); FSSET and FCSET write the newest.
 	clip, mac := v.old_clip[2], v.old_mac[2]
-	status := (v.old_status[2] & 0x3f) | (v.status & 0xfc0)
+	status := v.old_status[2] & 0xfff
 	switch w >> 25 {
 	case 0x00: // LQ
 		q := vu_load_q(v, vi[is] + imm11, pc)

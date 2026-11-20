@@ -50,8 +50,9 @@ lower_sp :: proc "contextless" (sp, dest, ft, fs: u32) -> u32 {
 lower_op :: proc "contextless" (op, dest, ft, fs, imm: u32) -> u32 {return op << 25 | dest << 21 | ft << 16 | fs << 11 | imm}
 
 
-// FSEQ, FSAND, FSOR into vi t, imm12 split as the encoding splits it.
+// FSEQ, FSSET, FSAND, FSOR into vi t, imm12 split as the encoding splits it.
 FSEQ :: 0x14
+FSSET :: 0x15
 FSAND :: 0x16
 FSOR :: 0x17
 fs_op :: proc "contextless" (op, t, imm12: u32) -> u32 {return op << 25 | (imm12 >> 11) << 21 | t << 16 | imm12 & 0x7ff}
@@ -63,6 +64,16 @@ status_reads :: proc(words: []u32) -> (n: int) {
 	for k := 0; k + 1 < len(words); k += 2 {
 		op := words[k] >> 25
 		if words[k + 1] & (1 << 31) == 0 && (op == FSEQ || op == FSAND || op == FSOR) {n += 1}
+	}
+	return
+}
+
+// The pairs in words the compiled code leaves to the interpreter (vu_pair),
+// outside I-bit pairs: the status reads and FSSET.
+slow_pairs :: proc(words: []u32) -> (n: int) {
+	for k := 0; k + 1 < len(words); k += 2 {
+		op := words[k] >> 25
+		if words[k + 1] & (1 << 31) == 0 && (op == FSEQ || op == FSSET || op == FSAND || op == FSOR) {n += 1}
 	}
 	return
 }
@@ -433,9 +444,10 @@ Q_STALL := []u32 {
 	NOP_L, NOP_U,
 }
 // Status reads. SUB sets Z, and sticky Z, on every lane; ADD then clears
-// Z but not the sticky bit. A read sees Z and S from three pairs back and
-// the sticky bits as they are now (vu_lower), so the FSAND one pair after
-// the SUB and the one four after it see different status. Compiled VU1
+// Z but not the sticky bit. A read sees status, sticky bits included, as
+// it was four pairs back (vu_lower; PCSX2 microVU's sFLAG.read), so the
+// FSAND one pair after the SUB sees none of it and the one four after it
+// sees Z and sticky Z. Compiled VU1
 // code computes status here, exact at each read (a pair it leaves to the
 // interpreter) and at the E bit; from 0x10 and 0x28 every older status is
 // the newest.
@@ -453,6 +465,19 @@ FS_READ := []u32 {
 	NOP_L, NOP_U,
 }
 FS_READ_PCS := []u32{0, 0x10, 0x28}
+
+// FSSET in the pair of a SUB that sets Z: the FSAND four pairs after sees
+// the SUB's Z with FSSET's sticky D (vu_pair keeps the upper's bits).
+FSSET_PAIR := []u32 {
+	fs_op(FSSET, 0, 0x800), upper(SUB, 3, 1, 1),
+	NOP_L, NOP_U,
+	NOP_L, NOP_U,
+	NOP_L, NOP_U,
+	fs_op(FSAND, 1, 0xfff), NOP_U, // 0x20
+	NOP_L, NOP_U | E_BIT,
+	NOP_L, NOP_U,
+}
+FSSET_PAIR_PCS := []u32{0, 0x20}
 
 // WAITP, an EFU op issued while P is pending, and MFP after each.
 P_STALL := []u32 {
@@ -537,7 +562,7 @@ programs :: proc() -> (progs: [dynamic]Prog) {
 	// entered at each pc.
 	late := [?]struct {
 		words, pcs: []u32,
-	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {DELAY, DELAY_PCS}}
+	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
 	for l in late {
 		for u in vu.Unit {append(&progs, Prog{l.words, u, nil, l.pcs, nil}, Prog{l.words, u, l.pcs, l.pcs, nil})}
 	}

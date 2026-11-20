@@ -110,12 +110,13 @@ main :: proc() {
 		slow: map[string]int
 		reads := vu_programs.status_reads(p.words)
 		vus[k] = {p.unit == .VU0 ? .Vu0 : .Vu1, 0, u32(rvu.native_program(&a, p.words, nil, p.entries, p.unit, reads > 0, &slow)), ranges}
-		if slow["pair"] != reads {
-			fmt.eprintfln("FAIL vu_native: program %d leaves %d status reads of %d to the interpreter", k, slow["pair"], reads)
+		pairs := vu_programs.slow_pairs(p.words)
+		if slow["pair"] != pairs {
+			fmt.eprintfln("FAIL vu_native: program %d leaves %d status reads and FSSETs of %d to the interpreter", k, slow["pair"], pairs)
 			slow_fails += 1
 		}
 		for key, n in slow {
-			if key == "pair" && n == reads {continue}
+			if key == "pair" && n == pairs {continue}
 			fmt.eprintfln("FAIL vu_native: program %d calls the interpreter for %s (%d)", k, key, n)
 			slow_fails += 1
 		}

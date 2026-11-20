@@ -21,8 +21,9 @@
 //
 // Then the flag delay: a micro-mode FMAND, FCGET or FSAND sees the MAC, clip
 // and status as they were after the pair four executed pairs back (a branch
-// counts the pairs run, not their addresses), except the sticky status bits,
-// which it sees at once. A new program starts with the flags as they are.
+// counts the pairs run, not their addresses), sticky status bits included
+// (PCSX2 microVU's FSAND reads sFLAG.read). A new program starts with the
+// flags as they are.
 //
 // Then VIF i-bits: a code with bit 31 runs, raises its VIF's INTC once and
 // stalls the VIF; what follows, in that transfer or later ones, waits until
@@ -449,8 +450,8 @@ q_latency :: proc() {
 // I and D of a DIV or SQRT are set by the first pair to start, after its
 // stall, once 4 cycles are left: the third pair after issue (RSQRT the
 // ninth), so FSAND
-// reads sticky D at +3 (+9) and D itself, 4 pairs late, at +7 (+13); or at
-// the E-bit end. P lands each EFU op's latency after issue.
+// reads D and sticky D alike, 4 pairs late, at +7 (+13); or at the E-bit
+// end. P lands each EFU op's latency after issue.
 @(private = "file")
 stalls :: proc() {
 	NOP_L :: 0x8000033c
@@ -492,32 +493,33 @@ stalls :: proc() {
 	call(0x900)
 	if v.vi[4] != 0 {fail("no stall: FMAND %x, want 0", v.vi[4])}
 
-	// DIV by 0: sticky D (read at once) from DIV +3, D itself (read 4
-	// pairs late) from DIV +7.
+	// DIV by 0: D and sticky D, both read 4 pairs late, from DIV +7. The
+	// pair at +3 sets them; an FSAND there sees neither.
 	put_pairs(0xa00, {DIV_0, NOP_U}, {fsand(3, 0x800), NOP_U}, {fsand(4, 0x800), NOP_U}, {fsand(5, 0x800), NOP_U}, nops, nops,
-		{fsand(6, 0x20), NOP_U}, {fsand(7, 0x20), NOP_U}, end, nops)
+		{fsand(6, 0x820), NOP_U}, {fsand(7, 0x820), NOP_U}, end, nops)
 	call(0xa00)
 	got := [5]u16{v.vi[3], v.vi[4], v.vi[5], v.vi[6], v.vi[7]}
-	if got != ([5]u16{0, 0, 0x800, 0, 0x20}) {fail("DIV D timing: +1 +2 +3 DS, +6 +7 D = %x, want 0 0 800 0 20", got)}
-	// RSQRT: sticky from +9, D from +13.
+	if got != ([5]u16{0, 0, 0, 0, 0x820}) {fail("DIV D timing: +1 +2 +3 DS, +6 +7 D|DS = %x, want 0 0 0 0 820", got)}
+	// RSQRT: D and sticky D from +13.
 	put_pairs(0xa00, {RSQRT_0, NOP_U}, nops, nops, nops, nops, nops, nops, nops, {fsand(3, 0x800), NOP_U}, {fsand(4, 0x800), NOP_U},
-		nops, nops, {fsand(5, 0x20), NOP_U}, {fsand(6, 0x20), NOP_U}, end, nops)
+		nops, nops, {fsand(5, 0x820), NOP_U}, {fsand(6, 0x820), NOP_U}, end, nops)
 	call(0xa00)
 	got4 := [4]u16{v.vi[3], v.vi[4], v.vi[5], v.vi[6]}
-	if got4 != ([4]u16{0, 0x800, 0, 0x20}) {fail("RSQRT D timing: +8 +9 DS, +12 +13 D = %x, want 0 800 0 20", got4)}
+	if got4 != ([4]u16{0, 0, 0, 0x820}) {fail("RSQRT D timing: +8 +9 DS, +12 +13 D|DS = %x, want 0 0 0 820", got4)}
 	// Q's wait reaches 4 inside a WAITQ's stall: the WAITQ pair sets D once
-	// the flags it starts with are taken, so D reads from +5, sticky D at +2.
-	put_pairs(0xa00, {DIV_0, NOP_U}, {WAITQ, NOP_U}, {fsand(3, 0x800), NOP_U}, nops, {fsand(4, 0x20), NOP_U}, {fsand(5, 0x20), NOP_U}, end, nops)
+	// the flags it starts with are taken, so D and sticky D read from +5.
+	put_pairs(0xa00, {DIV_0, NOP_U}, {WAITQ, NOP_U}, {fsand(3, 0x800), NOP_U}, nops, {fsand(4, 0x820), NOP_U}, {fsand(5, 0x820), NOP_U}, end, nops)
 	call(0xa00)
 	got3 := [3]u16{v.vi[3], v.vi[4], v.vi[5]}
-	if got3 != ([3]u16{0x800, 0, 0x20}) {fail("WAITQ stall D timing: +2 DS, +4 +5 D = %x, want 800 0 20", got3)}
+	if got3 != ([3]u16{0, 0, 0x820}) {fail("WAITQ stall D timing: +2 DS, +4 +5 D|DS = %x, want 0 0 820", got3)}
 	// The E bit's end sets them.
 	put_pairs(0xa00, {DIV_0, NOP_U | E}, nops)
 	call(0xa00)
 	if v.status & 0x830 != 0x820 || v.q_wait != 0 {fail("DIV D at the end: status %x wait %d, want 820 0", v.status, v.q_wait)}
 	// Back-to-back: the second DIV's stall sets the first's D, its own
-	// clears it, leaving only the sticky bit.
-	put_pairs(0xa00, {DIV_0, NOP_U}, {DIV_2, NOP_U}, {fsand(3, 0x800), NOP_U}, nops, end, nops)
+	// clears it, leaving only the sticky bit. The FSAND 4 pairs after the
+	// second DIV sees the sticky bit its stall set.
+	put_pairs(0xa00, {DIV_0, NOP_U}, {DIV_2, NOP_U}, nops, nops, nops, {fsand(3, 0x800), NOP_U}, end, nops)
 	call(0xa00)
 	if v.vi[3] != 0x800 || v.status & 0x830 != 0x800 || v.q != 0.5 {fail("back-to-back DIV: DS %x status %x Q %v, want 800 800 0.5", v.vi[3], v.status & 0x830, v.q)}
 
@@ -593,11 +595,23 @@ flag_delay :: proc() {
 		vu.vu_op(v, 0x4a000038 | (addr / 8) << 6) // VCALLMS
 	}
 	// The ADD sets the four sign bits of MAC (0xf0) and status S and SS; the
-	// CLIP sets the three minus bits (0x2a).
+	// CLIP sets the three minus bits (0x2a). The FSAND two pairs after the
+	// ADD sees neither S nor the sticky SS (both 4 pairs late); the one in the
+	// delay slot after the E bit, seven after, sees both.
 	put_pairs(0x200, {NOP_L, ADD_3_1_2}, {fmand(1), NOP_U}, {fsand(3), CLIP_1_2}, {fmand(4), NOP_U}, {fmand(5), NOP_U}, {fcget(6), NOP_U}, {fcget(7), NOP_U | E}, {fsand(8), NOP_U})
 	call(v, 0x200)
-	want := [?][2]u16{{1, 0}, {3, 0x80}, {4, 0}, {5, 0xf0}, {6, 0}, {7, 0x2a}, {8, 0x82}}
+	want := [?][2]u16{{1, 0}, {3, 0}, {4, 0}, {5, 0xf0}, {6, 0}, {7, 0x2a}, {8, 0x82}}
 	for w in want {if v.vi[w[0]] != w[1] {fail("flag delay: vi%d = %x, want %x", w[0], v.vi[w[0]], w[1])}}
+
+	// FSSET with an FMAC in the same pair keeps the FMAC's non-sticky bits:
+	// the SUB sets Z (and sticky ZS, which FSSET replaces with D); the FSAND
+	// four pairs later sees Z | sticky D.
+	SUB_3_0_0 :: 0xf << 21 | 3 << 6 | 0x2c // VSUB.xyzw vf3, vf0, vf0
+	FSSET_D :: 0x15 << 25 | 1 << 21 // FSSET 0x800
+	FSAND_ALL :: 0x16 << 25 | 1 << 21 | 10 << 16 | 0x7ff // FSAND vi10, 0xfff
+	put_pairs(0x280, {FSSET_D, SUB_3_0_0}, {NOP_L, NOP_U}, {NOP_L, NOP_U}, {NOP_L, NOP_U}, {FSAND_ALL, NOP_U}, {NOP_L, NOP_U | E}, {NOP_L, NOP_U})
+	call(v, 0x280)
+	if v.vi[10] != 0x801 {fail("FSSET with an FMAC: vi10 = %x, want 801", v.vi[10])}
 
 	// B over a pair: the FMAND after it is the third pair run after the ADD.
 	B_2 :: 0x20 << 25 | 2 // B +2
