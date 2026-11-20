@@ -282,3 +282,49 @@ writes :: proc(w: u32, r: int) -> bool {
 	}
 	return rt == r
 }
+
+// Mark, in each function's back, the calls (jal) to a function that may
+// return somewhere other than the caller's jal+8; returns how many. Native
+// code goes on at jal+8 whatever the callee jumps to; at a marked call it
+// checks (cpu.call_back) and, when the callee came back to this function's
+// own return address, returns too, as the interpreter's jr $ra unwinds to
+// that frame (psx/cpu interp_unwind_find). FF8's LZS decompressor
+// (0x8003947c) yields through 0x800394d0, which loads $ra from a global and
+// returns to the decompressor's caller; run on at jal+8, the decompressor
+// went on past its buffer and wrote over the program.
+//
+// A callee counts when it loads $ra other than from its stack frame
+// (returns_elsewhere_here). One that saves $ra in a global and restores it
+// to return to its own caller counts too (Crash, FF7): its calls only cost
+// the check. mods holds each module's functions.
+returns_elsewhere :: proc(mods: [][]^mips.Func) -> int {
+	here: Set
+	defer delete(here)
+	for funcs in mods {
+		for f in funcs {
+			if returns_elsewhere_here(f) {here[f.entry] = {}}
+		}
+	}
+	n := 0
+	for funcs in mods {
+		for f in funcs {
+			for _, i in f.insns {
+				if i.kind == .Call && i.target in here {
+					f.back[i.target] = {}
+					n += 1
+				}
+			}
+		}
+	}
+	return n
+}
+
+// Whether f loads $ra (lw $31) through a base other than $sp or $fp.
+returns_elsewhere_here :: proc(f: ^mips.Func) -> bool {
+	LW :: 0x23
+	for _, i in f.insns {
+		if i.w >> 26 != LW || (i.w >> 16) & 31 != 31 {continue}
+		if base := (i.w >> 21) & 31; base != 29 && base != 30 {return true}
+	}
+	return false
+}

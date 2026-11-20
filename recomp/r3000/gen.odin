@@ -190,6 +190,7 @@ generate :: proc(o: mips.Options) {
 		}
 		fmt.printfln("native: %d functions that may switch threads left to the interpreter, %d of them pointed at by data", len(p.interp), pointed)
 	}
+	fmt.printfln("native: %d calls to functions that may return elsewhere checked", returns_elsewhere(mods))
 	recomp_exe(&p, mods[0])
 	if p.overlays != nil {
 		recomp_overlays(&p, mods[1:], package_insns)

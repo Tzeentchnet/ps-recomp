@@ -17,6 +17,7 @@ Step_Kind :: enum u8 {
 	Patch,      // when `cond` holds, the steps up to the matching End
 	Goto,       // pc = `target` within the function; `check`: run due events first
 	Call,       // call the function at `target`
+	Call_Back,  // call the function at `target`; when it came back to this function's own return address, return too (cpu.call_back)
 	Tail_Call,  // call the function at `target` as a `j` does; then, unless it came back to this function's own return address, pc = where it went (cpu.tail_call); a Return follows
 	Branch,     // t := the condition of branch `i`, up to the matching End
 	Link,       // register `n` = `target` (a return address)
@@ -236,7 +237,7 @@ lower :: proc(f: ^Func, patches: []Patch, cycles: int, exact := true) -> []Step 
 		case .Call:
 			put(&l, {kind = .Link, n = 31, target = ret})
 			delay(&l, d, slot_op)
-			if i.target != ret {put(&l, {kind = .Call, target = i.target})}
+			if i.target != ret {put(&l, {kind = i.target in l.f.back ? .Call_Back : .Call, target = i.target})}
 		case .Jalr:
 			put(&l, {kind = .Jump_Reg, n = i.rs})
 			if i.rd != 0 {

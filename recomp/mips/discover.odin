@@ -48,6 +48,7 @@ Func :: struct {
 	delay:    Set, // delay-slot pcs
 	exits:    Set, // branch/jump targets outside [start, end)
 	computed: bool, // a walked jr through a register other than $ra
+	back:     Set, // call targets that may return to this function's own caller (r3000 returns_elsewhere)
 	warnings: [dynamic]string,
 }
 
@@ -64,6 +65,7 @@ func_free :: proc(f: ^Func) {
 	delete(f.labels)
 	delete(f.delay)
 	delete(f.exits)
+	delete(f.back)
 	delete(f.warnings)
 	free(f)
 }

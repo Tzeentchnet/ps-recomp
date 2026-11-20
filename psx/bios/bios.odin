@@ -229,6 +229,11 @@ bios_a :: proc(fn: u32) {
 		// _card_info / _card_load: complete at once.
 		card_info(arg(0))
 		ret(1)
+	case 0xad:
+		// set_card_auto_format(flag): whether the retail card driver
+		// formats an unformatted card when it reads one. The cards here
+		// are files that card_info and the reads take as they are, so
+		// the flag has nothing to steer.
 	case:
 		bios_unknown("A", fn)
 	}

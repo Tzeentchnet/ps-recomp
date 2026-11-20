@@ -99,7 +99,7 @@ interp_unwinds, interp_jumps: u64
 // Say the `jr $ra` counts (at quit, in both builds; under FLAT from flat_print).
 interp_print :: proc() {
 	who := learn_cpu == .Iop ? "iop" : "psx"
-	fmt.eprintfln("%s jr $ra: %d unwinds to an outer call, %d jumps", who, interp_unwinds, interp_jumps)
+	fmt.eprintfln("%s jr $ra: %d unwinds to an outer call, %d jumps; %d native returns past the caller", who, interp_unwinds, interp_jumps, call_backs)
 }
 
 interp_loop :: proc(start: u32) {

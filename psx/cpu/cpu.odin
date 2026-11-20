@@ -184,6 +184,8 @@ hook_overlay :: proc(addr, slot, id: u32, fn: Func_Proc) -> (original: Func_Proc
 
 // Return address of the innermost host-level call.
 frame_ret: u32
+// Native calls that returned past their function to its caller (call_back).
+call_backs: u64
 
 // Execute the MIPS function at addr and return when it returns.
 call :: proc(addr: u32) {
@@ -207,6 +209,21 @@ call :: proc(addr: u32) {
 		}
 	}
 	call_slow(addr)
+}
+
+// call, from native code whose call to addr may return elsewhere
+// (recomp/r3000 returns_elsewhere): 1 when addr came back to the return
+// address of the function making the call (its frame_ret), not to the
+// call's own (the $ra the jal left): that function returns too, as the
+// interpreter's `jr $ra` unwinds to the outer call. Else 0: it goes on.
+call_back :: proc(addr: u32) -> u32 {
+	mine, link := frame_ret, state.r[31]
+	call(addr)
+	if ra := state.r[31]; ra != link && ra == mine {
+		call_backs += 1
+		return 1
+	}
+	return 0
 }
 
 // A `j` (or a fall) from recompiled code in [start, end) to addr, which is
