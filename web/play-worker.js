@@ -29,6 +29,11 @@ const buffers = (files) => (files ?? []).map(([, b]) => b.buffer);
 // openStored tries on a held lock: LOCK_TRIES more, LOCK_WAIT_MS apart.
 const LOCK_TRIES = 30;
 const LOCK_WAIT_MS = 100;
+// gs_warm calls per step of the raster warm (ps2/gs/warm_wasm.odin): one
+// step is 1024 empty rows, so it overruns its sleep's deadline by little.
+// The whole warm is 73728 calls; in Okami its nine procs reach TurboFan
+// long before frame 254 (OKAMI-60 STEP 20).
+const GS_WARM_STEP = 1024;
 
 // The disc for Wasi, {disc, close()}, and how it is read, which goes to the
 // page as {store: {kind, ...}}. stored: play that stored disc. store with
@@ -181,7 +186,12 @@ onmessage = async ({ data }) => {
 		// before the run first calls it (web/native.js warm); PS_WARM=0
 		// turns that off.
 		const native = new Native({ log: (text) => postMessage({ log: text }) });
-		const idle = env.PS_WARM === "0" ? null : (deadline) => native.warm(deadline);
+		// The runtime's own raster procs go first: ps2/gs/warm_wasm.odin.
+		let gsWarm = null;
+		const idle = env.PS_WARM === "0" ? null : (deadline) => {
+			gsWarm?.(deadline);
+			native.warm(deadline);
+		};
 		wasi = new Wasi({ args: [wasm.replace(/\.wasm$/, ""), ...args], env, disc: disc.disc, log, renamed, idle });
 		// /data from the store (readers.js), but in test mode, whose runs start
 		// from an empty /data so they compare with native ones (unless useStore).
@@ -212,6 +222,17 @@ onmessage = async ({ data }) => {
 		net?.attach(instance);
 		learn?.attach(instance);
 		vu?.attach(instance);
+		const warmStep = instance.exports.gs_warm;
+		if (warmStep !== undefined) {
+			gsWarm = (deadline) => {
+				while (performance.now() < deadline) {
+					if (warmStep(GS_WARM_STEP) <= 0) {
+						gsWarm = null;
+						return;
+					}
+				}
+			};
+		}
 		t1 = performance.now();
 		const code = wasi.run(instance);
 		times.runMs = Math.round(performance.now() - t1);
