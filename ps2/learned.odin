@@ -497,6 +497,29 @@ learned_first :: proc(pc: u32) -> (int, bool) #no_bounds_check {
 	return 0, false
 }
 
+// wasm32: whether a learned function whose words RAM holds now holds pc, a
+// block at pc or not. Where it has none the runner looks up no code
+// (learned_search), but a run's tail call there goes on in another
+// function's words: it ends the run (flat_steps), which would otherwise
+// hold them, and begins none, pc being no entry. Asked only with LEARN on
+// and a run open (flat_steps). A compare here leaves the words unarmed, so
+// clean stays as it was.
+learned_holds :: proc(pc: u32) -> bool #no_bounds_check {
+	w := pc / 4
+	if learned_marks == nil || pc >= mem.RAM_SIZE || pc & 3 != 0 || learned_marks[w / 64] & (1 << (w % 64)) == 0 {return false}
+	k, _ := slice.binary_search_by(learned_steps[:], pc + 1, proc(l: Learned_Step, t: u32) -> slice.Ordering {
+		return l.lo < t ? .Less : .Greater
+	})
+	for k -= 1; k >= 0; k -= 1 {
+		l := &learned_steps[k]
+		if pc - l.lo >= 4 * learned_most {break}
+		n := len(l.words)
+		if pc - l.lo >= 4 * u32(n) {continue}
+		if l.clean == mem.code_writes || string(mem.ram[l.lo:][:4 * n]) == string(([^]u8)(raw_data(l.words))[:4 * n]) {return true}
+	}
+	return false
+}
+
 // Game data's learned rows (core/gamedata.odin): each loaded function, by
 // entry and lo. One map of the open records per write keeps it linear in
 // functions and records, so the write frame does not stall.

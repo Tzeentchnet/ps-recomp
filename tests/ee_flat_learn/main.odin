@@ -26,7 +26,11 @@
 //     compilers' divide-by-zero trap (`beql a1, zero; break 7`), S a
 //     `beql a0, zero` with a SYSCALL slot. Each runs learned as it runs
 //     interpreted, on both paths: v0, the cycles, and the BREAK's pc
-//     (cpu.trap_hook). The leave opens no run.
+//     (cpu.trap_hook). The leave finds no code at the transfer (D + 4,
+//     S + 4), so the runner begins a run there, as after any jump out of
+//     learned code to a lookup miss (37422d7): each records the transfer
+//     and its slot, n 2. A guard that began none there cost Okami web 6
+//     learned functions and 214 more no-code lookups in 1800 frames.
 //   - Learned code's call to learned code (C calls E) is made in place by
 //     the in-line call routine (ps2.learned_entry), with no trip through
 //     the runner, twice. E's words stored over make the call fall to the
@@ -460,10 +464,10 @@ main :: proc() {
 		w := want_slot[i]
 		check(native_ran && got == w, fmt.tprintf("learned %08x(%d, %d): v0 %d, BREAK at %08x, %d cycles, learned code ran %v; want v0 %d, BREAK at %08x, %d cycles, ran", c[0], c[1], c[2], got.v0, got.broke, got.cycles, native_ran, w.v0, w.broke, w.cycles))
 	}
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {E, 3}}, "a leave to the interpreter at a delay slot's transfer")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {D + 4, 2}, {S + 4, 2}, {E, 3}}, "a leave to the interpreter at a delay slot's transfer")
 
 	core.learn_report()
-	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {E, 3}}, "the report")
+	check_file({{A1, 8}, {A2, 7}, {A3, 7}, {A4, 2}, {A5, 7}, {A6, 7}, {A7, 2}, {A8, 7}, {A9, 7}, {A10, 7}, {B, 3}, {M, 3}, {D + 4, 2}, {S + 4, 2}, {E, 3}}, "the report")
 
 	// A loop that stores more often than the store log holds (each pass to
 	// the next word, the log noting each): its run is checked all through,
@@ -615,5 +619,5 @@ main :: proc() {
 		if !eok {for r in erecs {fmt.eprintfln("  %08x lo %08x %v n %d", r.entry, r.lo, r.flags, len(r.words))}}
 	}
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens none; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter; a call into learned code where it has no block notes a run there, a jump there none; a return into learned code where it has no block goes on with the run")
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens a run at the transfer; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter; a call into learned code where it has no block notes a run there, a jump there none; a return into learned code where it has no block goes on with the run")
 }

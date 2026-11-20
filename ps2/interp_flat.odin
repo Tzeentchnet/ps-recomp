@@ -128,7 +128,7 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 				if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
 				pc = i.target
-				if flat_native_at(pc) {
+				if flat_tail_at(N, pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
@@ -142,7 +142,7 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
 				pc = i.target
-				if flat_native_at(pc) {
+				if flat_tail_at(N, pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
@@ -227,7 +227,7 @@ flat_steps :: proc($L, $N: bool, x_: ^kernel.Flat_Ctx, pc_: u32, lf_: ^core.Lear
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
 			} else {
 				pc = t
-				if flat_native_at(pc) {
+				if flat_tail_at(N, pc) {
 					x.pc = pc
 					when L {kernel.flat_learn_end(x, x.depth)} // a tail call: the run returns, as goto_pc's
 					if x, pc, lf, ok = flat_resume(L); !ok || flat_switch(L, N, lf) {return}
@@ -368,6 +368,22 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 	}
 	when L {lf = kernel.flat_learn_top(x)}
 	return x, pc, lf, true
+}
+
+// wasm32: whether a taken jump to t that checked nothing leaves its run to
+// the runner (flat_resume, after x.pc = t): native code at t, or, with a
+// run open (N), a learned function's words with no block at t
+// (learned_holds). The tail call ends the run either way, and the runner,
+// finding no code there, begins none: t is no entry.
+@(private = "file")
+flat_tail_at :: #force_inline proc($N: bool, t: u32) -> bool {
+	when ODIN_ARCH == .wasm32 {
+		if !flat_native_on {return false}
+		if flat_lookup(t) != nil {return true}
+		when N {return learned_holds(t)} else {return false}
+	} else {
+		return false
+	}
 }
 
 // wasm32: native code at t, which a taken jump that checked nothing goes
