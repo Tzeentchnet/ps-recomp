@@ -652,7 +652,9 @@ function record(now) {
 // A gap is the ticks since the previous new image. The cadence is the larger
 // of the medians of the last CADENCE_GAPS gaps and of the last 3, so a change
 // of rate (60 to 30 fps) costs at most 2 hitches. A hitch is a gap over the
-// cadence, its extra ticks gap - cadence. rafMs keeps the last RAF_KEEP tick
+// cadence, its extra ticks gap - cadence. Its pace ticks are gap - dF
+// (floored at 0), dF the frames run since the previous image: a gap the game
+// filled with frames that drew nothing is extra but not pace. rafMs keeps the last RAF_KEEP tick
 // intervals, to show the rAF rate the ticks stand for.
 const CADENCE_GAPS = 31;
 const HITCH_LIST = 1000; // hitches listed, the first ones
@@ -670,7 +672,7 @@ const MAIN_LATE_MS = 20;
 const IMG_KEEP = 4096;
 const SHOWN_KEEP = 8192;
 const hitch = {
-	at: 0, tick: 0, last: -1, gaps: [], count: 0, extra: 0, list: [], next: null, images: 0, raf: new Float64Array(RAF_KEEP), nraf: 0,
+	at: 0, tick: 0, last: -1, gaps: [], count: 0, extra: 0, pace: 0, list: [], next: null, images: 0, raf: new Float64Array(RAF_KEEP), nraf: 0,
 	tickAt: new Float64Array(RAF_KEEP), lastFrame: 0, shownFrame: 0, classes: { phase: 0, workerLate: 0, mainLate: 0, other: 0 },
 	imgs: [], cost: new Float32Array(SHOWN_KEEP), copied: new Int32Array(SHOWN_KEEP), nshown: 0,
 };
@@ -710,6 +712,7 @@ function noteTick(now, fresh, frame, timing) {
 	hitch.images++;
 	if (hitch.imgs.length < IMG_KEEP)
 		hitch.imgs.push([frame, hitch.last >= 0 ? hitch.tick - hitch.last : null, timing.image > 0 ? r2(at - timing.image) : null, frame - hitch.lastFrame]);
+	const dF = frame - hitch.lastFrame;
 	hitch.lastFrame = frame;
 	if (hitch.last >= 0) {
 		const gap = hitch.tick - hitch.last;
@@ -721,9 +724,11 @@ function noteTick(now, fresh, frame, timing) {
 				const [cls, d, maxRaf] = hitchClass(c, timing.image);
 				hitch.count++;
 				hitch.extra += gap - c;
+				const pace = Math.max(0, gap - dF);
+				hitch.pace += pace;
 				hitch.classes[cls]++;
 				const img = hitch.imgs.at(-1);
-				if (hitch.list.length < HITCH_LIST) hitch.list.push((hitch.next = [frame, gap, c, null, cls, d, img[2], img[3], maxRaf]));
+				if (hitch.list.length < HITCH_LIST) hitch.list.push((hitch.next = [frame, gap, c, null, cls, d, img[2], img[3], maxRaf, pace]));
 			}
 		}
 		hitch.gaps.push(gap);
@@ -734,7 +739,7 @@ function noteTick(now, fresh, frame, timing) {
 
 // The report's hitches: list entries are [present frame, gap, cadence,
 // the gap after it, class, stamp - edge ms, tick - stamp ms, FRAME_WORD
-// delta, max tick interval ms]; present is the shown slots' present() ms
+// delta, max tick interval ms, pace ticks]; present is the shown slots' present() ms
 // and bytes copied.
 function hitchState() {
 	const raf = hitch.raf.subarray(0, Math.min(hitch.nraf, RAF_KEEP));
@@ -742,7 +747,7 @@ function hitchState() {
 		rafMedianMs: raf.length ? Math.round(median(raf) * 100) / 100 : null,
 		ticks: hitch.tick, images: hitch.images,
 		cadence: hitch.gaps.length ? cadence(hitch.gaps) : null,
-		count: hitch.count, extraTicks: hitch.extra, list: [...hitch.list],
+		count: hitch.count, extraTicks: hitch.extra, paceTicks: hitch.pace, list: [...hitch.list],
 		classes: { ...hitch.classes }, imgs: [...hitch.imgs], present: shownState(),
 	};
 }
