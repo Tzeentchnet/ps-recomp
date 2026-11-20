@@ -229,7 +229,7 @@ I/O (no game reads a timer unaligned).
 
 ### Press scripts with conditions
 
-A `PS_PRESS` entry (core/input.odin input_script_load; the README has the
+A `PS_PRESS` entry (core/input.odin input_script_load; [compat.md](compat.md) has the
 plain form) can wait on main RAM. `?<cond>~<n>` after the timing makes it
 conditional, where `<cond>` is `u8`, `u16` or `u32`, a hex address in
 brackets, `==` or `!=`, and a value (decimal or `0x` hex). Values are
