@@ -1,36 +1,33 @@
 # The launcher
 
-Run `play-bin` with no disc to open the launcher:
+Run `play-bin` with no disc to open it:
 
 ```sh
 ./play-bin
 ```
 
-It shows your library of discs. To add one, drag a disc image (`.cue`,
-`.iso` or `.bin`) onto the window, or a folder to add every image in it.
-The launcher remembers where each image is. It never copies or moves the
-file. If you move or delete an image, its disc shows as missing in red;
-you can then take it off the list. Its saves are kept.
+## Your library
 
-The selected disc shows its picture from the last time you quit it, and
-its result from [the compatibility check](compat.md).
+- **Add a disc:** drag a disc image (`.cue`, `.iso` or `.bin`) onto the
+  window. Drag a folder to add every image in it.
+- The launcher remembers where each image is. It never copies or moves
+  the file.
+- **A moved or deleted image** shows as missing, in red. You can take it
+  off the list; its saves are kept.
+- **The selected disc** shows its picture from the last time you quit it,
+  and its result from [the compatibility check](compat.md).
+
+## Playing
+
 Start a disc and the launcher hides until the game ends. If the game
 fails, the launcher shows the last line it printed. Everything it printed
-is also kept in `play.log` (see [Where your files go](settings.md#where-your-files-go)).
+is kept in `play.log` (see [Where your files go](settings.md#where-your-files-go)).
 
-Export makes a new git-ready folder for the selected disc, to study the
-game in and tune it by hand. It goes in `ps-recomp-ports` in your home
-folder, named after the disc (with ` 2`, ` 3` and so on added when the
-name is taken), and the launcher says where. The folder holds notes, the
-disc's settings, its last picture and a port of the game to build (see
-[Start from an export](porting.md#start-from-an-export)). The disc
-image stays where it is and is never copied. `./play-bin --export <disc
-image> <folder>` does the same into a folder you name, which must be
-missing or empty.
+## Settings screen
 
-The settings screen changes [settings](settings.md) for the selected disc
-or, after a switch, for all discs. A change is saved at once. Each row
-says where its value comes from:
+Changes [settings](settings.md) for the selected disc, or, after a switch,
+for all discs. A change is saved at once. Each row says where its value
+comes from:
 
 | Shown | Where the value comes from |
 |---|---|
@@ -39,8 +36,24 @@ says where its value comes from:
 | `(all discs)` | The setting for all discs. |
 | nothing | The default. |
 
-Clearing a row removes the setting from the screen you are on, so the
-next one down holds.
+Clearing a row removes the setting from the screen you are on, so the next
+one down holds.
+
+## Export
+
+Export makes a new git-ready folder for the selected disc, to study the
+game and tune it by hand.
+
+- It goes in `ps-recomp-ports` in your home folder, named after the disc
+  (with ` 2`, ` 3` and so on if the name is taken). The launcher says where.
+- It holds notes, the disc's settings, its last picture and a port of the
+  game to build. See [Start from an export](porting.md#start-from-an-export).
+- The disc image stays where it is and is never copied.
+
+From the command line, `./play-bin --export <disc image> <folder>` does the
+same into a folder you name. The folder must be missing or empty.
+
+## Keys
 
 | Action | Keyboard | Controller | Mouse |
 |---|---|---|---|
@@ -56,7 +69,10 @@ next one down holds.
 | Take a missing disc off the list | Delete | Y | |
 | Back to the list | Esc or Backspace | B | |
 
-The controller column is read from the code. It has not been tried with a
-controller. Dropping a folder has been tested only by the automated tests.
-The launcher has only been run on Linux. On Windows and macOS it is
-untested, and so is an export and the port it holds.
+## Not yet tested
+
+- The controller column is read from the code; it has not been tried with
+  a controller.
+- Dropping a folder has been tested only by the automated tests.
+- The launcher has only been run on Linux. On Windows and macOS it is
+  untested, and so are exports and the ports they hold.

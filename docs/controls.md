@@ -1,14 +1,23 @@
 # Controls
 
-A game controller works with the usual layout. The buttons map by
-position:
+## Controller
 
-- A is Cross, B is Circle, X is Square and Y is Triangle.
-- The triggers are L2 and R2.
-- Clicking the sticks gives L3 and R3 on PS2.
-- Back is Select.
+A game controller works with the usual layout. Buttons map by position:
 
-The keyboard defaults differ by console:
+| Controller | PlayStation |
+|---|---|
+| A / B / X / Y | Cross / Circle / Square / Triangle |
+| LB / RB | L1 / R1 |
+| Triggers | L2 / R2 |
+| Stick clicks | L3 / R3 (PS2) |
+| Back | Select |
+| Start | Start |
+
+Controllers can be plugged in or out while a game runs.
+
+## Keyboard
+
+The defaults differ by console:
 
 | PlayStation button | PS1 | PS2 |
 |---|---|---|
@@ -23,3 +32,15 @@ The keyboard defaults differ by console:
 | Select | Backspace | Right Shift |
 
 On PS1, the left and right mouse buttons are also Cross and Circle.
+
+## Window keys (PS1)
+
+| Key | Does |
+|---|---|
+| F11 or Alt+Return | Fullscreen on or off |
+| P or Pause | Pause or resume |
+
+A key the game's layout already uses for a button (such as P) keeps that
+button instead.
+
+The [launcher](launcher.md#keys) has its own keys.
