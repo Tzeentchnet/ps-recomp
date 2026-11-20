@@ -633,6 +633,15 @@ flag_delay :: proc() {
 	vu.vu_op(v, 0x4a000038 | (0x400 / 8) << 6)
 	if v.vi[1] != 0x1234 {fail("flag delay at a program's start: vi1 = %x, want 1234", v.vi[1])}
 
+	// The upper and the lower writing one VF: the upper's write stands and
+	// the lower's is dropped whole (PCSX2 mVUsetCycles), here a MOVE.x of
+	// another value and an LQI, which still bumps vi5.
+	MOVE_X_3_2 :: 0x40 << 25 | 0b1000 << 21 | 3 << 16 | 2 << 11 | 0x33c // MOVE.x vf3, vf2
+	LQI_3_5 :: 0x40 << 25 | 0xf << 21 | 3 << 16 | 5 << 11 | 0x37c // LQI.xyzw vf3, (vi5++)
+	put_pairs(0x480, {MOVE_X_3_2, ADD_3_1_2}, {LQI_3_5, ADD_3_1_2}, {NOP_L, NOP_U | E}, {NOP_L, NOP_U})
+	call(v, 0x480)
+	if v.vf[3].f != {-1, -2, -3, -3.5} || v.vi[5] != 1 {fail("upper and lower writing one VF: vf3 %v vi5 %d, want [-1, -2, -3, -3.5] 1", v.vf[3].f, v.vi[5])}
+
 	// VU1 delays its MAC too.
 	vu.vu1.vf[1].f = {-1, -2, -3, -4}
 	vu.vu1.vf[2] = {}

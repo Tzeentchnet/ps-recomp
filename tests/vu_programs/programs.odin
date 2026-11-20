@@ -144,9 +144,9 @@ PROGRAMS := [?][]u32 {
 	{lower_sp(SQRT, 0b0100, 4, 0), upper(ADD, 4, 1, 2), lower_op(SQ, 0b1011, 6, 4, 0x13), upper(MSUBq, 4, 2, 0), NOP_L, NOP_U | E_BIT, NOP_L, NOP_U},
 	{lower_sp(SQI, 0b1111, 7, 5), upper(MULq, 5, 5, 0), lower_sp(MOVE, 0b0110, 9, 5), upper(ADD, 5, 1, 5), lower_sp(MR32, 0b1111, 10, 5), upper(MULi, 5, 5, 0), NOP_L, NOP_U | E_BIT, NOP_L, NOP_U},
 	// The lower writes the upper's dest: MOVE of the register onto
-	// itself (the upper wins), LQI (it wins), LQ of x and z (it wins,
-	// keeping y and w from before the upper). Each result is read by
-	// the next upper, and LQ's is left at the end.
+	// itself, LQI, LQ of x and z. The upper wins each whole (PCSX2
+	// mVUsetCycles); LQI still bumps its vi. Each result is read by the
+	// next upper, and the last is left at the end.
 	{lower_sp(MOVE, 0b1111, 3, 3), upper(MULi, 3, 3, 0), lower_sp(LQI, 0b1111, 3, 6), upper(MSUBq, 3, 3, 0), lower_op(LQ, 0b1010, 3, 4, 0x7f5), upper(ADD, 3, 1, 2), NOP_L, NOP_U | E_BIT, NOP_L, NOP_U},
 	// Hazard pairs in an E-bit pair and its successor, one case.
 	{NOP_L, upper(ADD, 3, 1, 2), lower_sp(DIV, 0b0110, 1, 3), upper(MULq, 3, 3, 0) | E_BIT, lower_sp(MTIR, 3, 4, 3), upper(ADD, 3, 3, 1)},

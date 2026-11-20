@@ -680,9 +680,9 @@ emit_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow: ^map
 		upper(sb, p, unit, slow, known)
 	case .Hazard:
 		// As vu_pair: the lower reads the upper's dest from before the
-		// upper, and its own write to it, if any, wins unless it leaves the
-		// register as it was. A block, as an E-bit pair and its successor
-		// share a case.
+		// upper, and the upper's write stands over the lower's whole, when
+		// the upper writes any field. A block, as an E-bit pair and its
+		// successor share a case.
 		ud := upper_dest(p.uw)
 		fmt.sbprintln(sb, "\t\t\t{")
 		if known != nil {known.nested = true}
@@ -691,11 +691,7 @@ emit_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow: ^map
 		fmt.sbprintfln(sb, "\t\t\tresult := vf[%d]", ud)
 		fmt.sbprintfln(sb, "\t\t\tvf[%d] = saved", ud)
 		lower(sb, p, pc, unit, slow, known)
-		if (p.lw >> 16) & 31 == ud { // every lower VF write goes to ft
-			fmt.sbprintfln(sb, "\t\t\tif vf[%d].q == saved.q {{vf[%d] = result}}", ud, ud)
-		} else {
-			fmt.sbprintfln(sb, "\t\t\tvf[%d] = result", ud)
-		}
+		if (p.uw >> 21) & 15 != 0 {fmt.sbprintfln(sb, "\t\t\tvf[%d] = result", ud)} else {fmt.sbprintln(sb, "\t\t\t_ = result")}
 		fmt.sbprintln(sb, "\t\t\t}")
 		if ud != 0 {overwrite(known, ud, 15)} // either half's value
 	case .Slow:

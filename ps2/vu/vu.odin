@@ -1532,7 +1532,10 @@ vu_pair_info :: proc(uw, lw: u32) -> Vu_Pair_Info {
 }
 
 // Execute one upper/lower pair. Both halves read registers before either
-// writes; when both write the same VF register the lower result wins.
+// writes. When both write the same VF register the upper's write stands and
+// the lower's is dropped whole, whatever the dest masks: PCSX2 microVU
+// mVUsetCycles (microVU_Compile.inl) drops the lower write when both ops
+// write one VF with any dest bit set (microVU_Analyze.inl analyzeReg2).
 // No bounds checks: keep every index masked to its array's length (&31,
 // &15, &3), constant or bounded by a 0 ..< 4 loop.
 @(private)
@@ -1551,7 +1554,7 @@ vu_pair :: proc(v: ^Vu, uw, lw, pc: u32) -> (taken: bool, target: u32) #no_bound
 	v.vf[ud] = saved
 	v.mac, v.status, v.clip = flags[0], flags[1], flags[2]
 	taken, target = vu_lower(v, lw, pc)
-	if v.vf[ud].q == saved.q {v.vf[ud] = result}
+	if (uw >> 21) & 15 != 0 {v.vf[ud] = result} // else the upper wrote nothing
 	if v.mac == flags[0] {v.mac = uflags[0]}
 	// The lower writes status only by FSSET, which keeps the upper's
 	// non-sticky bits: PCSX2 microVU emits the upper first and gives the pair

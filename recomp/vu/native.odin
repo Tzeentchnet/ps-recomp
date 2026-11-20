@@ -1215,8 +1215,8 @@ micro_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]
 		micro_upper(a, u, p, slow, known)
 	case .Hazard:
 		// As vu_pair: the lower reads the upper's dest from before the
-		// upper, and its own write to it, if any, wins unless it leaves the
-		// register as it was.
+		// upper, and the upper's write stands over the lower's whole, when
+		// the upper writes any field.
 		ud := upper_dest(p.uw)
 		native.vec_load(a, .V0, 16 * ud, vf)
 		native.vec_store(a, SCR_SAVED, .V0, scratch)
@@ -1226,17 +1226,10 @@ micro_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]
 		native.vec_load(a, .V0, SCR_SAVED, scratch)
 		native.vec_store(a, 16 * ud, .V0, vf)
 		micro_lower(a, u, p.lw, pc, slow, known)
-		keep := native.new_label(a)
-		if (p.lw >> 16) & 31 == ud { // every lower VF write goes to ft
-			native.vec_load(a, .V0, 16 * ud, vf)
-			native.vec_load(a, .V1, SCR_SAVED, scratch)
-			native.vec_op(a, .Eq32, .V0, .V1)
-			native.vec_signs(a, .A, .V0)
-			native.br_cmp_imm(a, .Ne, .A, 0xf, keep)
+		if (p.uw >> 21) & 15 != 0 {
+			native.vec_load(a, .V0, SCR_RESULT, scratch)
+			native.vec_store(a, 16 * ud, .V0, vf)
 		}
-		native.vec_load(a, .V0, SCR_RESULT, scratch)
-		native.vec_store(a, 16 * ud, .V0, vf)
-		native.bind(a, keep)
 		if known != nil && ud != 0 {known[ud] = 0} // either half's value
 	case .Slow:
 	}
