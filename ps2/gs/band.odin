@@ -64,9 +64,18 @@ BAND_PAGES :: 8 // pages written outside the workers: they validate again
 BAND_FLUSH :: 9 // drop every cache entry (tc_flush)
 @(private)
 BAND_SCAN :: 10 // scanout: each worker fills its share of the rows
-// Idle spins before a thread sleeps on a futex.
-@(private)
-BAND_SPIN :: 4000
+// Idle spins before a thread sleeps on a futex (-define:PS_BAND_SPIN=n).
+// On the web none: in Okami (OKAMI-60 STEP 15, 5 workers) spinning 4000 or
+// 500 left hitches, frames over 16.7 ms and image latency where sleeping at
+// once put them, and the producer's spin ended its wait in 0-4% of waits.
+when ODIN_ARCH == .wasm32 {
+	@(private = "file")
+	BAND_SPIN_DEFAULT :: 0
+} else {
+	@(private = "file")
+	BAND_SPIN_DEFAULT :: 4000
+}
+BAND_SPIN :: #config(PS_BAND_SPIN, BAND_SPIN_DEFAULT)
 
 @(private)
 Band_Job :: struct {
@@ -91,6 +100,14 @@ Band_Worker :: struct {
 	_:                 [64]u8,
 	done:              u64, // jobs finished (atomic, the worker's own line)
 	_:                 [56]u8,
+	idle:              Band_Idle, // written by the worker alone (atomic stores)
+	_:                 [32]u8,
+}
+
+// Idle waits (band_idle, or band_wait for the producer): entered, ended
+// by work while spinning and the spins those took, and ended in a sleep.
+Band_Idle :: struct {
+	entries, wins, spins, sleeps: u64,
 }
 
 // A buffer mapping outstanding jobs reach, and the pages they reach with it.
@@ -137,6 +154,7 @@ band: struct {
 	pwaiting:     u32,
 	quit:         bool,
 	registered:   bool,
+	pidle:        Band_Idle, // the producer's waits in band_wait
 	next:         u64, // jobs band_slot has handed out
 }
 
@@ -146,6 +164,22 @@ band: struct {
 band_stats: struct {
 	jobs, serial, raw, war, alias, xfer, read:                            u64,
 	batches, haz_raw, haz_xfer, haz_read, haz_hoist, haz_snap, haz_ordered: u64,
+}
+
+// The idle waits so far: the producer's, then one per worker into ws
+// (STATS=1 prints them per frame). n is the worker count.
+band_idle_stats :: proc(ws: []Band_Idle) -> (producer: Band_Idle, n: int) {
+	n = min(int(band.n), len(ws))
+	for i in 0 ..< n {
+		st := &band.w[i].idle
+		ws[i] = {
+			intrinsics.atomic_load(&st.entries),
+			intrinsics.atomic_load(&st.wins),
+			intrinsics.atomic_load(&st.spins),
+			intrinsics.atomic_load(&st.sleeps),
+		}
+	}
+	return band.pidle, n
 }
 
 // Test knobs (tests/gs_band). Lazy: publish jobs only when a join or a
@@ -223,20 +257,33 @@ band_stop :: proc() {
 band_wait :: proc "contextless" (seq: u64) {
 	if band.low >= seq {return}
 	if band.pub != band.next {band_publish(true)}
+	spun, slept := 0, false
 	for i in 0 ..< band.n {
 		w := band.w[i]
 		for spin := 0; intrinsics.atomic_load(&w.done) < seq; spin += 1 {
 			if spin < BAND_SPIN {
 				intrinsics.cpu_relax()
+				spun += 1
 				continue
 			}
 			intrinsics.atomic_store(&band.pwaiting, 1)
 			v := intrinsics.atomic_load(&band.pfut)
-			if intrinsics.atomic_load(&w.done) < seq {sync.futex_wait(&band.pfut, u32(v))}
+			if intrinsics.atomic_load(&w.done) < seq {
+				sync.futex_wait(&band.pfut, u32(v))
+				slept = true
+			}
 		}
 	}
 	intrinsics.atomic_store(&band.pwaiting, 0)
 	band.low = seq
+	// The producer's own fields: plain stores, read on this thread.
+	if spun > 0 || slept {
+		band.pidle.entries += 1
+		if slept {band.pidle.sleeps += 1} else {
+			band.pidle.wins += 1
+			band.pidle.spins += u64(spun)
+		}
+	}
 }
 
 // Every published job finished and its writes visible; nothing outstanding.
@@ -523,10 +570,18 @@ band_run :: proc(w: ^Band_Worker) {
 // Spin, then sleep until the producer publishes or quits.
 @(private)
 band_idle :: proc "contextless" (w: ^Band_Worker) {
-	for _ in 0 ..< BAND_SPIN {
-		if intrinsics.atomic_load(&band.pub) != w.done {return}
+	st := &w.idle
+	intrinsics.atomic_store(&st.entries, st.entries + 1)
+	// A counted loop, not a range: 0 ..< 0 is an error with -define:PS_BAND_SPIN=0.
+	for i := 0; i < BAND_SPIN; i += 1 {
+		if intrinsics.atomic_load(&band.pub) != w.done {
+			intrinsics.atomic_store(&st.wins, st.wins + 1)
+			intrinsics.atomic_store(&st.spins, st.spins + u64(i))
+			return
+		}
 		intrinsics.cpu_relax()
 	}
+	intrinsics.atomic_store(&st.sleeps, st.sleeps + 1)
 	intrinsics.atomic_add(&band.sleepers, 1)
 	v := intrinsics.atomic_load(&band.wake)
 	if intrinsics.atomic_load(&band.pub) == w.done && !intrinsics.atomic_load(&band.quit) {

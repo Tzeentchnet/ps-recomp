@@ -434,6 +434,11 @@ print_stats :: proc() {
 	@(static) audio_samples0: int
 	@(static) haz0: type_of(gs.band_stats)
 	@(static) xfer0: type_of(gs.xfer_stats)
+	@(static) bidle0: [gs.BAND_MAX + 1]gs.Band_Idle
+	bidle: [gs.BAND_MAX + 1]gs.Band_Idle
+	pidle, nw := gs.band_idle_stats(bidle[1:])
+	bidle[0] = pidle
+	if t0 == {} {fmt.eprintfln("stats: band spin %d", gs.BAND_SPIN)}
 	now := time.tick_now()
 	tsc := cpu.prof_now()
 	rb := core.rb_stats().total
@@ -481,12 +486,32 @@ print_stats :: proc() {
 				f64(st.haz_read - haz0.haz_read) * per, f64(st.haz_hoist - haz0.haz_hoist) * per,
 				f64(st.haz_snap - haz0.haz_snap) * per, f64(st.haz_ordered - haz0.haz_ordered) * per)
 		}
+		if nw > 0 {print_band_idle(bidle[:nw + 1], bidle0[:nw + 1])}
 	}
+	bidle0 = bidle
 	haz0 = gs.band_stats
 	xfer0 = gs.xfer_stats
 	t0, cyc0, idle0, spin0, tsc0, prof0 = now, cpu.state.cycles, kernel.idle_cycles, cpu.spin_cycles, tsc, cpu.prof
 	top0, pace0, rb0 = cpu.prof_top, stats_pace, rb
 	audio_total0, audio_samples0 = audio_speed_total, audio_speed_samples
+}
+
+// Per frame since the last stats line, the producer (P) then each band
+// worker: idle waits, the share ended by work while spinning, the mean
+// spins those took, and the waits that went to sleep.
+@(private)
+print_band_idle :: proc(cur, prev: []gs.Band_Idle) {
+	fmt.eprint("stats: band idle/frame")
+	per := 1 / f64(STATS_FRAMES)
+	for c, i in cur {
+		p := prev[i]
+		if c.entries < p.entries {p = {}} // workers restarted
+		e, w := c.entries - p.entries, c.wins - p.wins
+		name := i == 0 ? "P" : "w"
+		fmt.eprintf("  %s%d %.1f win %.0f%% spin %.0f sleep %.1f", name, max(i - 1, 0), f64(e) * per,
+			100 * f64(w) / f64(max(e, 1)), f64(c.spins - p.spins) / f64(max(w, 1)), f64(c.sleeps - p.sleeps) * per)
+	}
+	fmt.eprintln()
 }
 
 // SNAPTEST=<save>,<load>: save state at presented frame <save>, load it
