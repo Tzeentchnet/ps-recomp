@@ -458,7 +458,6 @@ generate :: proc(o: mips.Options) {
 		// natively once it knows them (ps2/vu).
 		vus: [dynamic]native.Blob_Span
 		if mips.option_or(o, "native_vu", "") == "true" {
-			if code.arch == .Wasm32 {mips.fail("%s: no wasm32 VU backend yet", img.name)}
 			native_vus(o, img, code, &vus, true)
 		}
 		code_size, ok := native.write_blob(path, code, n_funcs[:], nil, vus[:])
@@ -523,8 +522,7 @@ vu_only :: proc(o: mips.Options, img: mips.Image) {
 		mips.fail("%s: unknown native_arch %s", o.path, mips.option(o, "native_arch"))
 	}
 	code := new(native.Asm)
-	if arch == .Wasm32 {mips.fail("%s: no wasm32 VU backend yet", img.name)}
-	code^ = native.make_asm(arch, native_ram())
+	code^ = native_asm(arch) // the full conversion's Asm: wasm32 calls need its signatures
 	vus: [dynamic]native.Blob_Span
 	native_vus(o, img, code, &vus, false)
 	path := mips.option(o, "native_out")

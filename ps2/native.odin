@@ -433,11 +433,16 @@ load_native :: proc(path: string, hooked: u64 = 0) -> bool {
 	}
 	defer delete(code.funcs)
 	defer delete(code.ovls)
-	// wasm32 code is EE functions only: an overlay needs the dispatch
-	// x64 and arm64 code does itself, a span a VU or learned backend.
+	// wasm32 code is EE functions and VU microprograms only: an overlay
+	// needs the dispatch x64 and arm64 code does itself, a span of another
+	// kind its own backend.
 	when ODIN_ARCH == .wasm32 {
-		if len(code.ovls) != 0 || len(code.spans) != 0 {
-			fmt.eprintfln("native: %s: %d overlay functions and %d spans, which wasm32 code cannot have", path, len(code.ovls), len(code.spans))
+		other := 0
+		for s in code.spans {
+			if s.kind != .Vu0 && s.kind != .Vu1 {other += 1}
+		}
+		if len(code.ovls) != 0 || other != 0 {
+			fmt.eprintfln("native: %s: %d overlay functions and %d spans not of a VU, which wasm32 code cannot have", path, len(code.ovls), other)
 			core.native_free(&code)
 			return false
 		}

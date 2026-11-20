@@ -1395,6 +1395,11 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 	cached := a.cached
 	a.cached = nil
 	defer a.cached = cached
+	// The runtime calls the function as a Vu_Native, an Odin proc(): on
+	// wasm32 it has type (ctx) -> (), with no entry pc (Asm.ctx_only).
+	ctx_only := a.ctx_only
+	a.ctx_only = a.arch == .Wasm32
+	defer a.ctx_only = ctx_only
 	// The code makes no RAM access, so the vf import's address stays in
 	// RAM's register: the slot never changes, and the interpreter calls
 	// keep the register, callee-saved on every host.

@@ -8,6 +8,7 @@ odin run tests/native -collection:ps=.
 odin run tests/blob_arch -collection:ps=.
 odin run tests/ee_native -collection:ps=.
 odin run tests/wasm_sigs -collection:ps=.
+odin run tests/wasm_ctx_only -collection:ps=.
 odin run tests/ee_spin -collection:ps=.
 odin run tests/ee_spin_flat -collection:ps=. -define:PS_FLAT=true
 odin run tests/fpu -collection:ps=.
@@ -118,6 +119,7 @@ here.
 | `native` | The machine-code emitter |
 | `ee_native` | EE instructions through the native backend against the interpreter |
 | `wasm_sigs` | Every runtime procedure native code imports (`ps2.native_imports`, `psx_native.imports`) has a signature in `r5900.EE_SIGS` or `r3000.R3000_SIGS`, the signatures wasm32 code calls them with, each agrees with its procedure (Odin convention, argument count, a result or none, every argument and result fits one i32), and no signature lacks an import |
+| `wasm_ctx_only` | A wasm32 function's type is (ctx) or (pc, ctx) by the `Asm.ctx_only` it began with, not the flag when it is laid out (the next func_begin or finish) |
 | `ee_spin` | The EE spin skip on synthetic loops: on and off end the same, cycles included; a pure spin, a same-value store, an INTC_STAT poll and two threads at one priority handing the EE back and forth with RotateThreadReadyQueue are skipped, and end the same when the other thread rotates at two sites in turn; a counter, a GIF_STAT poll and a timer poll are not |
 | `ee_spin_flat` | The spin skip under FLAT (build with `-define:PS_FLAT=true`), where a call is no side effect and the probe compares the shadow stacks: a loop calling a function that only returns is skipped; one whose function counts in memory is not, nor one whose passes match in cpu.state but leave the innermost return address on the shadow stack other each pass (more than cpu.UNWIND_MAX calls open). Each runs with the skip on and off and both must end the same |
 | `fpu` | EE FPU vectors |

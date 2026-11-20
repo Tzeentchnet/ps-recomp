@@ -42,6 +42,7 @@ Wasm :: struct {
 	bodies:  [dynamic]Wasm_Body,
 	types:   [dynamic]Wasm_Type,
 	open:    bool, // a function is being emitted and not laid out yet
+	ctx_only: bool, // the open function's Asm.ctx_only at its func_begin
 	n_funcs: int,
 	st:      int, // import index of the open function's state
 	stats:   Wasm_Stats,
@@ -657,6 +658,7 @@ wasm_func_begin :: proc(a: ^Asm, state: string) -> int {
 	idx := w.n_funcs
 	w.n_funcs += 1
 	w.open = true
+	w.ctx_only = a.ctx_only
 	w.mark = len(a.code)
 	cache_sync(a, false)
 	return idx
@@ -1955,6 +1957,12 @@ wasm_emit_slow :: proc(a: ^Asm, s: Slow) {
 wasm_finalize :: proc(a: ^Asm) {
 	w := &a.wa
 	assert(w.open, "native: wasm32 layout with no function")
+	// Laid out at the next func_begin or at finish, after the caller may
+	// have set Asm.ctx_only for another function: the type and locals are
+	// the ones it began with.
+	ctx_only := a.ctx_only
+	a.ctx_only = w.ctx_only
+	defer a.ctx_only = ctx_only
 	wa_flush(a)
 	items := w.items[:]
 	n_items := len(items)
