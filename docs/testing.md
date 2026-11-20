@@ -48,6 +48,9 @@ odin run tests/psx_access_cycles -collection:ps=.
 odin run tests/psx_access_cycles -collection:ps=. -define:PS_FLAT=true
 odin build tests/psx_access_cycles -collection:ps=. -target:wasi_wasm32 -target-features:atomics,bulk-memory -extra-linker-flags:"--export-table --growable-table --shared-memory --import-memory --export-memory --max-memory=4294967296" -out:psx_access_cycles.wasm
 node tests/psx_access_cycles/run.mjs psx_access_cycles.wasm
+odin run tests/ee_access_cycles -collection:ps=.
+odin build tests/ee_access_cycles -collection:ps=. -target:wasi_wasm32 -target-features:atomics,bulk-memory -extra-linker-flags:"--export-table --growable-table --shared-memory --import-memory --export-memory --max-memory=4294967296" -out:ee_access_cycles.wasm
+node tests/ee_access_cycles/run.mjs ee_access_cycles.wasm
 odin run tests/psx_gpu_upload -collection:ps=.
 odin run tests/ps2_kernel -collection:ps=.
 odin run tests/ee_flush -collection:ps=.
@@ -156,6 +159,7 @@ here.
 | `psx_gte` | GTE register moves as native code |
 | `psx_timer` | Root counter timing |
 | `psx_access_cycles` | The cycles a PS1 load or store off RAM, an mtc0 to SR and a syscall see, interpreted and learned alike, in the coroutine model, under FLAT and built for `wasi_wasm32` (`run.mjs`, Node 24 or newer, the learned function as wasm32 code): every instruction before it and its own, right after a label the block before falls into, in a delay slot, and as a load and the instruction after it |
+| `ee_access_cycles` | The cycles an EE COP0 Count read sees, interpreted and learned alike, on the host and built for `wasi_wasm32` (`run.mjs`, Node 24 or newer, the learned function as wasm32 code, whose cycles are charged in batches): every instruction before it and its own, right after a label the block before falls into, after instructions whose cycles wait for a flush, after a call to interpreted code returns, in a delay slot, in a branch-likely's and in one that is a branch's target; and the cycles the whole call takes |
 | `psx_gpu_upload` | VRAM uploads a run at a time, as a pixel at a time: row wrap, a dropped half word, mask bits |
 | `psx_bios` | BIOS events, counters and IRQs, the executable loaders |
 | `psx_bios_libc` | The BIOS C library |

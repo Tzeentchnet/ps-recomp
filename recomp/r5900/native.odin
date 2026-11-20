@@ -1632,7 +1632,7 @@ jump_out :: proc(a: ^native.Asm, learned: bool) {
 // lower f for it: f is interpreted.
 native_func :: proc(a: ^native.Asm, f: ^Func, entries: []u32, cycles: int, slow: ^map[string]int, funcs: map[u32]native.Label = nil, mods := false, learned := false) -> []native.Blob_Func {
 	wasm := a.arch == .Wasm32
-	steps := lower(f, cycles, quiet = true, exact = wasm, each = !wasm, learned = learned) // emit_func warned
+	steps := lower(f, cycles, quiet = true, exact = wasm, each = true, learned = learned) // emit_func warned
 	if steps == nil {return nil}
 	labels := make(map[u32]native.Label, context.temp_allocator)
 	pcs := make([dynamic]u32, context.temp_allocator)

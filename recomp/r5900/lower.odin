@@ -37,16 +37,16 @@ Lowering :: struct {
 	steps:     [dynamic]Step,
 	open_case: bool, // current block can fall into the next label
 	pending:   int, // instructions not yet charged
-	// Each instruction charged as the interpreter does it, just before it
-	// runs, and each place the code can be left and gone on at a block
-	// (lower's exact).
+	// Each place the code can be left and gone on at a block (lower's
+	// exact). Without each, every instruction is charged as the interpreter
+	// does it, just before it runs.
 	exact:     bool,
 	// The cycles so far, the instruction's own included, are charged before
 	// each instruction that can see or publish the count (!batches), as the
 	// interpreter has charged them by then. The ones between still wait for
-	// the next flush. Every native EE blob but wasm32's (a disc's, learned
-	// code, mods) and the exported ports, so all charge as the interpreter
-	// does; wasm32 is exact.
+	// the next flush. Every native EE blob (a disc's, learned code, mods,
+	// wasm32's with exact too) and the exported ports, so all charge as the
+	// interpreter does.
 	each:      bool,
 	resume:    map[u32]bool, // exact: a block after each call and SYSCALL, also where no branch targets
 }
@@ -57,11 +57,17 @@ is_label :: proc(l: ^Lowering, pc: u32) -> bool {
 	return pc in l.f.labels || pc in l.resume
 }
 
-// Charge the instruction about to be put; exact puts its cycles now, else
-// they wait for the next flush.
+// Whether cycles wait for a flush: every lowering but exact without each.
+@(private = "file")
+pends :: proc(l: ^Lowering) -> bool {
+	return !l.exact || l.each
+}
+
+// Charge the instruction about to be put; exact without each puts its
+// cycles now, else they wait for the next flush.
 @(private = "file")
 charge :: proc(l: ^Lowering) {
-	if l.exact {
+	if !pends(l) {
 		put(l, {kind = .Cycles, n = u32(l.cycles)})
 	} else {
 		l.pending += 1
@@ -116,7 +122,8 @@ goto_ :: proc(l: ^Lowering, src, t: u32) {
 
 // The steps of f, in context.temp_allocator. With exact (wasm32 native
 // code, which leaves the function wherever the interpreter's FLAT runner
-// takes over): cycles per instruction in the interpreter's order, a block
+// takes over): cycles charged in the interpreter's order (with each, all
+// put at each flush, and nothing pending at any block, Leave or exit), a block
 // after each call and each SYSCALL (where the runner comes back in), every
 // block a place the runner goes on at (n = 1: a label is where a due-events
 // exit leaves and where the interpreter's jumps land, and both go on in
@@ -160,6 +167,9 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false,
 		if pc in skip {continue}
 		if is_label(&l, pc) {
 			if l.open_case {flush(&l)}
+			// Every block starts with nothing pending: a runner that
+			// leaves or lands at one sees the interpreter's count.
+			assert(l.pending == 0, "cycles pending at a block")
 			put(&l, {kind = .Case, target = pc, check = l.open_case, n = 1 if l.exact else 0})
 			l.open_case = true
 		} else if !l.open_case {
@@ -187,7 +197,7 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false,
 				if !quiet {fmt.eprintfln("warning %s: branch in delay slot at %s", hexu(f.entry), hexu(pc + 4))}
 			} else {
 				slot_op = true
-				if !exact {l.pending += 1}
+				if pends(&l) {l.pending += 1}
 			}
 		}
 		skip[pc + 4] = true
@@ -196,13 +206,20 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false,
 		if interp_slot {
 			// The interpreter runs the transfer and its slot from pc, as
 			// though no native code had run: its own cycles (charged just
-			// above) are taken back to after the leave.
-			assert(l.steps[len(l.steps) - 1].kind == .Cycles, "the transfer's cycles")
-			pop(&l.steps)
+			// above) are taken back to after the leave, and the slot's are
+			// not charged. What the instructions before it still owe is put
+			// first, on both paths.
+			if pends(&l) {
+				l.pending -= 2
+				flush(&l)
+			} else {
+				assert(l.steps[len(l.steps) - 1].kind == .Cycles, "the transfer's cycles")
+				pop(&l.steps)
+			}
 		}
 		delay :: proc(l: ^Lowering, d: Insn, slot_op: bool) {
 			if slot_op {
-				if l.exact {put(l, {kind = .Cycles, n = u32(l.cycles)})} else if l.each && !batches(d) {flush(l)}
+				if !pends(l) {put(l, {kind = .Cycles, n = u32(l.cycles)})} else if l.each && !batches(d) {flush(l)}
 				put(l, {kind = .Op, i = d})
 			}
 			flush(l)
@@ -240,9 +257,9 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false,
 				if i.likely {
 					// delay slot only when taken; the branch and everything
 					// before it count on both paths
-					if slot_op && !exact {l.pending -= 1}
+					if slot_op && pends(&l) {l.pending -= 1}
 					flush(&l)
-					if slot_op && !exact {l.pending += 1}
+					if slot_op && pends(&l) {l.pending += 1}
 					put(&l, {kind = .If_Taken})
 					delay(&l, d, slot_op)
 					taken(&l, i)
@@ -316,6 +333,7 @@ lower :: proc(f: ^Func, cycles: int, quiet: bool, exact := false, each := false,
 		}
 	}
 	if l.open_case && exact {
+		flush(&l)
 		put(&l, {kind = .Goto, target = f.end})
 	} else if l.open_case {
 		flush(&l)
