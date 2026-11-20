@@ -1557,7 +1557,10 @@ vu_pair :: proc(v: ^Vu, uw, lw, pc: u32) -> (taken: bool, target: u32) #no_bound
 	// non-sticky bits: PCSX2 microVU emits the upper first and gives the pair
 	// one flag instance (microVU_Compile.inl, microVU_Lower.inl FSSET).
 	if lw >> 25 == 0x15 {v.status = (uflags[1] & 0x3f) | (v.status & 0xfc0)} else {v.status = uflags[1]}
-	if v.clip == flags[2] {v.clip = uflags[2]}
+	// FCSET is the only lower clip writer, and it wins over CLIP: microVU
+	// emits the upper first into the pair's one clip instance
+	// (microVU_Upper.inl CLIP, microVU_Lower.inl FCSET).
+	if lw >> 25 != 0x11 {v.clip = uflags[2]}
 	return
 }
 

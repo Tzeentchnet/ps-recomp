@@ -613,6 +613,13 @@ flag_delay :: proc() {
 	call(v, 0x280)
 	if v.vi[10] != 0x801 {fail("FSSET with an FMAC: vi10 = %x, want 801", v.vi[10])}
 
+	// FCSET with a CLIP in the same pair: FCSET wins, also when its value
+	// equals the clip before the pair. The FCGET four pairs on sees 0x15.
+	FCSET_15 :: 0x11 << 25 | 0x15 // FCSET 0x15
+	put_pairs(0x300, {FCSET_15, NOP_U}, {FCSET_15, CLIP_1_2}, {NOP_L, NOP_U}, {NOP_L, NOP_U}, {NOP_L, NOP_U}, {fcget(11), NOP_U}, {NOP_L, NOP_U | E}, {NOP_L, NOP_U})
+	call(v, 0x300)
+	if v.vi[11] != 0x15 {fail("FCSET with a CLIP: vi11 = %x, want 15", v.vi[11])}
+
 	// B over a pair: the FMAND after it is the third pair run after the ADD.
 	B_2 :: 0x20 << 25 | 2 // B +2
 	put_pairs(0x300, {NOP_L, ADD_3_1_2}, {B_2, NOP_U}, {NOP_L, NOP_U}, {fmand(9), NOP_U}, {fmand(4), NOP_U}, {fmand(5), NOP_U | E}, {NOP_L, NOP_U})

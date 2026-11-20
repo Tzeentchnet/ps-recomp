@@ -69,11 +69,12 @@ status_reads :: proc(words: []u32) -> (n: int) {
 }
 
 // The pairs in words the compiled code leaves to the interpreter (vu_pair),
-// outside I-bit pairs: the status reads and FSSET.
+// outside I-bit pairs: the status reads, FSSET, and FCSET beside a CLIP.
 slow_pairs :: proc(words: []u32) -> (n: int) {
 	for k := 0; k + 1 < len(words); k += 2 {
 		op := words[k] >> 25
-		if words[k + 1] & (1 << 31) == 0 && (op == FSEQ || op == FSSET || op == FSAND || op == FSOR) {n += 1}
+		if words[k + 1] & (1 << 31) != 0 {continue}
+		if op == FSEQ || op == FSSET || op == FSAND || op == FSOR || op == FCSET && words[k + 1] & 0x7ff == 0x1ff {n += 1}
 	}
 	return
 }
@@ -479,6 +480,21 @@ FSSET_PAIR := []u32 {
 }
 FSSET_PAIR_PCS := []u32{0, 0x20}
 
+// FCSET twice with the same value, the second beside a CLIP: FCSET wins, so
+// the FCGET four pairs after the CLIP sees 0x15 (vu_pair).
+FCSET :: 0x11
+FCSET_PAIR := []u32 {
+	FCSET << 25 | 0x15, NOP_U,
+	FCSET << 25 | 0x15, upper_sp(CLIP, XYZ, 2, 1),
+	NOP_L, NOP_U,
+	NOP_L, NOP_U,
+	NOP_L, NOP_U,
+	fcget(3), NOP_U, // 0x28
+	NOP_L, NOP_U | E_BIT,
+	NOP_L, NOP_U,
+}
+FCSET_PAIR_PCS := []u32{0, 0x08}
+
 // WAITP, an EFU op issued while P is pending, and MFP after each.
 P_STALL := []u32 {
 	lower_sp(ESQRT, 0, 0, 1), NOP_U,
@@ -562,7 +578,7 @@ programs :: proc() -> (progs: [dynamic]Prog) {
 	// entered at each pc.
 	late := [?]struct {
 		words, pcs: []u32,
-	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
+	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {FCSET_PAIR, FCSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
 	for l in late {
 		for u in vu.Unit {append(&progs, Prog{l.words, u, nil, l.pcs, nil}, Prog{l.words, u, l.pcs, l.pcs, nil})}
 	}

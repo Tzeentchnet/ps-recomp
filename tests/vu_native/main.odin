@@ -112,7 +112,7 @@ main :: proc() {
 		vus[k] = {p.unit == .VU0 ? .Vu0 : .Vu1, 0, u32(rvu.native_program(&a, p.words, nil, p.entries, p.unit, reads > 0, &slow)), ranges}
 		pairs := vu_programs.slow_pairs(p.words)
 		if slow["pair"] != pairs {
-			fmt.eprintfln("FAIL vu_native: program %d leaves %d status reads and FSSETs of %d to the interpreter", k, slow["pair"], pairs)
+			fmt.eprintfln("FAIL vu_native: program %d leaves %d of its %d slow pairs (status reads, FSSET, FCSET beside CLIP) to the interpreter", k, slow["pair"], pairs)
 			slow_fails += 1
 		}
 		for key, n in slow {

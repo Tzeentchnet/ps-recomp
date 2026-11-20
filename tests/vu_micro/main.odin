@@ -112,7 +112,7 @@ main :: proc() {
 		fmt.sbprintln(&sb, code)
 		pairs := vu_programs.slow_pairs(p.words)
 		for op, count in slow {if op != "pair" || count != pairs {fail("program %d calls the interpreter for %s (%d)", n, op, count)}}
-		if slow["pair"] != pairs {fail("program %d leaves %d status reads and FSSETs of %d to the interpreter", n, slow["pair"], pairs)}
+		if slow["pair"] != pairs {fail("program %d leaves %d of its %d slow pairs (status reads, FSSET, FCSET beside CLIP) to the interpreter", n, slow["pair"], pairs)}
 		// The elision program, compiled with entries and then without: the
 		// first must clamp fewer operands, behind fewer labels.
 		if raw_data(p.words) != raw_data(vu_programs.ELIDE) {continue}
