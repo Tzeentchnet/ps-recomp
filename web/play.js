@@ -652,8 +652,9 @@ function record(now) {
 // A gap is the ticks since the previous new image. The cadence is the larger
 // of the medians of the last CADENCE_GAPS gaps and of the last 3, so a change
 // of rate (60 to 30 fps) costs at most 2 hitches. A hitch is a gap over the
-// cadence, its extra ticks gap - cadence. Its pace ticks are gap - dF
-// (floored at 0), dF the frames run since the previous image: a gap the game
+// cadence, its extra ticks gap - cadence. Its pace ticks are gap - dF * k
+// (floored at 0), dF the frames run since the previous image and k the ticks
+// one frame spans (frameTicks: 2 on a 120 Hz display): a gap the game
 // filled with frames that drew nothing is extra but not pace. rafMs keeps the last RAF_KEEP tick
 // intervals, to show the rAF rate the ticks stand for.
 const CADENCE_GAPS = 31;
@@ -678,6 +679,13 @@ const hitch = {
 };
 const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 const cadence = (g) => Math.max(median(g), median(g.slice(-3)));
+// The display ticks one emulated frame (NTSC, 16.683 ms) spans, from the
+// median tick interval: 1 at 60 Hz or below, 2 at 120 Hz.
+const FRAME_MS = 16.683;
+const frameTicks = () => {
+	const n = Math.min(hitch.nraf, RAF_KEEP);
+	return n > 0 ? Math.max(1, Math.round(FRAME_MS / median(hitch.raf.subarray(0, n)))) : 1;
+};
 
 const r2 = (x) => Math.round(x * 100) / 100;
 
@@ -724,7 +732,7 @@ function noteTick(now, fresh, frame, timing) {
 				const [cls, d, maxRaf] = hitchClass(c, timing.image);
 				hitch.count++;
 				hitch.extra += gap - c;
-				const pace = Math.max(0, gap - dF);
+				const pace = Math.max(0, gap - dF * frameTicks());
 				hitch.pace += pace;
 				hitch.classes[cls]++;
 				const img = hitch.imgs.at(-1);
