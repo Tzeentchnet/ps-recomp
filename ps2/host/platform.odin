@@ -30,7 +30,9 @@ tex_stale: bool // the screen was filled since the texture's last upload
 // VBLOG=lo-hi: one line per vblank while the presented frame count is in
 // lo..hi: vblank, frame, scanout fresh, size and the EE cycle count (with
 // VBLOG_HASH=1 also an EE RAM hash), so two runs can be diffed per vblank.
+@(private)
 vblog: [2]int
+@(private)
 vblog_hash: bool
 @(private)
 hw: bool // the Vulkan GS draws and presents
@@ -351,15 +353,18 @@ vblank_frame :: proc() {
 	if pace == 0 || rerun {return}
 	// Netplay time sync stretches the frame while this host is ahead.
 	// NTSC's vblank: pace * 1000 / 1001 Hz, as the guest's clock runs.
+	// On the web the page's display tick sets it instead (display.odin).
+	now := time.tick_now()
 	length := time.Second * 1001 / time.Duration(pace * 1000)
+	nudge: time.Duration
+	if l, n, ok := display_pace(now); ok {length, nudge = l, n}
 	length += time.Duration(f64(length) * f64(core.net_stretch()))
 	// An absolute deadline: sleep overshoot must not add up, or the game runs
 	// under 60 Hz and the sound queue drains. Far behind, start again from now.
 	// A quarter vblank late or more (the host took over 1.25 vblanks), the
 	// queue drains at the host's speed, not the clocks': hold the sound's
 	// drift learning, as at the resync.
-	now := time.tick_now()
-	last = time.tick_add(last, length)
+	last = time.tick_add(last, length + nudge)
 	if late := time.tick_diff(last, now); late > length / 4 {
 		core.audio_settle()
 		if late > length {last = now}

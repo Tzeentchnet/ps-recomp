@@ -129,6 +129,7 @@ function refuse(why) {
 let shared = null;
 let ctl = null;
 let ctlView = null;
+let tickAt = null; // CONTROL.TICK_AT
 
 function makeShared() {
 	shared = {
@@ -138,6 +139,7 @@ function makeShared() {
 	};
 	ctl = new Int32Array(shared.control);
 	ctlView = new DataView(shared.control);
+	tickAt = new BigInt64Array(shared.control, CONTROL.TICK_AT, 1);
 	const P = new Int32Array(shared.present, 0, PRESENT.SLOTS / 4);
 	Atomics.store(P, PRESENT.LATEST_WORD, -1);
 	Atomics.store(P, PRESENT.READING_WORD, -1);
@@ -757,6 +759,10 @@ function shownState() {
 
 function tick() {
 	const now = performance.now();
+	if (ctl) {
+		Atomics.store(tickAt, 0, BigInt(Math.round((performance.timeOrigin + now) * 1000)));
+		Atomics.add(ctl, CONTROL.TICK_WORD, 1);
+	}
 	if (worker && firstPresentMs === null && Atomics.load(new Int32Array(shared.present, 0, 4), PRESENT.FRAMES_WORD) > 0)
 		firstPresentMs = Math.round(now - startedAt);
 	if (worker && done === null) record(now);

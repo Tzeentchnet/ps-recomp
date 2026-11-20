@@ -8,6 +8,11 @@ export const CONTROL = {
 	RING_WRITE_WORD: 0, // events pushed by main, a running count
 	RING_READ_WORD: 1, // events taken by the Worker, a running count
 	FOCUS_WORD: 2, // 1 while the page has keyboard focus
+	// The page's display: main bumps TICK_WORD at each rAF tick after storing
+	// the tick's time at TICK_AT (an i64, microseconds on the timeOrigin-based
+	// clock both threads read); the Worker paces to it (ps2/host/display.odin).
+	TICK_WORD: 3,
+	TICK_AT: 16,
 	PADS: 64,
 	PAD_SIZE: 128,
 	PADS_MAX: 4,

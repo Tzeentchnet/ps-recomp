@@ -65,6 +65,7 @@ export class Sdl {
 		this.ctl = new Int32Array(control);
 		this.ctlView = new DataView(control);
 		this.ctlBytes = new Uint8Array(control);
+		this.tickAt = new BigInt64Array(control, CONTROL.TICK_AT, 1);
 		this.audioWords = new Int32Array(audio, 0, AUDIO.RING / 4);
 		this.ring = new Int16Array(audio, AUDIO.RING, AUDIO.RING_FRAMES * 2);
 		this.presentBuf = present;
@@ -317,6 +318,15 @@ export class Sdl {
 		const ok = () => 0;
 		const none = () => {};
 		const imports = {
+			// Not SDL's: the page's last display tick (ps2/host/display.odin).
+			// Its time in microseconds to at; returns the tick count, 0 before
+			// the first. The count is read first, so a tick between the two
+			// loads gives a newer time, never an older one.
+			PsDisplayTick: (at) => {
+				const n = Atomics.load(this.ctl, CONTROL.TICK_WORD);
+				this.dv().setBigInt64(at, Atomics.load(this.tickAt, 0), true);
+				return n;
+			},
 			// Init and stubs.
 			Init: ok,
 			InitSubSystem: ok,
