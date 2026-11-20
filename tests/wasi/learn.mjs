@@ -85,7 +85,7 @@ for (let i = 0; i < 2; i++) {
 	learnDeliver(a.buffer, new Uint8Array(LEARN.DATA_MAX + 1), log, a.gens.at(-1));
 	check(a.poll(0) === OVERSIZED && a.state() === EMPTY, `an oversized blob is dropped, back to EMPTY (${i})`);
 }
-check(logs.length === 2, "an oversized blob is said once");
+check(logs.length === 3, "each oversized blob is said");
 
 // The next run has a buffer of its own: run a's late delivery never
 // reaches it, also with the same generation.

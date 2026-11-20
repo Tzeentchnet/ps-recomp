@@ -28,8 +28,10 @@ import "core:strings"
 import "core:time"
 import "ps:core"
 
-// The vblanks what a job loads from stays as it is before it starts.
-MIDLOAD_FRAMES :: 60
+// The vblanks what a job loads from stays as it is before it starts. A
+// wasm32 build waits less: on SO3 web, 20 left 530 VU starts to the
+// interpreter against 60's 1634, for one more small conversion (WASM-VU).
+MIDLOAD_FRAMES :: 20 when core.NATIVE_ARCH == core.NATIVE_ARCH_WASM32 else 60
 
 // How long a job may take, as convert_store's would in a compat run
 // (several minutes for the largest disc's whole conversion; a VU-only one

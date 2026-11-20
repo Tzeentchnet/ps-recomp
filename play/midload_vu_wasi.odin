@@ -41,7 +41,7 @@ VU_OVERSIZED :: -3
 // The host's conversion in flight: its generation (0 none). sent: each
 // unit's capture length that conversion was given; done: the length a
 // finished conversion covered, whose programs are loaded (or will not
-// load).
+// load, as a blob over the host's size).
 @(private = "file")
 mvw: struct {
 	gen:  i32,
@@ -115,9 +115,15 @@ midvu_host_poll :: proc(timeout: time.Duration) -> Midload_Poll {
 	switch n {
 	case VU_RUNNING:
 		return .Running
-	case VU_FAILED, 0, VU_OVERSIZED:
+	case VU_FAILED, 0:
 		fmt.eprintln("play: mid-run VU conversion failed")
 		mvw.gen = 0
+		return .Failed
+	case VU_OVERSIZED:
+		// Dropped (the host said so): the capture it covered is not sent
+		// again, or each later delta would hold it and be dropped too.
+		mvw.gen = 0
+		mvw.done = mvw.sent
 		return .Failed
 	}
 	if n < 0 {

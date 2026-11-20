@@ -120,7 +120,7 @@ NET.SIZE = NET.IN + NET.SLOTS * NET.SLOT_SIZE;
 export const LEARN = {
 	STATE_WORD: 0, // EMPTY, WRITING, READY or TAKEN (web/learn.js)
 	LEN_WORD: 1, // the blob's size, or FAILED or OVERSIZED
-	WARNED_WORD: 2, // 1 once an oversized blob was said
+	// word 2 unused
 	GEN_WORD: 3, // the compile in flight, counted from 1
 	BLOB_GEN_WORD: 4, // the compile the blob is from
 	DATA: 32,

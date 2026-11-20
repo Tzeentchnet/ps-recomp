@@ -6,7 +6,6 @@ package play
 
 import "core:fmt"
 import "core:time"
-import "ps:core"
 
 foreign import ps_learn "system:ps_learn"
 
@@ -70,8 +69,9 @@ midlearn_host_poll :: proc(timeout: time.Duration) -> Midload_Poll {
 		midlearn_cleanup()
 		return .Failed
 	case LEARN_OVERSIZED:
-		// The host said so, once; not again until the records grow.
-		mlrn.oversized = core.learn_count(mlrn.cpu)
+		// Dropped (the host said so): its records count as covered, so no
+		// later compile takes them again and is dropped too.
+		for k in mlrn.keys {mlrn.covered[k] = true}
 		midlearn_cleanup()
 		return .Failed
 	}

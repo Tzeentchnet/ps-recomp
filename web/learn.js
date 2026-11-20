@@ -142,8 +142,10 @@ export class LearnImports {
 
 // Hand the blob of compile gen (null: it failed) to poll; nothing when gen
 // is not the compile in flight. An empty blob is a failure. log(text) says
-// so, and says once per buffer that a blob over LEARN.DATA_MAX was dropped;
-// what names the compile in those lines.
+// so, and says that a blob over LEARN.DATA_MAX was dropped, with what it
+// holds from the native blob header (recomp/native/blob.odin): word 4, its
+// functions, or for a VU blob word 7, its microprograms (spans); what names
+// the compile in those lines. The run does not ask for a dropped blob's code again.
 export function learnDeliver(buffer, blob, log, gen, what = "learned") {
 	const words = new Int32Array(buffer, 0, LEARN.DATA / 4);
 	if (Atomics.compareExchange(words, LEARN.STATE_WORD, EMPTY, WRITING) !== EMPTY) return;
@@ -157,9 +159,9 @@ export function learnDeliver(buffer, blob, log, gen, what = "learned") {
 		log(`play: a mid-run ${what} compile made an empty blob; failed\n`);
 	} else if (blob !== null && blob.byteLength > LEARN.DATA_MAX) {
 		n = OVERSIZED;
-		if (Atomics.exchange(words, LEARN.WARNED_WORD, 1) === 0) {
-			log(`play: a mid-run ${what} blob of ${blob.byteLength} bytes is over the ${LEARN.DATA_MAX} the page passes; dropped (the next run compiles it)\n`);
-		}
+		const [word, unit] = what === "VU" ? [7, "microprograms"] : [4, "functions"];
+		const count = blob.byteLength >= 4 * (word + 1) ? new DataView(blob.buffer, blob.byteOffset).getUint32(4 * word, true) : 0;
+		log(`play: a mid-run ${what} blob of ${count} ${unit}, ${blob.byteLength} bytes, is over the ${LEARN.DATA_MAX} the page passes; dropped: they stay interpreted this run (the next run compiles them)\n`);
 	} else if (blob !== null) {
 		new Uint8Array(buffer, LEARN.DATA, blob.byteLength).set(blob);
 		n = blob.byteLength;

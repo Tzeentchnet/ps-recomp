@@ -68,7 +68,7 @@ Midload_Learned :: struct {
 	dir:     string,
 	records:   string, // the LEARN file
 	stored:    []native.Blob_Interp, // the stored blob's interp list (psx_stored_interp)
-	covered:   map[core.Learn_Key]bool, // the records a loaded blob was compiled from
+	covered:   map[core.Learn_Key]bool, // the records a loaded blob was compiled from, or a dropped one (over the host's size)
 	// The compile in flight: its records, as a LEARN stream, their keys,
 	// the interp list it leaves out, its key and whether records were left
 	// for another (its host's state: midlearn_host).
@@ -77,7 +77,6 @@ Midload_Learned :: struct {
 	interp:    []native.Blob_Interp,
 	set:       string,
 	more:      bool,
-	oversized: u64, // the record count when a blob was over the host's size (0 none)
 	loads:     int, // blobs loaded
 	recs:      int, // the records they were compiled from
 	stale:     int, // blobs dropped as stale
@@ -174,8 +173,6 @@ midlearn_report :: proc(fails: int) {
 // MIDLEARN_RECORDS (MIDLEARN_EE_RECORDS for the EE) of them.
 @(private = "file")
 midlearn_start :: proc() -> Midload_Start {
-	count := core.learn_count(mlrn.cpu)
-	if mlrn.oversized != 0 && count <= mlrn.oversized {return .Not}
 	data, err := os.read_entire_file(mlrn.records, context.temp_allocator)
 	if err != nil {
 		fmt.eprintln("play: mid-run learned compile: cannot read", mlrn.records, err)
