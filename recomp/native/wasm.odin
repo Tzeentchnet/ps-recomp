@@ -551,8 +551,8 @@ wa_splat :: proc(a: ^Asm, v: u32) {
 @(private = "file")
 wa_state :: proc(a: ^Asm) {wa_global(a, a.wa.st)}
 
-// A call to the function label l is bound to: a 5-byte index, patched in
-// wasm_finish.
+// A call to the function label l is bound to: a 5-byte slot, written as the
+// bound index's shortest uleb in wasm_finish.
 @(private = "file")
 wa_call_label :: proc(a: ^Asm, l: Label) {
 	emit8(a, OP_CALL)
@@ -2254,12 +2254,22 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 		append(&w.bodies, Wasm_Body{lo, len(w.out), wa_type(a, {I32, I32}, 0)})
 	}
 	clear(&a.code)
-	for f in w.fixes {
-		idx := a.labels[f.label]
-		if idx < 0 {fmt.panicf("native: wasm32 call of unbound function label %d", f.label)}
-		v := u32(idx)
-		for j in 0 ..< 4 {w.out[f.at + j] = u8(v >> (7 * u32(j))) & 0x7f | 0x80}
-		w.out[f.at + 4] = u8(v >> 28) & 0x7f
+	// Each call's 5-byte slot shrinks to its index's shortest uleb when the
+	// code section is written: a body loses 5 - len per call it holds. The
+	// fixes are in out's order, as the bodies are.
+	idx := make([]u32, len(w.fixes), context.temp_allocator)
+	shrink := make([]int, len(w.bodies), context.temp_allocator)
+	{
+		bi := 0
+		for f, k in w.fixes {
+			l := a.labels[f.label]
+			if l < 0 {fmt.panicf("native: wasm32 call of unbound function label %d", f.label)}
+			idx[k] = u32(l)
+			for w.bodies[bi].hi <= f.at {bi += 1}
+			assert(f.at >= w.bodies[bi].lo && f.at + 5 <= w.bodies[bi].hi, "native: wasm32 call outside its body")
+			assert(k == 0 || w.fixes[k - 1].at + 5 <= f.at, "native: wasm32 calls out of order")
+			shrink[bi] += 5 - wa_uleb_len(u64(l))
+		}
 	}
 
 	m := make([dynamic]u8)
@@ -2311,14 +2321,27 @@ wasm_finish :: proc(a: ^Asm) -> []u8 {
 	// Code, straight into m: its size first, then the bodies, so the
 	// largest section is copied once.
 	size := wa_uleb_len(u64(len(w.bodies)))
-	for b in w.bodies {size += wa_uleb_len(u64(b.hi - b.lo)) + b.hi - b.lo}
+	for b, i in w.bodies {
+		n := b.hi - b.lo - shrink[i]
+		size += wa_uleb_len(u64(n)) + n
+	}
 	reserve(&m, len(m) + 1 + wa_uleb_len(u64(size)) + size)
 	append(&m, 10)
 	wa_uleb(&m, u64(size))
+	start := len(m)
 	wa_uleb(&m, u64(len(w.bodies)))
-	for b in w.bodies {
-		wa_uleb(&m, u64(b.hi - b.lo))
-		append(&m, ..w.out[b.lo:b.hi])
+	k := 0 // in w.fixes
+	for b, i in w.bodies {
+		wa_uleb(&m, u64(b.hi - b.lo - shrink[i]))
+		at := b.lo
+		for k < len(w.fixes) && w.fixes[k].at < b.hi {
+			append(&m, ..w.out[at:w.fixes[k].at])
+			wa_uleb(&m, u64(idx[k]))
+			at = w.fixes[k].at + 5
+			k += 1
+		}
+		append(&m, ..w.out[at:b.hi])
 	}
+	assert(k == len(w.fixes) && len(m) - start == size, "native: wasm32 code section size")
 	return m[:]
 }
