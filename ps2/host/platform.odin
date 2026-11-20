@@ -27,6 +27,11 @@ ren: ^sdl.Renderer
 tex: ^sdl.Texture
 @(private)
 tex_stale: bool // the screen was filled since the texture's last upload
+// VBLOG=lo-hi: one line per vblank while the presented frame count is in
+// lo..hi: vblank, frame, scanout fresh, size and the EE cycle count (with
+// VBLOG_HASH=1 also an EE RAM hash), so two runs can be diffed per vblank.
+vblog: [2]int
+vblog_hash: bool
 @(private)
 hw: bool // the Vulkan GS draws and presents
 @(private)
@@ -134,6 +139,11 @@ platform_init :: proc(title: cstring) -> bool {
 	// HAZ=1: the software GS counts where a GPU consumer of its primitive
 	// stream would need barriers (gs/haz.odin), in the stats lines.
 	if !hw && core.env("HAZ") == "1" {gs.haz_set(true)}
+	if v := core.env("VBLOG"); v != "" {
+		lo, _, hi := strings.partition(v, "-")
+		vblog = {strconv.parse_int(lo) or_else 0, strconv.parse_int(hi) or_else 0}
+		vblog_hash = core.env("VBLOG_HASH") == "1"
+	}
 	scale := core.headless ? 1 : 3
 	if v, ok := strconv.parse_int(core.env("SCALE")); ok && v >= 1 && v <= 8 {scale = v}
 	flags := sdl.WindowFlags{.RESIZABLE}
@@ -283,6 +293,7 @@ vblank_frame :: proc() {
 	}
 	cpu.prof_end(.PRESENT, pt)
 	core.compat_vblank(u64(vblank), w > 0 && h > 0, mem.ram)
+	if vblog[1] > 0 && frame >= vblog[0] && frame <= vblog[1] {vblog_line(w, h)}
 	if w > 0 && h > 0 {
 		frame += 1
 		if stats || core.gamedata.on {stats_frame()}
@@ -592,4 +603,11 @@ write_ppm :: proc(path: string, px: []u32, stride, w, h: int) {
 	}
 	_ = os.write_entire_file(path, buf[:])
 	fmt.eprintln("video: wrote", path)
+}
+
+@(private)
+vblog_line :: proc(w, h: int) {
+	hash: u64
+	if vblog_hash {hash = xxhash.XXH3_64_default(mem.ram)}
+	fmt.printf("vbl %d f %d fresh %d %dx%d cyc %d h %16x\n", vblank, frame, int(gs.scan_fresh), w, h, cpu.state.cycles, hash)
 }
