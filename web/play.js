@@ -655,26 +655,73 @@ function record(now) {
 const CADENCE_GAPS = 31;
 const HITCH_LIST = 1000; // hitches listed, the first ones
 const RAF_KEEP = 1024;
-const hitch = { at: 0, tick: 0, last: -1, gaps: [], count: 0, extra: 0, list: [], next: null, images: 0, raf: new Float64Array(RAF_KEEP), nraf: 0 };
+// OKAMI-60 STEP 12 timing: tickAt keeps each tick's time (timeOrigin ms) by
+// tick number. A hitch's edge is the tick at last + cadence, where the image
+// was due; its class compares the image's stamp (the Worker's first present
+// of that texture version, web/layout.js IMAGE_BYTE) with the edge: within
+// PHASE_MS phase, later workerLate, earlier mainLate when a tick interval in
+// the gap is over MAIN_LATE_MS, else other. imgs keeps the first IMG_KEEP
+// images as [present frame, gap, tick - stamp ms, FRAME_WORD delta]; shown
+// keeps every shown slot's present() ms and bytes copied.
+const PHASE_MS = 1;
+const MAIN_LATE_MS = 20;
+const IMG_KEEP = 4096;
+const SHOWN_KEEP = 8192;
+const hitch = {
+	at: 0, tick: 0, last: -1, gaps: [], count: 0, extra: 0, list: [], next: null, images: 0, raf: new Float64Array(RAF_KEEP), nraf: 0,
+	tickAt: new Float64Array(RAF_KEEP), lastFrame: 0, shownFrame: 0, classes: { phase: 0, workerLate: 0, mainLate: 0, other: 0 },
+	imgs: [], cost: new Float32Array(SHOWN_KEEP), copied: new Int32Array(SHOWN_KEEP), nshown: 0,
+};
 const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 const cadence = (g) => Math.max(median(g), median(g.slice(-3)));
 
-function noteTick(now, fresh, frame) {
+const r2 = (x) => Math.round(x * 100) / 100;
+
+// A hitch's class and timing: [class, stamp - edge ms, max tick interval ms].
+function hitchClass(c, stamp) {
+	const gap = hitch.tick - hitch.last;
+	if (gap >= RAF_KEEP || stamp <= 0) return ["other", null, null];
+	let maxRaf = 0;
+	for (let i = hitch.last + 1; i <= hitch.tick; i++)
+		maxRaf = Math.max(maxRaf, hitch.tickAt[i % RAF_KEEP] - hitch.tickAt[(i - 1) % RAF_KEEP]);
+	const d = stamp - hitch.tickAt[(hitch.last + c) % RAF_KEEP];
+	const cls = Math.abs(d) <= PHASE_MS ? "phase" : d > 0 ? "workerLate" : maxRaf > MAIN_LATE_MS ? "mainLate" : "other";
+	return [cls, r2(d), r2(maxRaf)];
+}
+
+function noteShown(frame, timing) {
+	if (frame === hitch.shownFrame) return;
+	hitch.shownFrame = frame;
+	if (hitch.nshown >= SHOWN_KEEP) return;
+	hitch.cost[hitch.nshown] = timing.cost;
+	hitch.copied[hitch.nshown++] = timing.copied;
+}
+
+function noteTick(now, fresh, frame, timing) {
 	if (hitch.at > 0) hitch.raf[hitch.nraf++ % RAF_KEEP] = now - hitch.at;
 	hitch.at = now;
 	hitch.tick++;
+	const at = performance.timeOrigin + now;
+	hitch.tickAt[hitch.tick % RAF_KEEP] = at;
+	noteShown(frame, timing);
 	if (!fresh) return;
 	hitch.images++;
+	if (hitch.imgs.length < IMG_KEEP)
+		hitch.imgs.push([frame, hitch.last >= 0 ? hitch.tick - hitch.last : null, timing.image > 0 ? r2(at - timing.image) : null, frame - hitch.lastFrame]);
+	hitch.lastFrame = frame;
 	if (hitch.last >= 0) {
 		const gap = hitch.tick - hitch.last;
-		if (hitch.next) hitch.next.push(gap);
+		if (hitch.next) hitch.next[3] = gap;
 		hitch.next = null;
 		if (hitch.gaps.length > 0) {
 			const c = cadence(hitch.gaps);
 			if (gap > c) {
+				const [cls, d, maxRaf] = hitchClass(c, timing.image);
 				hitch.count++;
 				hitch.extra += gap - c;
-				if (hitch.list.length < HITCH_LIST) hitch.list.push((hitch.next = [frame, gap, c]));
+				hitch.classes[cls]++;
+				const img = hitch.imgs.at(-1);
+				if (hitch.list.length < HITCH_LIST) hitch.list.push((hitch.next = [frame, gap, c, null, cls, d, img[2], img[3], maxRaf]));
 			}
 		}
 		hitch.gaps.push(gap);
@@ -684,7 +731,9 @@ function noteTick(now, fresh, frame) {
 }
 
 // The report's hitches: list entries are [present frame, gap, cadence,
-// the gap after it].
+// the gap after it, class, stamp - edge ms, tick - stamp ms, FRAME_WORD
+// delta, max tick interval ms]; present is the shown slots' present() ms
+// and bytes copied.
 function hitchState() {
 	const raf = hitch.raf.subarray(0, Math.min(hitch.nraf, RAF_KEEP));
 	return {
@@ -692,6 +741,17 @@ function hitchState() {
 		ticks: hitch.tick, images: hitch.images,
 		cadence: hitch.gaps.length ? cadence(hitch.gaps) : null,
 		count: hitch.count, extraTicks: hitch.extra, list: [...hitch.list],
+		classes: { ...hitch.classes }, imgs: [...hitch.imgs], present: shownState(),
+	};
+}
+
+function shownState() {
+	const n = hitch.nshown;
+	if (n === 0) return null;
+	const cost = [...hitch.cost.subarray(0, n)].sort((x, y) => x - y), copied = [...hitch.copied.subarray(0, n)].sort((x, y) => x - y);
+	return {
+		shown: n, msMedian: r2(cost[n >> 1]), msP95: r2(cost[Math.floor(n * 0.95)]), msMax: r2(cost[n - 1]),
+		bytesMedian: copied[n >> 1], bytesMax: copied[n - 1],
 	};
 }
 
@@ -704,7 +764,7 @@ function tick() {
 		try {
 			const images = present.images;
 			present.frame();
-			if (worker && done === null) noteTick(now, present.images !== images, present.shown);
+			if (worker && done === null) noteTick(now, present.images !== images, present.shown, present.shownTiming);
 		} catch (e) {
 			errors.push(`present: ${e.message}`);
 			present = null;

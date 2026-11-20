@@ -71,6 +71,15 @@ export const PRESENT = {
 	NTEX_WORD: 3,
 	INTEGER_WORD: 4, // 1: scale by whole multiples only
 	FRAME_WORD: 5,
+	// Present timing, measured by the Worker: STAMP_BYTE an f64, the
+	// publish time (performance.timeOrigin + now(), ms); COST_BYTE an f64,
+	// present()'s own ms; IMAGE_BYTE an f64, the STAMP of the first present
+	// that carried a texture version this one carries; COPIED_WORD the
+	// texture bytes it copied.
+	STAMP_BYTE: 24,
+	COST_BYTE: 32,
+	IMAGE_BYTE: 40,
+	COPIED_WORD: 12,
 	CMDS: 64,
 	CMD_WORDS: 16,
 	CMDS_MAX: 64,
