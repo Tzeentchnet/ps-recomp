@@ -11,6 +11,7 @@ import "core:fmt"
 import "core:os"
 import "core:time"
 import "ps:core/disc"
+import vu "ps:ps2/vu"
 
 foreign import ps_vu "system:ps_vu"
 
@@ -87,8 +88,15 @@ midvu_host_start :: proc() -> Midload_Start {
 			fmt.eprintln("play: mid-run VU conversion: cannot read", path, err)
 			return .Not
 		}
-		mvw.sent[unit] = len(bytes)
-		caps[unit] = capture_delta(bytes, mvw.done[unit], unit)
+		defer delete(bytes)
+		// sent is a record boundary, so the next delta starts at one.
+		end, ok := vu.capture_whole(bytes, unit)
+		if ok {caps[unit], ok = vu.capture_delta(bytes, mvw.done[unit], unit)}
+		if !ok {
+			fmt.eprintln("play: mid-run VU loading off: cannot read the capture", path)
+			return .Off
+		}
+		mvw.sent[unit] = end
 	}
 	mvw.gen = vu_host_start(raw_data(exe), i32(len(exe)), raw_data(caps[0]), i32(len(caps[0])), raw_data(caps[1]), i32(len(caps[1])))
 	if mvw.gen <= 0 {
@@ -127,33 +135,6 @@ midvu_host_poll :: proc(timeout: time.Duration) -> Midload_Poll {
 	}
 	mvw.done = mvw.sent
 	return midload_vu_take(blob, "the mid-run VU blob", start)
-}
-
-// The records of a unit's capture data (ps2/vu/capture.odin) past from,
-// and the image records before from that their entries need: what a
-// conversion of data[:from] has not seen. Its entries compile as they would
-// in the whole file, since the recompiler walks each entry on its own
-// (recomp/vu capture_read). data itself when from is 0; else data is freed.
-@(private = "file")
-capture_delta :: proc(data: []u8, from: int, unit: int) -> []u8 {
-	if from == 0 || from > len(data) {return data}
-	image := unit == 0 ? 4096 : 16384 // micro memory: the format's 4 KiB for VU0, 16 KiB for VU1
-	size :: proc(data: []u8, pos, image: int) -> int {
-		return 9 + (data[pos] == 'I' ? image : 4)
-	}
-	need := make(map[u64]bool, context.temp_allocator)
-	for pos := from; pos < len(data); pos += size(data, pos, image) {
-		if pos + size(data, pos, image) > len(data) {break} // cut short: the converter drops it
-		if data[pos] == 'E' {need[u64((^u64le)(&data[pos + 1])^)] = true}
-	}
-	out := make([dynamic]u8, 0, len(data) - from)
-	for pos := 0; pos < from; pos += size(data, pos, image) {
-		n := size(data, pos, image)
-		if data[pos] == 'I' && u64((^u64le)(&data[pos + 1])^) in need {append(&out, ..data[pos:pos + n])}
-	}
-	append(&out, ..data[from:])
-	delete(data)
-	return out[:]
 }
 
 // The host's conversion cannot be stopped: it may still run, and none

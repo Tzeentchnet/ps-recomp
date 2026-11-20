@@ -168,14 +168,10 @@ capture_load :: proc(c: ^Capture, f: ^os.File, path: string, unit: int) -> bool 
 		fmt.eprintfln("vu%d: cannot read capture file %s: %v", unit, path, err)
 		return false
 	}
-	image := unit == 0 ? len(vu0_micro) : len(vu1_micro)
 	pos := 0
 	for pos < len(data) {
-		size := 9
-		switch data[pos] {
-		case 'I': size += image
-		case 'E': size += 4
-		case:
+		size := capture_record_size(data[pos], unit)
+		if size == 0 {
 			fmt.eprintfln("vu%d: capture file %s has a bad record at %d; not capturing", unit, path, pos)
 			return false
 		}
@@ -253,4 +249,61 @@ capture_record :: proc(c: ^Capture, key: [2]u64) -> bool {
 	if key in c.seen {return false}
 	c.seen[key] = true
 	return true
+}
+
+// The size of a capture record with tag t on unit (0: VU0, 1: VU1), its tag
+// and hash included; 0 for a tag the format has not.
+capture_record_size :: proc(t: u8, unit: int) -> int {
+	switch t {
+	case 'I': return 9 + (unit == 0 ? len(vu0_micro) : len(vu1_micro))
+	case 'E': return 9 + 4
+	}
+	return 0
+}
+
+// The end of the last whole record of a unit's capture data: a record cut
+// short at the end is not counted. False at a record with a bad tag. Each
+// record is at least 13 bytes, so the walk ends.
+capture_whole :: proc(data: []u8, unit: int) -> (end: int, ok: bool) {
+	for end < len(data) {
+		n := capture_record_size(data[end], unit)
+		if n == 0 {return end, false}
+		if end + n > len(data) {break}
+		end += n
+	}
+	return end, true
+}
+
+// What a conversion of a unit's capture data[:from] has not seen, as a
+// capture of its own: the image records before from that the entries past
+// it need, then data's whole records past from. Its entries compile as they
+// would in the whole file, since the recompiler walks each entry on its own
+// (recomp/vu capture_read). from 0 gives data's whole records. False, after
+// a message, when from is not a record boundary of data's whole records
+// (a length capture_whole gave of data or of a part of it before), or at a
+// bad record. out is in allocator.
+capture_delta :: proc(data: []u8, from, unit: int, allocator := context.allocator) -> (out: []u8, ok: bool) {
+	end, whole := capture_whole(data, unit)
+	if !whole {
+		fmt.eprintfln("vu%d: capture has a bad record at %d", unit, end)
+		return nil, false
+	}
+	pos := 0
+	for pos < from && pos < end {pos += capture_record_size(data[pos], unit)}
+	if pos != from {
+		fmt.eprintfln("vu%d: capture delta from %d: not a record boundary of the %d whole bytes", unit, from, end)
+		return nil, false
+	}
+	need := make(map[u64]bool, context.temp_allocator)
+	for p := from; p < end; p += capture_record_size(data[p], unit) {
+		if data[p] == 'E' {need[u64((^u64le)(&data[p + 1])^)] = true}
+	}
+	buf := make([dynamic]u8, 0, end - from, allocator)
+	for p := 0; p < from; {
+		n := capture_record_size(data[p], unit)
+		if data[p] == 'I' && u64((^u64le)(&data[p + 1])^) in need {append(&buf, ..data[p:p + n])}
+		p += n
+	}
+	append(&buf, ..data[from:end])
+	return buf[:], true
 }

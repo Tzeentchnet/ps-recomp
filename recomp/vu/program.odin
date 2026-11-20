@@ -749,6 +749,12 @@ load_capture :: proc(progs: ^[dynamic]Prog, path: string, unit: Unit) -> bool {
 		fmt.eprintln("vu: cannot read", path, err)
 		return false
 	}
+	return capture_programs(progs, data, path, unit)
+}
+
+// load_capture's programs from a capture file's data, read from path.
+@(private)
+capture_programs :: proc(progs: ^[dynamic]Prog, data: []u8, path: string, unit: Unit) -> bool {
 	mask := MASK[unit]
 	image := int(mask) + 8
 	c := capture_read(data, path, unit) or_return
@@ -778,20 +784,39 @@ load_capture :: proc(progs: ^[dynamic]Prog, path: string, unit: Unit) -> bool {
 		copy(words[:], images[h])
 		for pc in pcs {
 			ext := extent(words[:], pc, mask)
-			key := strings.builder_make()
-			for r in ranges(ext) {
-				fmt.sbprintf(&key, "%d:", r[0])
-				for w in words[r[0] * 2:r[1] * 2] {fmt.sbprintf(&key, "%x,", w)}
-			}
-			if strings.to_string(key) in keys {
-				strings.builder_destroy(&key)
+			key := prog_key(words[:], ext)
+			if key in keys {
+				delete(key)
 				continue
 			}
-			keys[strings.to_string(key)] = true
+			keys[key] = true
 			append(progs, Prog{words = words, ext = ext, entries = pcs_all})
 		}
 	}
 	return true
+}
+
+// A captured program's key: the pair ranges it compiles and their words.
+// Programs with the same key compile the same.
+@(private)
+prog_key :: proc(words: []u32, ext: []bool, allocator := context.allocator) -> string {
+	key := strings.builder_make(allocator)
+	for r in ranges(ext) {
+		fmt.sbprintf(&key, "%d:", r[0])
+		for w in words[r[0] * 2:r[1] * 2] {fmt.sbprintf(&key, "%x,", w)}
+	}
+	return strings.to_string(key)
+}
+
+// The keys (prog_key) of the programs a unit's capture data gives the
+// converter, as load_capture makes them: for tests that compare captures.
+// In the temp allocator.
+capture_program_keys :: proc(data: []u8, unit: Unit) -> (keys: map[string]bool, ok: bool) {
+	context.allocator = context.temp_allocator
+	progs: [dynamic]Prog
+	capture_programs(&progs, data, "capture", unit) or_return
+	for p in progs {keys[prog_key(p.words[:], p.ext)] = true}
+	return keys, true
 }
 
 @(private)
