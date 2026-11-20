@@ -415,9 +415,12 @@ play :: proc(image: string) -> int {
 	// that VU alone, in full, as without the player. A FLAT build, with no
 	// compiled programs, records only when asked, as does a compat child,
 	// whose result comes from the environment alone: what it recorded would
-	// change the code its parent's next conversion runs.
+	// change the code its parent's next conversion runs. A wasm32 build is
+	// FLAT but runs the stored blob's programs, so it records as a default
+	// build does, unless NATIVE=0 runs none.
 	capture := core.env("VU_CAPTURE")
-	if cnf.ps2 && !core.FLAT && !compat_child() && !capture_asked() {
+	flat_none := core.FLAT && (core.NATIVE_ARCH != core.NATIVE_ARCH_WASM32 || core.env("NATIVE") == "0")
+	if cnf.ps2 && !flat_none && !compat_child() && !capture_asked() {
 		capture = "miss"
 		if err := os.set_env(core.env_name("VU_CAPTURE"), capture); err != nil {
 			fmt.eprintln("play: cannot set", core.env_name("VU_CAPTURE"), err)

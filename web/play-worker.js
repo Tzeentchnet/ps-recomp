@@ -3,7 +3,7 @@
 // module runs; the page reaches it only through the SharedArrayBuffers.
 import { Bands, NO_BAND } from "./band.js";
 import { buildId, NetImports, NO_NET } from "./net.js";
-import { LearnImports, NO_LEARN, NO_SDL } from "./learn.js";
+import { LearnImports, NO_LEARN, NO_SDL, NO_VU, VuImports } from "./learn.js";
 import { dataLoad, dataSave, discOf, openStored, store } from "./readers.js";
 import { Native } from "./native.js";
 import { Sdl } from "./sdl.js";
@@ -76,7 +76,8 @@ async function discFor({ files, urls, store: name, stored }) {
 // stopping the Worker could cut a write short. A mid-run learned compile
 // (web/learn.js) goes to the page as {learn: {records, interp, buffer,
 // gen, cpu}}: the LEARN buffer, made at the first, the compile's generation
-// and its cpu.
+// and its cpu. A mid-run VU conversion goes as {vu: {exe, vu0, vu1,
+// buffer, gen}} (VuImports), on a buffer of its own.
 //
 // The software GS's band workers (PS_BANDS, ps2/gs/band_wasm.odin) run on
 // a pool of Workers (web/band.js) made before the run: as many as
@@ -153,6 +154,12 @@ onmessage = async ({ data }) => {
 					postMessage({ learn: { records, interp, buffer, gen, cpu } }, [records.buffer, interp.buffer]);
 					return true;
 				});
+		const vu = out
+			? null
+			: new VuImports((exe, vu0, vu1, buffer, gen) => {
+					postMessage({ vu: { exe, vu0, vu1, buffer, gen } }, [exe.buffer, vu0.buffer, vu1.buffer]);
+					return true;
+				});
 		times.compileMs = Math.round(performance.now() - t0);
 		const log = (_fd, text) => postMessage({ log: text });
 		if (out) {
@@ -197,12 +204,14 @@ onmessage = async ({ data }) => {
 			"system:ps_native": native.imports,
 			"system:ps_net": net?.imports ?? NO_NET,
 			"system:ps_learn": learn?.imports ?? NO_LEARN,
+			"system:ps_vu": vu?.imports ?? NO_VU,
 			"system:ps_band": bands?.imports ?? NO_BAND,
 		});
 		sdl?.attach(instance);
 		native.attach(instance);
 		net?.attach(instance);
 		learn?.attach(instance);
+		vu?.attach(instance);
 		t1 = performance.now();
 		const code = wasi.run(instance);
 		times.runMs = Math.round(performance.now() - t1);

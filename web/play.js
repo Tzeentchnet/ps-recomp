@@ -61,7 +61,7 @@
 // maintainer's game-data label then has .github/workflows/game-data.yml
 // check it (tools/gamedata) and open a pull request adding it under games/.
 import { SCANCODE_OF_CODE } from "./keys.js";
-import { LEARN_OUT, learnArgs, learnDeliver, learnSeed } from "./learn.js";
+import { LEARN_OUT, learnArgs, learnDeliver, learnSeed, VU_OUT, vuArgs, vuSeed } from "./learn.js";
 import { AUDIO, CONTROL, EV, NET, PAD, PRESENT } from "./layout.js";
 import { serveLink } from "./net.js";
 import { Present } from "./present.js";
@@ -546,6 +546,7 @@ function onMessage({ data }) {
 	}
 	if (data.store !== undefined) return onStore(data.store);
 	if (data.learn !== undefined) return learnCompile(data.learn);
+	if (data.vu !== undefined) return vuConvert(data.vu);
 	if (data.fullscreen !== undefined) {
 		if (data.fullscreen && !document.fullscreenElement) $("screen").requestFullscreen?.().catch(() => {});
 		else if (!data.fullscreen && document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -570,52 +571,62 @@ function onMessage({ data }) {
 	audioContext = null;
 }
 
-// A mid-run learned compile the play Worker asked for (web/learn.js): run
-// `play --learned <psx | ee>` in a Worker of its own (an `out` run) and hand its
-// blob to the play Worker. Its log goes to the page's; the instantiate's
-// time is said, for the cost of a mid-run compile on this browser. One
-// compile Worker runs at a time: a new compile, or a new run (start),
-// ends the one before, whose blob would be dropped anyway (its generation
-// is not the one in flight).
-let learnConv = null;
-function learnStop() {
-	learnConv?.terminate();
-	learnConv = null;
+// A mid-run compile the play Worker asked for: a learned compile
+// (web/learn.js LearnImports, `play --learned <psx | ee>`) or a VU
+// conversion (VuImports, `play --convert-vu`). Each runs in a Worker of its
+// own (an `out` run) and hands its blob to the play Worker. Its log goes to
+// the page's; the instantiate's time is said, for the cost of a mid-run
+// compile on this browser. One Worker of each kind runs at a time: a new
+// compile of that kind, or a new run (start), ends the one before, whose
+// blob would be dropped anyway (its generation is not the one in flight).
+const convs = { learn: null, vu: null };
+function convStop() {
+	for (const kind in convs) {
+		convs[kind]?.terminate();
+		convs[kind] = null;
+	}
 }
-function learnCompile({ records, interp, buffer, gen, cpu }) {
-	learnStop();
+// what names the compile in the log; noun, in learnDeliver's.
+function convRun(kind, what, noun, args, seed, transfer, outName, buffer, gen) {
+	convs[kind]?.terminate();
 	const t0 = performance.now();
 	const conv = new Worker("play-worker.js", { type: "module" });
-	learnConv = conv;
+	convs[kind] = conv;
 	let over = false;
 	const finish = (blob) => {
 		if (over) return;
 		over = true;
 		conv.terminate();
-		if (learnConv === conv) learnConv = null;
-		learnDeliver(buffer, blob, log, gen);
+		if (convs[kind] === conv) convs[kind] = null;
+		learnDeliver(buffer, blob, log, gen, noun);
 	};
 	conv.onmessage = ({ data }) => {
 		if (data.log !== undefined) {
 			log(data.log);
 		} else if (data.done !== undefined) {
 			const files = new Map(data.files ?? []);
-			log(`play: mid-run learned compile: exit ${data.done.code}, ${Math.round(performance.now() - t0)} ms (worker start, fetch and compile ${data.done.compileMs} ms, run ${data.done.runMs} ms)\n`);
-			finish(data.done.code === 0 ? (files.get(LEARN_OUT) ?? null) : null);
+			log(`play: mid-run ${what}: exit ${data.done.code}, ${Math.round(performance.now() - t0)} ms (worker start, fetch and compile ${data.done.compileMs} ms, run ${data.done.runMs} ms)\n`);
+			finish(data.done.code === 0 ? (files.get(outName) ?? null) : null);
 		} else if (data.error !== undefined) {
-			log(`play: mid-run learned compile failed: ${data.error.split("\n")[0]}\n`);
+			log(`play: mid-run ${what} failed: ${data.error.split("\n")[0]}\n`);
 			finish(null);
 		}
 	};
 	conv.onerror = (e) => {
-		log(`play: mid-run learned compile failed: ${e.message || "worker failed to load"}\n`);
+		log(`play: mid-run ${what} failed: ${e.message || "worker failed to load"}\n`);
 		finish(null);
 	};
 	conv.onmessageerror = () => {
-		log("play: mid-run learned compile failed: a message from its worker could not be read\n");
+		log(`play: mid-run ${what} failed: a message from its worker could not be read\n`);
 		finish(null);
 	};
-	conv.postMessage({ wasm: "play.wasm", args: learnArgs(cpu).slice(1), out: true, seed: learnSeed(records, interp) }, [records.buffer, interp.buffer]);
+	conv.postMessage({ wasm: "play.wasm", args, out: true, seed }, transfer);
+}
+function learnCompile({ records, interp, buffer, gen, cpu }) {
+	convRun("learn", "learned compile", "learned", learnArgs(cpu).slice(1), learnSeed(records, interp), [records.buffer, interp.buffer], LEARN_OUT, buffer, gen);
+}
+function vuConvert({ exe, vu0, vu1, buffer, gen }) {
+	convRun("vu", "VU conversion", "VU", vuArgs(vu0, vu1).slice(1), vuSeed(exe, vu0, vu1), [exe.buffer, vu0.buffer, vu1.buffer], VU_OUT, buffer, gen);
 }
 
 // The run's history, a second an entry while it runs: {t: seconds since
@@ -658,7 +669,7 @@ function start(msg) {
 		msg = { ...msg, env: { ...msg.env } };
 		msg.net = startNet(msg.env);
 	}
-	learnStop();
+	convStop();
 	$("start").disabled = true;
 	$("log").textContent = "";
 	const canvas = $("screen");

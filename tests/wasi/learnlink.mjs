@@ -8,7 +8,7 @@
 import { writeSync } from "node:fs";
 import { workerData } from "node:worker_threads";
 import { NO_BAND } from "../../web/band.js";
-import { LEARN_OUT, learnArgs, learnDeliver, learnSeed, NO_LEARN, NO_SDL } from "../../web/learn.js";
+import { LEARN_OUT, learnArgs, learnDeliver, learnSeed, NO_LEARN, NO_SDL, NO_VU } from "../../web/learn.js";
 import { Native } from "../../web/native.js";
 import { NO_NET } from "../../web/net.js";
 import { Wasi } from "../../web/wasi.js";
@@ -29,6 +29,7 @@ try {
 		"system:ps_native": native.imports,
 		"system:ps_net": NO_NET,
 		"system:ps_learn": NO_LEARN,
+		"system:ps_vu": NO_VU,
 		"system:ps_band": NO_BAND,
 	});
 	native.attach(instance);

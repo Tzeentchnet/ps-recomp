@@ -41,7 +41,7 @@ import { mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, wri
 import { basename, dirname, join, resolve } from "node:path";
 import { argv, env, exit, stderr, stdout } from "node:process";
 import { Worker } from "node:worker_threads";
-import { LearnImports } from "../../web/learn.js";
+import { LearnImports, NO_VU } from "../../web/learn.js";
 import { AUDIO, CONTROL, NET, PRESENT } from "../../web/layout.js";
 import { Bands, NO_BAND } from "../../web/band.js";
 import { Native } from "../../web/native.js";
@@ -169,6 +169,8 @@ const instance = await WebAssembly.instantiate(module, {
 	"system:ps_native": native.imports,
 	"system:ps_net": net?.imports ?? NO_NET,
 	"system:ps_learn": learn.imports,
+	// No mid-run VU conversion here: Node runs interpret the programs.
+	"system:ps_vu": NO_VU,
 	"system:ps_band": bands?.imports ?? NO_BAND,
 });
 sdl.attach(instance);

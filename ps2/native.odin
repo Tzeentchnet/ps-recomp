@@ -531,28 +531,22 @@ span_native :: proc(code: ^core.Native_Code, s: core.Native_Span) -> vu.Vu_Nativ
 	return cast(vu.Vu_Native)rawptr(code.base + uintptr(s.off))
 }
 
-// Register the VU microprograms of the blob at path (`play --convert-vu`)
-// beside those registered, while the game runs. Call it only where no
-// microprogram runs: between the EE's instructions, as at a vblank
-// (kernel.run_events), since a VU runs each microprogram to its end within
-// the EE instruction that starts it. Programs already registered (the same
-// addresses and words) are left, and counted in known; added counts the
-// rest. When one of those is a VU1 program that reads status and the
-// startup blob's VU1 code may not keep status (vu1_elided), none is
+// Register the VU microprograms of blob (`play --convert-vu`; name, its
+// name in a message) beside those registered, while the game runs. Call it
+// only where no microprogram runs: between the EE's instructions, as at a
+// vblank (kernel.run_events), since a VU runs each microprogram to its end
+// within the EE instruction that starts it. Programs already registered
+// (the same addresses and words) are left, and counted in known; added
+// counts the rest. When one of those is a VU1 program that reads status and
+// the startup blob's VU1 code may not keep status (vu1_elided), none is
 // registered (skipped): code that does not keep status would then run
 // beside code that reads it. The blob's code stays mapped while a program
-// of it is registered. False, with the reason printed, when the blob cannot
-// be loaded.
-load_native_vus :: proc(path: string) -> (added, known: int, skipped, ok: bool) {
-	blob, err := os.read_entire_file(path, context.allocator)
-	if err != nil {
-		fmt.eprintfln("native: %s: %v", path, err)
-		return
-	}
-	defer delete(blob)
+// of it is registered; blob itself may be freed after. False, with the
+// reason printed, when the blob cannot be loaded.
+load_native_vus :: proc(blob: []u8, name: string) -> (added, known: int, skipped, ok: bool) {
 	code, msg := core.native_load(blob, native_imports())
 	if msg != "" {
-		fmt.eprintfln("native: %s: %s", path, msg)
+		fmt.eprintfln("native: %s: %s", name, msg)
 		return
 	}
 	ok = true

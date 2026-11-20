@@ -27,12 +27,13 @@ import "ps:recomp/vu"
 // vu_only (`play --convert-vu`, the same arguments but hooks, then the
 // run's pid) compiles a PS2 disc's VU microprograms alone, VU1 code
 // computing status whatever its programs read, for a run to load beside
-// the code it runs (midload.odin).
+// the code it runs (midload.odin). Its image may be the executable alone:
+// a wasm32 run's conversion has no disc (midload_vu_wasi.odin).
 convert :: proc(image, out, vu0, vu1: string, hooks := "", vu_only := false) -> int {
 	if _, ok := native.arch_of("convert", mips.HOST_ARCH); !ok {
 		return 1
 	}
-	o := mips.disc_options(image, "")
+	o := vu_only && is_elf(image) ? exe_options(image) : mips.disc_options(image, "")
 	o.values["native_out"] = out
 	if vu0 != "" || vu1 != "" {
 		o.values["native_vu"] = "true"
@@ -57,6 +58,30 @@ convert :: proc(image, out, vu0, vu1: string, hooks := "", vu_only := false) -> 
 	case: mips.fail("%s: unknown backend %s", image, b)
 	}
 	return 0
+}
+
+// Whether the file at path is an ELF file, not a disc image.
+@(private = "file")
+is_elf :: proc(path: string) -> bool {
+	f, err := os.open(path)
+	if err != nil {return false}
+	defer os.close(f)
+	magic: [4]u8
+	n, _ := os.read(f, magic[:])
+	return n == 4 && string(magic[:]) == "\x7fELF"
+}
+
+// disc_options for a PS2 executable at path with no disc around it.
+@(private = "file")
+exe_options :: proc(path: string) -> mips.Options {
+	o := mips.Options {
+		path = path,
+	}
+	o.values["backend"] = "r5900"
+	o.values["exe"] = path
+	o.values["quiet"] = "true"
+	o.values["native_arch"] = mips.HOST_ARCH
+	return o
 }
 
 // The learned child (`play --learned <psx | iop | ee> <records> <out>

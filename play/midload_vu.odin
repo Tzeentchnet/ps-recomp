@@ -4,79 +4,65 @@
 // With VU_CAPTURE=miss a run records the microprograms no compiled one runs
 // (ps2/vu/capture.odin); the next run's conversion compiles them. Until then
 // they run in the interpreter, for the whole of a first run. So while the
-// game runs, once its captures have stopped growing, a child of this
-// executable (`play --convert-vu <disc image> <out> <vu0> <vu1> <parent
-// pid>`) compiles the VU microprograms of the captures as they are, and the
-// run loads the programs it has not (ps2.load_native_vus).
+// game runs, once its captures have stopped growing, `play --convert-vu
+// <disc image | executable> <out> <vu0> <vu1> <parent pid>` compiles the VU
+// microprograms of the captures as they are, and the run loads the programs
+// it has not (ps2.load_native_vus). A native build runs it in a child of
+// this executable (midload_vu_native.odin); a wasm32 build, in the host's
+// worker (midload_vu_wasi.odin).
 //
-// The child takes no capture lock and writes nothing to the disc directory:
-// its blob goes to a temporary file (ps-vu-<run pid>-*.bin), removed once
-// loaded, at exit and on a fatal error (core.fatal_cleanup). It compiles
-// status for every program (gen.odin vu_status=all), so a program a later
-// load brings never needs it kept by one of these. The startup blob may not
-// keep status (ps2.load_native_vus), and a load that would bring a program
-// reading status beside it is skipped, said once. On Linux the child dies
-// with the run (PR_SET_PDEATHSIG) and exits at once if the run is already
-// gone, and a run removes the temporary files of runs that ended without
-// removing theirs (killed, or a panic).
+// The conversion takes no capture lock and writes nothing to the disc
+// directory. It compiles status for every program (gen.odin
+// vu_status=all), so a program a later load brings never needs it kept by
+// one of these. The startup blob may not keep status
+// (ps2.load_native_vus), and a load that would bring a program reading
+// status beside it is skipped, said once.
 //
 // On only for a PS2 disc with native code, capturing with VU_CAPTURE=miss
-// (so never in a compat child or a FLAT build), unless VUNATIVE=0 or
-// MIDLOAD=0.
+// (so never in a compat child, nor in a FLAT build but a wasm32 one),
+// unless VUNATIVE=0 or MIDLOAD=0.
 package play
 
 import "core:fmt"
 import "core:os"
 import "core:time"
 import "ps:core"
-@(require) import "ps:ps2" // used only without FLAT
-@(require) import vu "ps:ps2/vu" // used only without FLAT
+@(require) import "ps:ps2" // used only without FLAT, or in a wasm32 build
+@(require) import vu "ps:ps2/vu" // used only without FLAT, or in a wasm32 build
 
-// The prefix of the child's temporary blob (midload_tmp).
-@(private = "file")
-MIDLOAD_VU_TMP :: "ps-vu-"
-
-@(private = "file")
+@(private)
 Midload_Vu :: struct {
 	image: string,
-	self:  string, // this executable
-	child: os.Process,
-	tmp:   string, // the child's blob
 	loads: int, // blobs that brought programs
 	added: int, // programs they brought
 	skips: int, // loads skipped for status
 }
 
-@(private = "file")
+@(private)
 mv: Midload_Vu
 
 // Set up loading the captured programs mid-run for the disc image, given
 // what play chose: the native blob ("" none) and VU_CAPTURE. False when it
 // is off (the comment above), and the boot then hooks nothing.
 midload_init :: proc(image, native, capture: string) -> bool {
-	when core.FLAT {
+	when core.FLAT && core.NATIVE_ARCH != core.NATIVE_ARCH_WASM32 {
 		return false
 	} else {
 		if native == "" || capture != "miss" || compat_child() {return false}
 		if core.env("VUNATIVE") == "0" || midload_off() {return false}
-		self, err := os.get_executable_path(context.allocator)
-		if err != nil {
-			fmt.eprintln("play: mid-run VU load off, cannot find this executable:", err)
-			return false
-		}
+		if !midvu_host_init() {return false}
 		job := Midload_Job {
 			what    = "VU",
 			noun    = "conversion",
 			grown   = vu.vu_capture_records,
-			start   = midload_vu_start,
-			poll    = midload_vu_poll,
-			stop    = midload_vu_stop,
-			cleanup = midload_vu_remove,
+			start   = midvu_host_start,
+			poll    = midvu_host_poll,
+			stop    = midvu_host_stop,
+			cleanup = midvu_host_cleanup,
 			report  = midload_vu_report,
 		}
 		if !midload_begin(job) {return false}
-		mv = {image = image, self = self}
-		midload_tmp_sweep(MIDLOAD_VU_TMP)
+		mv = {image = image}
 		return true
 	}
 }
@@ -86,70 +72,24 @@ midload_vu_report :: proc(fails: int) {
 	fmt.eprintfln("play: mid-run VU loads: %d (%d microprograms), %d skipped for status, %d failed", mv.loads, mv.added, mv.skips, fails)
 }
 
-// Wait up to timeout for the child, taking its blob when it has ended.
-@(private = "file")
-midload_vu_poll :: proc(timeout: time.Duration) -> Midload_Poll {
-	when core.FLAT {
-		return .Lost
-	} else {
-		state, err := os.process_wait(mv.child, timeout)
-		switch {
-		case err == nil:
-			return midload_vu_take(state)
-		case err == os.General_Error.Timeout:
-			return .Running
-		}
-		fmt.eprintln("play: mid-run VU conversion: cannot wait for the child:", err)
-		return .Lost
-	}
-}
-
-// Kill the child and wait for it to end; false when it cannot be waited
-// for, and may still run.
-@(private = "file")
-midload_vu_stop :: proc(_: bool) -> bool {
-	_ = os.process_kill(mv.child)
-	if _, err := os.process_wait(mv.child); err != nil {
-		fmt.eprintln("play: mid-run VU loading off: a conversion child cannot be waited for:", err)
-		return false
-	}
-	return true
-}
-
-// Start the child converting the captures into a new temporary file.
-@(private = "file")
-midload_vu_start :: proc() -> Midload_Start {
-	tmp, ok := midload_tmp(MIDLOAD_VU_TMP, ".bin", "VU conversion")
-	if !ok {return .Not}
-	mv.tmp = tmp
-	caps: [2]string
+// The VU capture files that exist, VU0's then VU1's ("" for none).
+@(private)
+midload_vu_captures :: proc() -> (caps: [2]string) {
 	for &c, unit in caps {
 		c = core.env(fmt.tprintf("VU%d_CAPTURE", unit))
 		if !os.exists(c) {c = ""}
 	}
-	ppid := fmt.tprint(os.get_pid())
-	err: os.Error
-	mv.child, err = os.process_start({command = {mv.self, "--convert-vu", mv.image, mv.tmp, caps[0], caps[1], ppid}, stdout = os.stderr, stderr = os.stderr})
-	if err != nil {
-		fmt.eprintln("play: mid-run VU conversion: cannot start the child:", err)
-		midload_vu_remove()
-		return .Not
-	}
-	return .Started
+	return
 }
 
-// The child has ended in state: load its blob when it succeeded.
-@(private = "file")
-midload_vu_take :: proc(state: os.Process_State) -> Midload_Poll {
-	when core.FLAT {
+// Load the blob of a conversion that succeeded (name, its name in a
+// message); start: when the blob was in hand, for the time on this thread.
+@(private)
+midload_vu_take :: proc(blob: []u8, name: string, start: time.Tick) -> Midload_Poll {
+	when core.FLAT && core.NATIVE_ARCH != core.NATIVE_ARCH_WASM32 {
 		return .Lost
 	} else {
-		defer midload_vu_remove()
-		if !state.exited || state.exit_code != 0 {
-			fmt.eprintfln("play: mid-run VU conversion failed (%s)", midload_ended(state))
-			return .Failed
-		}
-		added, known, skipped, ok := ps2.load_native_vus(mv.tmp)
+		added, known, skipped, ok := ps2.load_native_vus(blob, name)
 		switch {
 		case !ok:
 		case skipped:
@@ -160,13 +100,8 @@ midload_vu_take :: proc(state: os.Process_State) -> Midload_Poll {
 		case added > 0:
 			mv.loads += 1
 			mv.added += added
-			fmt.eprintfln("play: mid-run VU load: %d microprograms (%d already loaded)", added, known)
+			fmt.eprintfln("play: mid-run VU load: %d microprograms (%d already loaded), %.1f ms", added, known, time.duration_milliseconds(time.tick_since(start)))
 		}
 		return .Done
 	}
-}
-
-@(private = "file")
-midload_vu_remove :: proc() {
-	midload_tmp_remove(&mv.tmp)
 }

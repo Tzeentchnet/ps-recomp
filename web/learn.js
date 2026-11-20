@@ -69,16 +69,9 @@ export class LearnImports {
 		this.imports = {
 			// The compile's generation (> 0), or -1.
 			start: (rec, recLen, interp, interpLen, cpu) => {
-				if (this.buffer === null) {
-					this.buffer = new SharedArrayBuffer(LEARN.SIZE);
-					this.words = new Int32Array(this.buffer, 0, LEARN.DATA / 4);
-					this.bytes = new Uint8Array(this.buffer, LEARN.DATA, LEARN.DATA_MAX);
-				}
-				const gen = Atomics.add(this.words, LEARN.GEN_WORD, 1) + 1;
-				this.reset();
-				const m = new Uint8Array(this.memory.buffer);
-				const records = m.slice(rec, rec + recLen);
-				const list = m.slice(interp, interp + interpLen);
+				const gen = this.begin();
+				const records = this.copy(rec, recLen);
+				const list = this.copy(interp, interpLen);
 				return this.startCb(records, list, this.buffer, gen, cpu) ? gen : -1;
 			},
 			poll: (buf, cap, timeoutMs, gen) => {
@@ -114,6 +107,24 @@ export class LearnImports {
 		this.memory = instance.exports.memory;
 	}
 
+	// The next compile's generation, with the buffer made at the first and
+	// its state word back to EMPTY.
+	begin() {
+		if (this.buffer === null) {
+			this.buffer = new SharedArrayBuffer(LEARN.SIZE);
+			this.words = new Int32Array(this.buffer, 0, LEARN.DATA / 4);
+			this.bytes = new Uint8Array(this.buffer, LEARN.DATA, LEARN.DATA_MAX);
+		}
+		const gen = Atomics.add(this.words, LEARN.GEN_WORD, 1) + 1;
+		this.reset();
+		return gen;
+	}
+
+	// A copy of len bytes of the module's memory at ptr.
+	copy(ptr, len) {
+		return new Uint8Array(this.memory.buffer).slice(ptr, ptr + len);
+	}
+
 	// The state word back to EMPTY, once no deliverer is writing: one that
 	// is finishes, and its blob (of a generation before) is dropped.
 	reset() {
@@ -131,8 +142,9 @@ export class LearnImports {
 
 // Hand the blob of compile gen (null: it failed) to poll; nothing when gen
 // is not the compile in flight. An empty blob is a failure. log(text) says
-// so, and says once per buffer that a blob over LEARN.DATA_MAX was dropped.
-export function learnDeliver(buffer, blob, log, gen) {
+// so, and says once per buffer that a blob over LEARN.DATA_MAX was dropped;
+// what names the compile in those lines.
+export function learnDeliver(buffer, blob, log, gen, what = "learned") {
 	const words = new Int32Array(buffer, 0, LEARN.DATA / 4);
 	if (Atomics.compareExchange(words, LEARN.STATE_WORD, EMPTY, WRITING) !== EMPTY) return;
 	if (Atomics.load(words, LEARN.GEN_WORD) !== gen) {
@@ -142,11 +154,11 @@ export function learnDeliver(buffer, blob, log, gen) {
 	}
 	let n = FAILED;
 	if (blob !== null && blob.byteLength === 0) {
-		log("play: a mid-run learned compile made an empty blob; failed\n");
+		log(`play: a mid-run ${what} compile made an empty blob; failed\n`);
 	} else if (blob !== null && blob.byteLength > LEARN.DATA_MAX) {
 		n = OVERSIZED;
 		if (Atomics.exchange(words, LEARN.WARNED_WORD, 1) === 0) {
-			log(`play: a mid-run learned blob of ${blob.byteLength} bytes is over the ${LEARN.DATA_MAX} the page passes; dropped (the next run compiles it)\n`);
+			log(`play: a mid-run ${what} blob of ${blob.byteLength} bytes is over the ${LEARN.DATA_MAX} the page passes; dropped (the next run compiles it)\n`);
 		}
 	} else if (blob !== null) {
 		new Uint8Array(buffer, LEARN.DATA, blob.byteLength).set(blob);
@@ -157,3 +169,34 @@ export function learnDeliver(buffer, blob, log, gen) {
 	Atomics.store(words, LEARN.STATE_WORD, READY);
 	Atomics.notify(words, LEARN.STATE_WORD);
 }
+
+// A mid-run VU conversion (play/midload_vu_wasi.odin): the play module's
+// "system:ps_vu" imports, the same protocol as LearnImports' on a buffer of
+// its own. start hands startCb(exe, vu0, vu1, buffer, gen) copies of the
+// game's executable and its VU0 and VU1 captures (empty: none), for
+// `play --convert-vu` (vuArgs) in a worker of its own; poll is
+// LearnImports'.
+export class VuImports extends LearnImports {
+	constructor(startCb) {
+		super(startCb);
+		this.imports.start = (exe, exeLen, vu0, vu0Len, vu1, vu1Len) => {
+			const gen = this.begin();
+			return this.startCb(this.copy(exe, exeLen), this.copy(vu0, vu0Len), this.copy(vu1, vu1Len), this.buffer, gen) ? gen : -1;
+		};
+	}
+}
+
+// The conversion's command line, its files under the instance's /data
+// (vuSeed), and the blob it writes there (VU_OUT); a capture of length 0
+// is not passed. The last argument is the pid play checks for (none here).
+export const VU_OUT = "out";
+export const vuArgs = (vu0, vu1) => ["play", "--convert-vu", "/data/exe", "/data/" + VU_OUT, vu0.byteLength > 0 ? "/data/vu0" : "", vu1.byteLength > 0 ? "/data/vu1" : "", "0"];
+export const vuSeed = (exe, vu0, vu1) =>
+	new Map([
+		["exe", exe],
+		...(vu0.byteLength > 0 ? [["vu0", vu0]] : []),
+		...(vu1.byteLength > 0 ? [["vu1", vu1]] : []),
+	]);
+
+// The imports for a host that converts nothing mid-run.
+export const NO_VU = NO_LEARN;

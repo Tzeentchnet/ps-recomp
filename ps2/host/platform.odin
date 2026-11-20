@@ -283,6 +283,7 @@ vblank_frame :: proc() {
 		snaptest_frame()
 		if rbtest[1] > 0 {rbtest_frame()}
 		if stats && frame % STATS_FRAMES == 0 {print_stats()}
+		if frame % STATS_FRAMES == 0 {vu.vu_stats_window(frame)}
 		// DUMP=<dir>: the guest clock and EE and IOP memory per presented
 		// frame (with DUMP_HASH=1, their hashes in <dir>/hashes.tsv, so two
 		// runs can be diffed for the first frame they diverge).

@@ -861,9 +861,17 @@ micro_holds :: proc(p: ^Vu_Program, micro: []u8) -> bool {
 @(private)
 vu_check, vu0_stats, vu1_stats: bool
 
+// VU0_STATS, VU1_STATS: per unit, the microprogram starts since the last
+// window (vu_stats_window) where a compiled program is found at the start
+// address ([0]) and where none is, so the interpreter starts it ([1]).
+@(private)
+vu_starts: [2][2]u64
+
 // VUNOCOMP=1 runs everything in the interpreter; VUCHECK=1 runs
 // every microprogram both ways and reports differences; VU0_STATS=1 and
-// VU1_STATS=1 print each compiled program's counters at exit.
+// VU1_STATS=1 print each compiled program's counters at exit, and every
+// 300 presented frames how many of the unit's starts found a compiled
+// program and how many ran interpreted (vu_stats_window).
 @(private)
 vu_options :: proc() {
 	nocomp := core.env("VUNOCOMP") != ""
@@ -884,6 +892,17 @@ vu_stats_print :: proc() {
 	}
 }
 
+// Print, for each unit with VU0_STATS or VU1_STATS, its starts since the
+// last window (vu_starts), the window ending at presented frame frame,
+// then count the next window from 0.
+vu_stats_window :: proc(frame: int) {
+	for on, unit in ([2]bool{vu0_stats, vu1_stats}) {
+		if !on {continue}
+		fmt.eprintfln("vu%d starts to f%d: %d compiled, %d interpreted", unit, frame, vu_starts[unit][0], vu_starts[unit][1])
+		vu_starts[unit] = {}
+	}
+}
+
 @(private)
 micro_stats_print :: proc(unit: int, programs: []^Vu_Program) {
 	for p, k in programs {
@@ -900,6 +919,7 @@ vu1_start :: proc(addr: u32) {
 	t := cpu.prof_start()
 	defer cpu.prof_end(.VU1, t)
 	if vu1_cap.on {vu_capture(&vu1, addr)}
+	if vu1_stats {vu_starts[1][vu1_lookup(addr & u32(len(vu1_micro) - 1) &~ 7) == nil ? 1 : 0] += 1}
 	if vu_check && vu1_lookup(addr & u32(len(vu1_micro) - 1) &~ 7) != nil {
 		vu1_compare(addr)
 		return
@@ -1740,6 +1760,7 @@ vu0_call_micro :: proc(addr: u32) {
 	t := cpu.prof_start()
 	defer cpu.prof_end(.VU0, t)
 	if vu0_cap.on {vu_capture(&vu0, addr)}
+	if vu0_stats {vu_starts[0][vu0_lookup(addr & u32(len(vu0_micro) - 1) &~ 7) == nil ? 1 : 0] += 1}
 	if vu_check && vu0_lookup(addr & u32(len(vu0_micro) - 1) &~ 7) != nil {
 		vu0_compare(addr)
 		return
