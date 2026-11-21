@@ -266,6 +266,12 @@ native_load :: proc(blob: []u8, imports: map[string]u64, warm := Native_Warm.Non
 	return code, ""
 }
 
+// Whether this process has started its perf map: the first load writes it
+// anew, over a file a past process of the same pid left; each later load
+// (blob, learned code, mods) adds its own lines.
+@(private = "file")
+perf_map_started: bool
+
 // /tmp/perf-<pid>.map, which Linux perf reads to name the functions in
 // mapped code: one line per function, up to the next one. The shared slow
 // routines after the last function count as part of it.
@@ -294,7 +300,14 @@ perf_map :: proc(code: Native_Code, end: int) {
 		fmt.sbprintfln(&sb, "%x %x %v_%d_%08x", code.base + uintptr(s.off), offs[next] - int(s.off), s.kind, k, s.entry)
 	}
 	path := fmt.tprintf("/tmp/perf-%d.map", os.get_pid())
-	if err := os.write_entire_file(path, sb.buf[:]); err != nil {
+	flags := perf_map_started ? os.File_Flags{.Write, .Create, .Append} : os.File_Flags{.Write, .Create, .Trunc}
+	perf_map_started = true
+	f, err := os.open(path, flags, os.Permissions_Default_File)
+	if err == nil {
+		_, err = os.write(f, sb.buf[:])
+		os.close(f)
+	}
+	if err != nil {
 		fmt.eprintfln("native: %s: %v", path, err)
 	}
 }
