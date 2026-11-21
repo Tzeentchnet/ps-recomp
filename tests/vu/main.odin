@@ -1411,6 +1411,11 @@ kick_xg :: proc(is: u32) -> u32 {return 0x800006fc | is << 11}
 @(private = "file")
 kick_isw :: proc(it, is, imm: u32) -> u32 {return 0x05 << 25 | 8 << 21 | it << 16 | is << 11 | imm}
 
+// An ISW of v to qword q's x as compiled code stores it: the pending
+// kick's check first.
+@(private = "file")
+kick_put :: proc(q: u32, v: u16) {vu1_words()[vu.vu1_kick_store(q * 16) / 4] = u32(v)}
+
 // PATH1 is idle when a DIRECT goes straight in.
 @(private = "file")
 kick_path1_idle :: proc(name, how: string) {
@@ -1418,7 +1423,7 @@ kick_path1_idle :: proc(name, how: string) {
 	gs.state.regs[0x43] = 0
 	feed(&vu.vifs[1], 0x50000002, tag[0], tag[1], tag[2], tag[3], ad[0], ad[1], ad[2], ad[3])
 	if gs.state.regs[0x43] != 0x4343 || vu.vifs[1].gif_wait {fail("%s (%s): PATH1 kept the GIF, a DIRECT after it waits", name, how)}
-	if vu.vu1_kick_latched {fail("%s (%s): a kick is still latched after the program", name, how)}
+	if vu.vu1.kick != 0 {fail("%s (%s): a kick is still latched after the program", name, how)}
 }
 
 @(private = "file")
@@ -1503,6 +1508,89 @@ kick_latch :: proc() {
 			check = proc(how: string) {
 				if gs.state.regs[0x41] != 0 {fail("XGKICK walk with no EOP (%s): GS 41 %x, the walk was fed", how, gs.state.regs[0x41])}
 				kick_path1_idle("XGKICK walk with no EOP", how)
+			},
+		},
+		// The GIF reads qword k of a kick in pair K at the start of pair
+		// K+2+2k, before that pair's store (PCSX2 _vuTestPipes): a store in
+		// K+1+2k is sent, one in K+2+2k is not. Each store here is two pairs
+		// or more from that line.
+		{
+			name = "XGKICK read in time: EOP in, late stores out",
+			setup = proc() {
+				w := vu1_words()
+				w[0], w[1], w[2], w[3] = 2, 1 << 28, 0xe, 0 // NLOOP 2, no EOP yet
+				w[4], w[5], w[6], w[7] = 0x1111, 0, 0x41, 0 // q1, read at K+4
+				w[8], w[9], w[10], w[11] = 0x2222, 0, 0x42, 0 // q2, read at K+6
+				vi := &vu.vu1.vi
+				vi[1], vi[2], vi[3], vi[4], vi[5] = 0, 0x8002, 0x8001, 0x3333, 0x5555
+			},
+			pairs = {
+				{kick_xg(1), KICK_UNOP}, // K
+				{kick_isw(2, 1, 0), KICK_UNOP}, // K+1: EOP into the tag, in
+				{KICK_NOP, KICK_UNOP},
+				{kick_isw(4, 1, 2), KICK_UNOP}, // K+3: q2's 42 data, in
+				{kick_isw(3, 1, 0), KICK_UNOP}, // K+4: NLOOP 1 into the tag, out
+				{KICK_NOP, KICK_UNOP},
+				{kick_isw(5, 1, 1), KICK_E}, // K+6: q1's 41 data, out
+				{KICK_NOP, KICK_UNOP},
+			},
+			compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {
+				vi, c := &vu.vu1.vi, &vu.vu1.cycle
+				compiled_ran = true
+				c^ += 1
+				vu.vu1_xgkick(vi[1])
+				c^ += 1
+				kick_put(0, vi[2])
+				c^ += 2
+				kick_put(2, vi[4])
+				c^ += 1
+				kick_put(0, vi[3])
+				c^ += 2
+				kick_put(1, vi[5])
+				c^ += 1
+				return 0x40, .End
+			},
+			check = proc(how: string) {
+				r := gs.state.regs
+				if r[0x41] != 0x1111 || r[0x42] != 0x3333 {
+					fail("XGKICK read in time (%s): GS 41 %x 42 %x, want 1111 3333", how, r[0x41], r[0x42])
+				}
+				kick_path1_idle("XGKICK read in time", how)
+			},
+		},
+		{
+			name = "XGKICK read in time across a WAITQ stall",
+			setup = proc() {
+				w := vu1_words()
+				w[0], w[1], w[2], w[3] = 0x8002, 1 << 28, 0xe, 0
+				w[4], w[5], w[6], w[7] = 0x1111, 0, 0x41, 0
+				w[8], w[9], w[10], w[11] = 0x2222, 0, 0x42, 0 // q2, read at K+6
+				vu.vu1.vi[1], vu.vu1.vi[4] = 0, 0x3333
+			},
+			pairs = {
+				{kick_xg(1), KICK_UNOP}, // K
+				{vu_programs.lower_sp(vu_programs.DIV, 0xf, 0, 0), KICK_UNOP}, // K+1: DIV Q, vf0w / vf0w
+				{vu_programs.lower_sp(vu_programs.WAITQ, 0, 0, 0), KICK_UNOP}, // K+2, stalls to K+8
+				{kick_isw(4, 1, 2), KICK_E}, // K+9: q2's 42 data, out; K+3 with no stall, in
+				{KICK_NOP, KICK_UNOP},
+			},
+			compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {
+				c := &vu.vu1.cycle
+				compiled_ran = true
+				c^ += 1
+				vu.vu1_xgkick(vu.vu1.vi[1])
+				c^ += 2 + 6
+				c^ += 1
+				kick_put(2, vu.vu1.vi[4])
+				c^ += 1
+				return 0x28, .End
+			},
+			check = proc(how: string) {
+				r := gs.state.regs
+				if r[0x41] != 0x1111 || r[0x42] != 0x2222 {
+					fail("XGKICK read in time across a WAITQ stall (%s): GS 41 %x 42 %x, want 1111 2222", how, r[0x41], r[0x42])
+				}
+				kick_path1_idle("XGKICK read in time across a WAITQ stall", how)
 			},
 		},
 	}

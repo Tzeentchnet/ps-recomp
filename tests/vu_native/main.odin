@@ -178,6 +178,7 @@ main :: proc() {
 				if !vu0 && status && want.status & 0x30 != 0 {vu1_set += 1}
 				same := got_pc == want.tpc | END_BIT && same_regs(&got, &want, status) && slice.equal(mem, mem_want)
 				same &&= !vu0 || vu_programs.vu1_same(&vu.vu1, &vu1_want)
+				same &&= vu0 || got.cycle == want.cycle // VU1 pairs and stalls, which time an XGKICK's read
 				if !same {
 					fails += 1
 					if fails < 10 {

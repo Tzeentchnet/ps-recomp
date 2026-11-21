@@ -59,6 +59,8 @@ import vu "vu"
 #assert(offset_of(vu.Vu, q_flags) - offset_of(vu.Vu, vf) == 640)
 #assert(offset_of(vu.Vu, q_due) - offset_of(vu.Vu, vf) == 644)
 #assert(offset_of(vu.Vu, vih) - offset_of(vu.Vu, vf) == 648)
+#assert(offset_of(vu.Vu, cycle) - offset_of(vu.Vu, vf) == 664)
+#assert(offset_of(vu.Vu, kick) - offset_of(vu.Vu, vf) == 668)
 
 // bc_cond for native code, which reads a 32-bit result.
 @(private = "file")
@@ -360,6 +362,7 @@ native_imports :: proc(types: ^map[string]typeid = nil) -> map[string]u64 {
 	f(&m, types, "vu1.pair", vu.vu1_pair)
 	f(&m, types, "vu1.wait", vu.vu1_wait)
 	f(&m, types, "vu1.xgkick", vu.vu1_xgkick)
+	f(&m, types, "vu1.kick_store", vu.vu1_kick_store)
 	m["vu1.top"] = p(&vu.vifs[1].top)
 	m["vu1.itop"] = p(&vu.vifs[1].itop)
 	m["vu1.run_pc"] = p(&vu.native_run[1].pc)

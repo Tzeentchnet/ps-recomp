@@ -113,6 +113,7 @@ EE_SIGS := [?]native.Sig {
 	{"vu1.pair", 3, false},
 	{"vu1.wait", 1, false},
 	{"vu1.xgkick", 1, false},
+	{"vu1.kick_store", 1, true},
 	{"vu1.branch_vi", 2, false},
 	{"ps2.bc_cond", 1, true},
 	{"cpu.fpu_slow", 3, true},

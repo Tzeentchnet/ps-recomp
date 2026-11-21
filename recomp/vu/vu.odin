@@ -382,6 +382,10 @@ vu0_mem_base :: proc(lw: u32) -> (n: u32, off: u16, ok: bool) {
 
 // Emit a non-branch lower op. mem names the VU's data memory size for mq.
 @(private = "file")
+// The quadword helper a store of emit_lower's unit calls: mqs on VU1, for
+// a pending XGKICK, else mq.
+mq_store :: proc() -> string {return lower_unit == 1 ? "mqs" : "mq"}
+
 emit_lower :: proc(sb: ^strings.Builder, lw, pc: u32, mem: string, q := "v.q_next", window := true) -> (slow: bool) {
 	lower_unit = mem == MEM[.VU0] ? 0 : 1
 	dest := (lw >> 21) & 15
@@ -413,7 +417,7 @@ emit_lower :: proc(sb: ^strings.Builder, lw, pc: u32, mem: string, q := "v.q_nex
 	// ISW and ISWR at address addr.
 	isw :: proc(sb: ^strings.Builder, L: [4]bool, it: u32, addr, mem: string) {
 		if L == {} {return}
-		fmt.sbprintf(sb, "\t\t\t{{q := mq(v, %s, %s); x := u32(vi[%d]); ", addr, mem, it)
+		fmt.sbprintf(sb, "\t\t\t{{q := %s(v, %s, %s); x := u32(vi[%d]); ", mq_store(), addr, mem, it)
 		for on, k in L {
 			if on {fmt.sbprintf(sb, "q[%d] = x; ", k)}
 		}
@@ -454,7 +458,7 @@ emit_lower :: proc(sb: ^strings.Builder, lw, pc: u32, mem: string, q := "v.q_nex
 		end_block(sb)
 	case 0x01: // SQ
 		if dest == 0 {return}
-		fmt.sbprintf(sb, "\t\t\t{{q := mq(v, vi[%d] + 0x%x, %s); ", it, imm11, mem)
+		fmt.sbprintf(sb, "\t\t\t{{q := %s(v, vi[%d] + 0x%x, %s); ", mq_store(), it, imm11, mem)
 		copy_lanes(sb, L, "q^", fmt.tprintf("vf[%d].u", fs))
 		end_block(sb)
 	case 0x04: ilw(sb, L, it, fmt.tprintf("vi[%d] + 0x%x", is, imm11), mem) // ILW
@@ -511,7 +515,7 @@ emit_lower :: proc(sb: ^strings.Builder, lw, pc: u32, mem: string, q := "v.q_nex
 			fmt.sbprint(sb, "\t\t\t{")
 			if lw & 3 == 3 {fmt.sbprintf(sb, "vi[%d] -= 1; ", it)}
 			if dest != 0 {
-				fmt.sbprintf(sb, "q := mq(v, vi[%d], %s); ", it, mem)
+				fmt.sbprintf(sb, "q := %s(v, vi[%d], %s); ", mq_store(), it, mem)
 				copy_lanes(sb, L, "q^", fmt.tprintf("vf[%d].u", fs))
 			}
 			if lw & 3 == 1 && it != 0 {fmt.sbprintf(sb, "vi[%d] += 1; ", it)}
@@ -740,6 +744,9 @@ emit_branch :: proc(sb: ^strings.Builder, lw, pc, mask: u32, delayed: bool) {
 @(private = "file")
 emit_wait_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow: ^map[string]int, known: ^Known, w: Waits) {
 	slow_pair := p.mode == .Slow && !p.ibit
+	// The pair's cycle, as the interpreter counts it (vu_interp), for the
+	// GIF's reads of a kicked packet (vu.vu1_kick_store).
+	if unit == .VU1 {fmt.sbprintln(sb, "\t\t\tv.cycle += 1")}
 	mid, stalls := stall_waits(p, w)
 	if !slow_pair && stalls &~ 1 != 0 {
 		known_stall := stalls & (stalls - 1) == 0
@@ -1063,6 +1070,14 @@ vmin :: #force_inline proc "contextless" (a, b: [4]u32) -> [4]u32 {
 // For the same reason mq is here and not in the runtime's vu package.
 mq :: #force_inline proc "contextless" (v: ^vu.Vu, n: u16, size: u32) -> ^[4]u32 #no_bounds_check {
 	return (^[4]u32)(&v.mem[(u32(n) * 16) & (size - 1)])
+}
+
+// mq for a VU1 store: first, while an XGKICK is pending, keeps the
+// quadword if the GIF has already read it (vu.vu1_kick_store).
+mqs :: #force_inline proc(v: ^vu.Vu, n: u16, size: u32) -> ^[4]u32 #no_bounds_check {
+	b := (u32(n) * 16) & (size - 1)
+	if v.kick != 0 {vu.vu1_kick_store(b)}
+	return (^[4]u32)(&v.mem[b])
 }
 
 // MAC Z/S bits of the dest lanes of x. mac4 and clip are unchecked: k

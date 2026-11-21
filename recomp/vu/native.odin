@@ -35,6 +35,7 @@ Imp :: enum u8 {
 	Pair, // proc(uw, lw, pc: u32)
 	Wait, // a stall: proc(cycles: u32)
 	Xgkick, // proc(addr: u16)
+	Kick_Store, // proc(b: u32) -> u32: before a store to byte b while a kick is pending (kick_check)
 	Top, // the unit's VIF TOP and ITOP
 	Itop,
 	Call_Micro, // VCALLMS: proc(addr: u32)
@@ -55,6 +56,7 @@ IMPORTS := [Unit][Imp]string {
 		.Pair = "vu.pair",
 		.Wait = "vu.wait",
 		.Xgkick = "",
+		.Kick_Store = "",
 		.Top = "",
 		.Itop = "vu.itop",
 		.Call_Micro = "vu.call_micro",
@@ -72,6 +74,7 @@ IMPORTS := [Unit][Imp]string {
 		.Pair = "vu1.pair",
 		.Wait = "vu1.wait",
 		.Xgkick = "vu1.xgkick",
+		.Kick_Store = "vu1.kick_store",
 		.Top = "vu1.top",
 		.Itop = "vu1.itop",
 		.Call_Micro = "",
@@ -109,6 +112,8 @@ VU_ACC, VU_Q, VU_P, VU_I, VU_CLIP, VU_STATUS, VU_MAC :: 544, 560, 564, 568, 576,
 VU_Q_NEXT, VU_Q_WAIT, VU_P_NEXT, VU_P_WAIT, VU_Q_FLAGS, VU_Q_DUE :: 624, 628, 632, 636, 640, 644
 @(private = "file")
 VU_VIH :: 648
+@(private = "file")
+VU_CYCLE, VU_KICK :: 664, 668
 // Each flag's three older values (old_mac and the rest), as [Flag].
 @(private = "file", rodata)
 VU_OLD := [Flag]u32 {
@@ -307,13 +312,28 @@ merge_dest :: proc(a: ^native.Asm, dest: u32) {
 	native.vec_op(a, .Or, .V0, .V2)
 }
 
+// Before a VU1 store to byte A of data memory: while an XGKICK is pending
+// (vu.Vu kick), the runtime's vu1_kick_store, which keeps the quadword if
+// the GIF has already read it and gives A back. Loses B, C and the vector
+// registers when it calls.
+@(private = "file")
+kick_check :: proc(a: ^native.Asm, u: Unit) {
+	if u != .VU1 {return}
+	skip := native.new_label(a)
+	native.imp_load(a, .C, IMPORTS[u][.Vf], VU_KICK)
+	native.br_zero(a, .C, skip)
+	native.call(a, IMPORTS[u][.Kick_Store], .A)
+	native.bind(a, skip)
+}
+
 // The quadword of data memory at byte A to the dest lanes of vf[r] (a
 // load, not vf0), or the dest lanes of vf[r] to it (a store). Reads A and
-// uses V0-V2.
+// uses B, C and V0-V2.
 @(private = "file")
 quad :: proc(a: ^native.Asm, u: Unit, store: bool, dest, r: u32) {
 	vf, mem := IMPORTS[u][.Vf], IMPORTS[u][.Mem]
 	if store && dest != 0 {
+		kick_check(a, u)
 		native.vec_load(a, .V0, 16 * r, vf)
 		if dest != 15 {
 			native.vec_ldst_at(a, .V1, mem, false)
@@ -346,16 +366,13 @@ lq_sq :: proc(a: ^native.Asm, u: Unit, w, key, pc: u32) {
 	vi_get(a, u, .A, r)
 	if key >= 0x36 {native.alu_imm(a, .Sub, .A, 1)}
 	win := window_begin(a, u)
-	if key >= 0x36 {
-		if r != 0 {vi_put(a, u, r)}
-	} else if r != 0 {
-		native.mov(a, .B, .A)
-	}
+	if key >= 0x36 && r != 0 {vi_put(a, u, r)}
 	native.alu_imm(a, .And, .A, MEM_QUADS[u])
 	native.alu_imm(a, .Shl, .A, 4)
 	quad(a, u, store, dest, fs if store else ft)
+	// vi[r] is unchanged by quad, which loses B.
 	if key < 0x36 && r != 0 {
-		native.mov(a, .A, .B)
+		vi_get(a, u, .A, r)
 		native.alu_imm(a, .Add, .A, 1)
 		vi_put(a, u, r)
 	}
@@ -971,6 +988,7 @@ ilw_isw :: proc(a: ^native.Asm, u: Unit, store: bool, dest, it: u32) {
 		vi_put(a, u, it)
 		return
 	}
+	kick_check(a, u)
 	vi_get(a, u, .B, it)
 	for k in u32(0) ..< 4 {
 		if dest & (8 >> k) != 0 {native.imp_store(a, scratch, .B, SCR_QUAD + 4 * k)}
@@ -1240,6 +1258,12 @@ micro_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]
 @(private = "file")
 micro_wait_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]int, known: ^[32]u8, w: Waits) {
 	vf := IMPORTS[u][.Vf]
+	// The pair's cycle, as emit_wait_pair counts it.
+	if u == .VU1 {
+		native.imp_load(a, .A, vf, VU_CYCLE)
+		native.alu_imm(a, .Add, .A, 1)
+		native.imp_store(a, vf, .A, VU_CYCLE)
+	}
 	slow_pair := p.mode == .Slow && !p.ibit
 	mid, stalls := stall_waits(p, w)
 	if !slow_pair && stalls &~ 1 != 0 {

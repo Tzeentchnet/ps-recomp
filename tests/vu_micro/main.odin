@@ -287,6 +287,7 @@ main :: proc() {
 			same &&= !(c.vu0 || c.status) || got.status == want.status
 			for k in 0 ..< 32 {same &&= got.vf[k].u == want.vf[k].u}
 			same &&= !c.vu0 || vu_programs.vu1_same(&vu.vu1, &vu1_want)
+			same &&= c.vu0 || got.cycle == want.cycle // VU1 pairs and stalls, which time an XGKICK's read
 			if !same {
 				fails += 1
 				if fails < 10 {

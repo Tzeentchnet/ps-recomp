@@ -73,6 +73,12 @@ Vu :: struct {
 	// first, as VIH entries; 0 where control arrived by a jump or the
 	// microprogram started.
 	vih:    [4]u32,
+	// Time in cycles: one at the start of each pair and one for each stall
+	// cycle (vu_wait). Only differences are used, on VU1: how far the GIF
+	// has read a kicked packet (vu1_kick_store).
+	cycle:  u32,
+	// VU1: nonzero while an XGKICK's packet is not yet sent (vu1_xgkick).
+	kick:   u32,
 	fbrst:  u32,
 	tpc:    u32,
 	cmsar:  u32,
@@ -522,6 +528,7 @@ vu_store_q :: proc(v: ^Vu, n: u16, x: [4]u32, dest: u32) {
 		vu0_window_store(n, x, dest)
 		return
 	}
+	if v == &vu1 && vu1.kick != 0 {vu1_kick_store((u32(n) * 16) % VU1_MEM)}
 	q := vu_mem_q(v, n)
 	for k in 0 ..< 4 {if dest & (8 >> u32(k)) != 0 {q[k] = x[k]}}
 }
@@ -1068,6 +1075,7 @@ vu_interp :: #force_inline proc(v: ^Vu, pairs: []Vu_Pair_Info, pc: u32, stop: []
 		taken: bool
 		dst: u32
 		when VU_STALL_COUNT {vu_stall_count(v, uw, lw)}
+		v.cycle += 1
 		vu_before(v, uw, lw)
 		pre := [3]u32{v.mac, v.status, v.clip}
 		e := info.vih
@@ -1180,6 +1188,7 @@ vu_before :: #force_inline proc "contextless" (v: ^Vu, uw, lw: u32) {
 // s stall cycles: each shifts the flags as an empty pair would and moves
 // the pending Q and P on.
 vu_wait :: proc "contextless" (v: ^Vu, s: u32) {
+	v.cycle += s
 	for _ in 0 ..< s {
 		vu_flags_shift(v, {v.mac, v.status, v.clip})
 		vu_tick(v)
@@ -1661,30 +1670,86 @@ vu1_kick_hash: u64
 @(private)
 vu1_kick_mute: bool
 
-// An XGKICK whose packet has not been read yet, and its address. Empty
-// whenever no VU1 program runs: vu1_exec sends it when the program stops.
-vu1_kick_latched: bool
+// The address of the XGKICK whose packet is not yet sent (vu1.kick set),
+// and vu1.cycle at the kick. No kick is pending whenever no VU1 program
+// runs: vu1_exec sends it when the program stops.
 vu1_kick_addr: u16
+vu1_kick_cycle: u32
+// The quadwords of VU1 memory a pending kick's GIF has already read and the
+// program has stored to since, as they were when read: vu1_kick_n of them
+// in vu1_kick_old, marked in vu1_kick_kept. Empty whenever no kick is
+// pending, so not in snapshots, which are taken between programs.
+@(private)
+Vu1_Kept :: struct {
+	q: u32,
+	x: [4]u32,
+}
+@(private)
+vu1_kick_old: [VU1_MEM / 16]Vu1_Kept
+@(private)
+vu1_kick_kept: [VU1_MEM / 16]bool
+@(private)
+vu1_kick_n: int
 // A packet was dropped (vu1_kick_send); reported once.
 vu1_kick_dropped: bool
 
 // XGKICK: send the GIF packet at quadword `addr` of VU1 memory down PATH1.
-// The GIF does not read the packet at the instruction: it starts a cycle on
-// and reads while the program runs, so a program may kick first and store
-// the tag (its EOP, say) in the pairs that follow. The kick is latched here
-// and the packet read when the program stops (vu1_exec) or kicks again,
-// whichever comes first. The interpreter, emitted and native code all call
-// this.
+// The GIF does not read the packet at the instruction: it reads one
+// quadword every two cycles while the program runs, so a store the program
+// makes after the kick is in the packet if it comes before the GIF reads
+// that quadword, and not if it comes after. PCSX2's interpreter times it so
+// (_vuXGKICK and _vuXGKICKTransfer in VUops.cpp, _vu1Exec in
+// VU1microInterp.cpp): the kick counts as one cycle, and before each later
+// pair's lower op the GIF reads a quadword for every two cycles since;
+// vu1Exec adds the pair's cycle before it runs. With the kick in pair K,
+// quadword k of the packet (the first tag at k = 0) is read before the
+// lower op of pair K+2+2k, so a store in pair K+1+2k is sent and one in
+// K+2+2k is not. A store in the E bit's delay slot, at K+1, is sent with
+// its tag's EOP (R&C2's packets).
+//
+// Here the packet is read when the program stops (vu1_exec) or kicks again,
+// whichever comes first, from memory as the GIF saw it: a store to a
+// quadword the GIF has already read keeps the old value first
+// (vu1_kick_store). The interpreter, emitted and native code all call this.
 vu1_xgkick :: proc(addr: u16) {
 	vu1_kick_flush()
-	vu1_kick_addr, vu1_kick_latched = addr, true
+	vu1_kick_addr, vu1_kick_cycle, vu1.kick = addr, vu1.cycle, 1
 }
 
-// Send the latched XGKICK, if any.
+// Before a store to byte b of VU1 memory while a kick is pending: keep the
+// quadword's value if the GIF has already read it, from the kick's address
+// on, a quadword every two cycles (vu1_xgkick). Returns b, for native code,
+// which has the address in its result register after the call. Every store
+// of the interpreter (vu_store_q), emitted code (mqs) and native code tests
+// vu1.kick before it calls this.
+vu1_kick_store :: proc(b: u32) -> u32 #no_bounds_check {
+	QUADS :: VU1_MEM / 16
+	q := (b / 16) % QUADS
+	read := min((vu1.cycle - vu1_kick_cycle) / 2, QUADS)
+	if (q - u32(vu1_kick_addr)) % QUADS < read && !vu1_kick_kept[q] {
+		vu1_kick_kept[q] = true
+		vu1_kick_old[vu1_kick_n] = {q, (^[4]u32)(&vu1_mem[q * 16])^}
+		vu1_kick_n += 1
+	}
+	return b
+}
+
+// Send the pending XGKICK, if any, with the quadwords the GIF read before
+// the program stored to them put back for the read.
 vu1_kick_flush :: proc() {
-	if !vu1_kick_latched {return}
-	vu1_kick_latched = false
+	if vu1.kick == 0 {return}
+	vu1.kick = 0
+	swap :: proc() #no_bounds_check {
+		for &k in vu1_kick_old[:vu1_kick_n] {
+			m := (^[4]u32)(&vu1_mem[k.q * 16])
+			m^, k.x = k.x, m^
+		}
+	}
+	swap()
 	vu1_kick_send(vu1_kick_addr)
+	swap()
+	for k in vu1_kick_old[:vu1_kick_n] {vu1_kick_kept[k.q] = false}
+	vu1_kick_n = 0
 }
 
 // Send the packet at quadword `addr` down PATH1, following tags to the one
@@ -1836,7 +1901,7 @@ vu_snap :: proc() {
 	core.snap_add(&vu1_pairs)
 	core.snap_add(&vu1_kick_hash)
 	core.snap_add(&vu1_kick_mute)
-	core.snap_add(&vu1_kick_latched)
 	core.snap_add(&vu1_kick_addr)
+	core.snap_add(&vu1_kick_cycle)
 	core.snap_add(&vu1_kick_dropped)
 }
