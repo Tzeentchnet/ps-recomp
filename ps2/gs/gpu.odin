@@ -675,6 +675,12 @@ probe_hw_tex_span :: proc(psm, bp, bw, x1, y1: u32) -> [2]u32 {
 	return tex_level_span(psm, bp, bw, x1, y1)
 }
 
+// Test hook for tests/gs_hw: the current state's texture lookup stands, so
+// the next primitive at the same context takes hw_state's fast path.
+probe_hw_dec_fresh :: proc() -> bool {
+	return hw.dec_seq == hw.seq
+}
+
 // Pages of every level the texture can sample, as one span. Region wrap
 // samples texels outside w x h, and a texel past the buffer's width lies in
 // the pages of a later row.
@@ -1076,11 +1082,15 @@ hw_draw :: proc(c: ^Ctx, kind: u64) {
 		hw.tex_ok = true
 	}
 	if !hw.fb_marked {
+		dec_ok := c.tme && hw.dec_seq == hw.seq
 		pages_mark_owner(hw.fb_pages, hw.fb_key)
 		pages_mark_owner(hw.z_pages, hw.z_key)
 		pages_write(hw.fb_pages)
 		pages_write(hw.z_pages)
 		hw.fb_marked, hw.tex_ok = true, false
+		// The state's own writes outdate its texture's copy only when they
+		// meet its pages: else the next primitive keeps the fast path.
+		if dec_ok && !spans_meet(hw.tex_pages, hw.fb_pages) && !spans_meet(hw.tex_pages, hw.z_pages) {hw.dec_seq = hw.seq}
 	}
 
 	// Built here and copied once: s.verts is mapped write-combined memory,

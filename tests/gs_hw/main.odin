@@ -18,7 +18,9 @@
 // ring overflow, hits over each other replayed in order, a hit whose source
 // is written before a draw reading past it, a hit wrapping past entry 511,
 // 17 hits in a row (one more than a dispatch replays), and a TEX0_2 hit
-// before a context 1 draw. Needs a Vulkan device: without one
+// before a context 1 draw. One case checks that a state's own frame and
+// depth writes outdate its texture lookup only when they meet the
+// texture's pages. Needs a Vulkan device: without one
 // it says so on stderr and exits 0, which is a skip, not a pass.
 package main
 
@@ -392,6 +394,7 @@ child :: proc(scale: u32) -> ! {
 		}
 	}
 	screen_overflow(scale)
+	dec_fresh(scale)
 	os.exit(failed != 0 ? 1 : 0)
 }
 
@@ -811,4 +814,38 @@ clut_hit_ctx2 :: proc() {
 	clut_band(1, b)
 	gs.gs_write(0x07, t4) // TEX0_2
 	band_draw(2)
+}
+
+// After a state's first primitive writes its frame and depth pages, the
+// texture's lookup stands only if those writes missed the texture's pages:
+// a texture away from both keeps hw_state's fast path; one on the frame's
+// pages, or on the depth buffer's, must look again (a decoded copy is
+// decoded again before each primitive, an undecoded one copied again).
+@(private = "file")
+dec_fresh :: proc(scale: u32) {
+	TBP :: 400 * 32 // page 400, away from the frame and depth buffer
+	ZTE_ALWAYS :: 1 << 16 | 1 << 17
+	Fresh :: struct {
+		name:            string,
+		tbp, zbuf, test: u64,
+		want:            bool,
+	}
+	cases := [?]Fresh {
+		{"apart", TBP, 0x100 | ZMSK, 0, true},
+		{"on the frame", 0, 0x100 | ZMSK, 0, false},
+		{"on the depth buffer", TBP, 400, ZTE_ALWAYS, false},
+	}
+	for c in cases {
+		picture(c.tbp, 4, W, 256)
+		setup(4 << 16, c.zbuf, c.test, 0, tex0(c.tbp, 4, 8, 8))
+		gs.gs_write(0x00, 6 | 1 << 4 | 1 << 8) // PRIM: SPRITE, TME, FST
+		gs.gs_write(0x01, 0x80808080)
+		gs.gs_write(0x03, 8 | 8 << 16) // UV
+		gs.gs_write(0x05, 1 << 32) // XYZ2 (0, 0)
+		gs.gs_write(0x03, W << 4 + 8 | (H << 4 + 8) << 16)
+		gs.gs_write(0x05, W << 4 | (H << 4) << 16 | 1 << 32) // XYZ2 (W, H)
+		if got := gs.probe_hw_dec_fresh(); got != c.want {
+			fail("FAIL gs_hw scale %d, texture %s: lookup stands %v after the first primitive, want %v", scale, c.name, got, c.want)
+		}
+	}
 }
