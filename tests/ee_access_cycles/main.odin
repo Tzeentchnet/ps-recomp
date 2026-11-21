@@ -143,8 +143,7 @@ main :: proc() {
 	when core.FLAT && ODIN_OS != .WASI {
 		fmt.eprintln("tests/ee_access_cycles runs learned code, which a host FLAT build never runs: build it without PS_FLAT, or for wasi_wasm32 (run.mjs)")
 		os.exit(2)
-	}
-	when ODIN_ARCH == .wasm32 {
+	} else when ODIN_ARCH == .wasm32 {
 		ps2.init()
 		cpu.next_event = max(u64)
 		game(nil)
