@@ -75,6 +75,15 @@ tag_tte :: proc(ch: u32, out: ^[dynamic]u8, t: u32) {
 	}
 }
 
+// Whether CHCR.TAG, the last source-chain tag read, ended the chain: refe,
+// end, or TIE with its IRQ bit. ret is left out: whether its stack was
+// empty is not in the tag.
+@(private)
+src_tag_ends :: proc(chcr: u32) -> bool {
+	id := (chcr >> 28) & 7
+	return id == 0 || id == 7 || (chcr & 0x80 != 0 && chcr & 0x80000000 != 0)
+}
+
 // Take the source-chain tag at t: copy its upper bits into CHCR, move TADR
 // and the call stack on, and return where its data is, how many quadwords,
 // the tag's ID, and whether the chain ends with it (refe, end, ret with an
@@ -474,11 +483,99 @@ dma_vif :: proc(ch: u32) {
 		if n != 0 {gs.readback(mem.ram_slice(mem.dma_addr(madr^), n))}
 		madr^ += n
 		qwc^ = 0
+		mem.dma_finish(ch)
 		return
 	}
-	clear(&dma_buf)
-	dma_gather(ch, &dma_buf)
-	vu.vif_feed(&vu.vifs[ch], dma_buf[:])
+	// Normal mode has only QWC. A chain started with QWC set drains MADR
+	// first, and ends there when CHCR.TAG, the last tag read, ended it.
+	chcr := mem.dma_reg(ch, 0x00)^
+	vif_last[ch] = (chcr >> 2) & 3 != 1 || (mem.dma_reg(ch, 0x20)^ & 0xffff != 0 && src_tag_ends(chcr))
+	if vif_walk(ch) {mem.dma_finish(ch)}
+}
+
+// VIF0/VIF1 DMA runs from guest memory in place: each span (a tag's data,
+// with its tag words under TTE) goes to the VIF where it lies, as the
+// channel reads it, and nothing is gathered. A VIF stall (an i-bit, a DIRECT
+// waiting for the GIF) stops the channel with STR set: MADR and QWC (or
+// TADR, at a tag) name the first quadword not taken, and the VIF holds the
+// rest of the quadword it stopped in. vif_dma walks on from there.
+// Per channel: the chain's last tag has been read, so only QWC is left.
+@(private)
+vif_last: [2]bool
+// A walk is running: a resume from inside it (a kick that frees the GIF)
+// leaves the walk to go on by itself.
+@(private)
+vif_walking: [2]bool
+
+// Walk ch from its registers until the VIF stalls (false: STR stays set)
+// or the transfer ends (true).
+@(private)
+vif_walk :: proc(ch: u32) -> bool {
+	v := &vu.vifs[ch]
+	chcr := mem.dma_reg(ch, 0x00)
+	madr := mem.dma_reg(ch, 0x10)
+	qwc := mem.dma_reg(ch, 0x20)
+	tadr := mem.dma_reg(ch, 0x30)
+	vif_walking[ch] = true
+	defer vif_walking[ch] = false
+	for _ in 0 ..< 1 << 20 {
+		// The last data taken ends the transfer, though the VIF stalled on it.
+		if qwc^ & 0xffff == 0 && vif_last[ch] {return true}
+		if vu.vif_busy(v) {return false}
+		if qwc^ & 0xffff != 0 {
+			n := qwc^ & 0xffff
+			vif_send(v, madr, qwc, madr^, madr^, n * 16)
+			continue
+		}
+		t := tadr^
+		addr, n, id, last := src_tag(ch, t)
+		madr^, qwc^, vif_last[ch] = addr, n, last
+		if chcr^ & 0x40 == 0 {continue}
+		// TTE: the tag's upper half goes ahead of its data, in one span
+		// with the data that follows the tag.
+		switch id {
+		case 1, 2, 5, 6, 7: vif_send(v, madr, qwc, t + 16, t + 8, 8 + n * 16)
+		case:               vif_send(v, madr, qwc, t + 16, t + 8, 8)
+		}
+	}
+	fmt.eprintfln("dma: ch %d chain did not end", ch)
+	return true
+}
+
+// Feed the span of n bytes at a to the VIF, and move MADR and QWC on past
+// the data quadwords it took; the data starts at d (a <= d). At a stall,
+// the words left in the quadword it stopped in go into hold, and that
+// quadword counts as taken.
+@(private)
+vif_send :: proc(v: ^vu.Vif, madr, qwc: ^u32, d, a, n: u32) {
+	if n >= 1024 * 16 && cpu.debug == 2 {fmt.eprintfln("dma: data %08x bytes %x", a, n)}
+	span := mem.ram_slice(mem.dma_addr(a), n)
+	k := u32(vu.vif_span(v, span))
+	if k < n && (a + k) & 15 != 0 { // stopped inside a quadword
+		q := min(n, (a + k + 15) &~ 15 - a)
+		append(&v.hold, ..span[k:q])
+		k = q
+	}
+	if a + k > d {
+		taken := (a + k - d) / 16
+		madr^ += taken * 16
+		qwc^ -= taken
+	}
+}
+
+// The VIF side of a stall (vu.vif_dma_hook): walk the stalled channel on
+// once the VIF runs again, and end it on FBRST.RST. Only a channel with STR
+// set, fed by this walk: not the MFIFO drain, not VIF1 to memory.
+vif_dma :: proc(id: int, reset: bool) {
+	ch := u32(id == 0 ? mem.DMA_VIF0 : mem.DMA_VIF1)
+	chcr := mem.dma_reg(ch, 0x00)^
+	if chcr & 0x100 == 0 || mfifo_owns(ch) || (ch == mem.DMA_VIF1 && chcr & 1 == 0) {return}
+	if reset {
+		mem.dma_finish(ch)
+		return
+	}
+	if vif_walking[ch] {return}
+	if vif_walk(ch) {mem.dma_finish(ch)}
 }
 
 dma_gif :: proc() {
@@ -490,6 +587,7 @@ dma_gif :: proc() {
 // Emulated state, saved and restored by snapshots (snap.odin).
 dma_snap :: proc() {
 	core.snap_add(&dma_buf)
+	core.snap_add(&vif_last)
 	core.snap_add(&mfifo_last)
 	core.snap_add(&mfifo_stalled)
 }

@@ -67,6 +67,7 @@ init :: proc() {
 	cpu.interp_hook = flat_call when core.FLAT else interp_call
 	mem.mem_init()
 	vu.vu_init()
+	vu.vif_dma_hook = dma.vif_dma
 	iop.sif_init()
 	iop.mcserv_init()
 	iop.mcraw_init()

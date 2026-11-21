@@ -770,7 +770,7 @@ ibit :: proc() {
 	vu.vif_fbrst(1, 8)
 	if v.stalled || stat^ & vu.VIF_STAT_STALL != 0 {fail("STC: stalled %v STAT %x", v.stalled, stat^)}
 	if v.base != 5 || v.itops != 7 || v.mode != 1 {fail("STC: base %d itops %d mode %d, want 5 7 1", v.base, v.itops, v.mode)}
-	if mem.intc_stat != 0 || len(v.pending) != 0 {fail("STC: INTC %x, %d bytes left", mem.intc_stat, len(v.pending))}
+	if mem.intc_stat != 0 || len(v.hold) != 0 {fail("STC: INTC %x, %d bytes left", mem.intc_stat, len(v.hold))}
 	if code^ != 0x05000001 {fail("STC: VIF1_CODE %08x, want the last code run, 05000001", code^)}
 
 	// VIF0 raises its own INTC; with MII it neither raises nor stalls.
@@ -788,7 +788,7 @@ ibit :: proc() {
 
 // VIF1 holds BASE 1, BASE 2 (both with the i-bit), BASE 3 and the first
 // word of an STMASK after an i-bit NOP: each STC runs on to the next stall,
-// so what waits starts inside pending. A second transfer brings the
+// so what waits starts inside hold. A second transfer brings the
 // STMASK's word and BASE 7. From a copy of the state after the first STC,
 // the same steps end the same way. FBRST.RST with words waiting drops them:
 // what waits after it starts at its own first word.
@@ -803,30 +803,30 @@ vif_head :: proc() {
 		if v.mask != 0 || v.base != 2 {fail("VIF head (%s): stalled VIF1 ran a transfer: mask %x base %d", from, v.mask, v.base)}
 		stc() // BASE 3, STMASK, BASE 7
 		if v.stalled || v.base != 7 || v.mask != 0xaaaaaaaa {fail("VIF head (%s): third STC: stalled %v base %d mask %x, want false 7 aaaaaaaa", from, v.stalled, v.base, v.mask)}
-		if len(v.pending) != 0 || v.head != 0 {fail("VIF head (%s): %d bytes pending, head %d after all ran", from, len(v.pending), v.head)}
+		if len(v.hold) != 0 {fail("VIF head (%s): %d bytes held after all ran", from, len(v.hold))}
 	}
 	mem.intc_stat = 0
 	feed(v, 0x80000000, 0x83000001, 0x83000002, 0x03000003, 0x20000000)
 	if !v.stalled || v.base != 0 {fail("VIF head: i-bit NOP: stalled %v base %d", v.stalled, v.base)}
 	stc() // BASE 1, stalls with BASE 2 on waiting
-	if v.base != 1 || !v.stalled || v.head == 0 {fail("VIF head: first STC: base %d stalled %v head %d, want 1 true >0", v.base, v.stalled, v.head)}
-	saved, saved_bytes := v^, slice.clone(v.pending[:])
+	if v.base != 1 || !v.stalled || len(v.hold) == 0 {fail("VIF head: first STC: base %d stalled %v, %d bytes held, want 1 true >0", v.base, v.stalled, len(v.hold))}
+	saved, saved_bytes := v^, slice.clone(v.hold[:])
 	steps(v, "fed")
 	v.mask = 0
 	v^ = saved
-	v.pending = {}
-	append(&v.pending, ..saved_bytes)
+	v.hold = {}
+	append(&v.hold, ..saved_bytes)
 	steps(v, "copy")
 
 	v.mask = 0
 	feed(v, 0x80000000, 0x83000001, 0x03000002, 0x03000003)
 	stc() // BASE 1, stalls with words waiting past head
-	if v.head == 0 || len(v.pending) == 0 {fail("VIF head: before RST: head %d, %d bytes pending", v.head, len(v.pending))}
+	if len(v.hold) == 0 {fail("VIF head: before RST: nothing held")}
 	vu.vif_fbrst(1, 1)
-	if len(v.pending) != 0 || v.head != 0 {fail("VIF head: RST left %d bytes pending, head %d", len(v.pending), v.head)}
+	if len(v.hold) != 0 {fail("VIF head: RST left %d bytes held", len(v.hold))}
 	feed(v, 0x80000000, 0x03000009)
 	stc()
-	if v.base != 9 || len(v.pending) != 0 {fail("VIF head: after RST: base %d, %d bytes pending, want 9 0", v.base, len(v.pending))}
+	if v.base != 9 || len(v.hold) != 0 {fail("VIF head: after RST: base %d, %d bytes held, want 9 0", v.base, len(v.hold))}
 	v.base, v.mask = 0, 0
 	mem.intc_stat, mem.intc_pending = 0, 0
 	delete(saved_bytes)
@@ -984,7 +984,7 @@ gif_rst :: proc() {
 	feed(&vu.vifs[1], 0x50000002, tag[0], tag[1], tag[2], tag[3], ad42[0], ad42[1], ad42[2], ad42[3], 0x01000404)
 	cl := vu.vifs[1].cl
 	vu.vif_fbrst(1, 1)
-	if len(vu.vifs[1].pending) != 0 || vu.vifs[1].gif_wait {fail("VIF1 FBRST.RST: %d bytes pending, waiting %v", len(vu.vifs[1].pending), vu.vifs[1].gif_wait)}
+	if len(vu.vifs[1].hold) != 0 || vu.vifs[1].gif_wait {fail("VIF1 FBRST.RST: %d bytes held, waiting %v", len(vu.vifs[1].hold), vu.vifs[1].gif_wait)}
 	end := gif_ad(0x41, 0x5555)
 	gif.gif_feed(2, ([^]u8)(&end)[:16])
 	r = gs.state.regs
@@ -998,8 +998,8 @@ gif_rst :: proc() {
 	vu.vif_fbrst(0, 1)
 	vu.vif_fbrst(0, 8)
 	stat := mem.hw_reg(vu.VIF0_STAT)^
-	if vu.vifs[0].stalled || len(vu.vifs[0].pending) != 0 || stat & vu.VIF_STAT_STALL != 0 || vu.vifs[0].cl != cl {
-		fail("VIF0 FBRST.RST: stalled %v, %d bytes pending, STAT %x, CL %d, want CL %d", vu.vifs[0].stalled, len(vu.vifs[0].pending), stat, vu.vifs[0].cl, cl)
+	if vu.vifs[0].stalled || len(vu.vifs[0].hold) != 0 || stat & vu.VIF_STAT_STALL != 0 || vu.vifs[0].cl != cl {
+		fail("VIF0 FBRST.RST: stalled %v, %d bytes held, STAT %x, CL %d, want CL %d", vu.vifs[0].stalled, len(vu.vifs[0].hold), stat, vu.vifs[0].cl, cl)
 	}
 	mem.intc_stat, mem.intc_pending = 0, 0
 	gif_clear()
@@ -1962,8 +1962,201 @@ tops_wrap :: proc() {
 	feed(v, 0x03000000, 0x02000000)
 }
 
+// VIF1 DMA from guest memory in place (dma.vif_walk). VIF codes used below.
+@(private = "file")
+V_NOP, V_IBIT, V_STMASK, V_STROW :: u32(0), u32(1) << 31, u32(0x20000000), u32(0x30000000)
+@(private = "file")
+v_base :: proc(n: u32) -> u32 {return 0x03000000 | n}
+@(private = "file")
+v_offset :: proc(n: u32) -> u32 {return 0x02000000 | n}
+
+// Words at a in RAM.
+@(private = "file")
+vwords :: proc(a: u32, w: ..u32) {
+	for x, i in w {(^u32)(&mem.ram[a + u32(i) * 4])^ = x}
+}
+
+// A source-chain tag at t: ID, QWC, address (ref/next), and its upper words
+// (VIF codes under TTE).
+@(private = "file")
+vtag :: proc(t, id, n, w2, w3: u32, ref: u32 = 0) {vwords(t, id << 28 | n, ref, w2, w3)}
+
+// Start VIF1 on the chain at t (STR, TTE, chain, to the VIF) with a clear VIF.
+@(private = "file")
+vchain :: proc(t: u32) {
+	if mem.ram == nil {mem.mem_init()}
+	v := &vu.vifs[1]
+	v.base, v.ofst, v.mask, v.row = 0, 0, 0, {}
+	mem.dma_reg(mem.DMA_VIF1, 0x00)^ = 0x145
+	mem.dma_reg(mem.DMA_VIF1, 0x20)^ = 0
+	mem.dma_reg(mem.DMA_VIF1, 0x30)^ = t
+	dma.dma_vif(mem.DMA_VIF1)
+}
+
+// VIF1 channel registers: STR, MADR, QWC, TADR.
+@(private = "file")
+vregs :: proc() -> (str: bool, madr, qwc, tadr: u32) {
+	return mem.dma_reg(mem.DMA_VIF1, 0x00)^ & 0x100 != 0, mem.dma_reg(mem.DMA_VIF1, 0x10)^, mem.dma_reg(mem.DMA_VIF1, 0x20)^, mem.dma_reg(mem.DMA_VIF1, 0x30)^
+}
+
+// The i-bit chain at 0x4000: cnt of 2 with BASE 1, NOP+i, BASE 2, BASE 3 in
+// its first quadword and OFFSET 5 in its second, then end.
+@(private = "file")
+vchain_ibit :: proc() {
+	vtag(0x4000, 1, 2, V_NOP, V_NOP)
+	vwords(0x4010, v_base(1), V_IBIT, v_base(2), v_base(3))
+	vwords(0x4020, v_offset(5), V_NOP, V_NOP, V_NOP)
+	vtag(0x4030, 7, 0, V_NOP, V_NOP)
+	vchain(0x4000)
+}
+
+// At the i-bit stall: STR still set, MADR and QWC past the quadword it
+// stopped in, the VIF holding that quadword's last 2 words.
+@(private = "file")
+vcheck_ibit_stall :: proc(what: string) {
+	v := &vu.vifs[1]
+	str, madr, qwc, tadr := vregs()
+	if !v.stalled || v.base != 1 || len(v.hold) != 8 || !str || madr != 0x4020 || qwc != 1 || tadr != 0x4030 {
+		fail("%s: stalled %v base %d held %d STR %v MADR %x QWC %d TADR %x, want true 1 8 true 4020 1 4030", what, v.stalled, v.base, len(v.hold), str, madr, qwc, tadr)
+	}
+}
+
+// After STC: the held words ran, then the channel walked on to its end.
+@(private = "file")
+vcheck_ibit_done :: proc(what: string) {
+	v := &vu.vifs[1]
+	str, madr, qwc, _ := vregs()
+	if v.stalled || v.base != 3 || v.ofst != 5 || len(v.hold) != 0 || str || madr != 0x4040 || qwc != 0 {
+		fail("%s: stalled %v base %d ofst %d held %d STR %v MADR %x QWC %d, want false 3 5 0 false 4040 0", what, v.stalled, v.base, v.ofst, len(v.hold), str, madr, qwc)
+	}
+}
+
+// VIF1 DMA runs from RAM in place and stops with the VIF: an i-bit in the
+// data keeps STR set with MADR/QWC at the first quadword not taken, and STC
+// runs the held words and walks the chain on. An i-bit on the last data
+// still ends the channel. A stall in a tag's words keeps the code after it;
+// with only the code held, its argument is read in place from the next
+// data, as with a ref tag whose data is elsewhere; a command split with
+// arguments on both sides is copied (vif_hold_copies). A DIRECT waiting on
+// PATH3 walks on when the GIF frees. FBRST.RST mid-stall ends the channel.
+@(private = "file")
+vif_dma :: proc() {
+	v := &vu.vifs[1]
+	vchain_ibit()
+	vcheck_ibit_stall("VIF1 DMA i-bit in data")
+	vu.vif_fbrst(1, 8)
+	vcheck_ibit_done("VIF1 DMA i-bit then STC")
+
+	vtag(0x4700, 7, 1, V_NOP, V_NOP) // the i-bit on the chain's last data
+	vwords(0x4710, v_base(1), V_IBIT, v_base(2), V_NOP)
+	vchain(0x4700)
+	str, madr, qwc, _ := vregs()
+	if !v.stalled || str || madr != 0x4720 || qwc != 0 || len(v.hold) != 8 {fail("VIF1 DMA i-bit on the last data: stalled %v STR %v MADR %x QWC %d held %d, want true false 4720 0 8", v.stalled, str, madr, qwc, len(v.hold))}
+	vu.vif_fbrst(1, 8)
+	if v.base != 2 || len(v.hold) != 0 {fail("VIF1 DMA i-bit on the last data, STC: base %d held %d, want 2 0", v.base, len(v.hold))}
+
+	vtag(0x4800, 7, 2, V_NOP, V_NOP) // end tag, i-bit mid-data; STR off, on, STC
+	vwords(0x4810, v_base(4), V_IBIT, v_base(5), V_NOP)
+	vwords(0x4820, v_offset(6), V_NOP, V_NOP, V_NOP)
+	vchain(0x4800)
+	chcr := mem.dma_reg(mem.DMA_VIF1, 0x00)
+	chcr^ &~= 0x100
+	chcr^ |= 0x100
+	dma.dma_vif(mem.DMA_VIF1)
+	vu.vif_fbrst(1, 8)
+	str, madr, qwc, _ = vregs()
+	if v.stalled || v.base != 5 || v.ofst != 6 || str || madr != 0x4830 || qwc != 0 {fail("VIF1 DMA restarted with QWC set after an end tag, STC: stalled %v base %d ofst %d STR %v MADR %x QWC %d, want false 5 6 false 4830 0 (data sent once)", v.stalled, v.base, v.ofst, str, madr, qwc)}
+
+	copies := vu.vif_hold_copies
+	vtag(0x4100, 1, 1, V_IBIT, V_STMASK) // stall on tag word 0, STMASK in word 1, its mask in the data
+	vwords(0x4110, 0x12345678, v_base(8), V_NOP, V_NOP)
+	vtag(0x4120, 7, 0, V_NOP, V_NOP)
+	vchain(0x4100)
+	str, madr, qwc, _ = vregs()
+	if !v.stalled || !str || madr != 0x4110 || qwc != 1 || len(v.hold) != 4 || v.mask != 0 {fail("VIF1 DMA i-bit in a tag: stalled %v STR %v MADR %x QWC %d held %d mask %x, want true true 4110 1 4 0", v.stalled, str, madr, qwc, len(v.hold), v.mask)}
+	vu.vif_fbrst(1, 8)
+	str, _, _, _ = vregs()
+	if v.mask != 0x12345678 || v.base != 8 || str || vu.vif_hold_copies != copies {fail("VIF1 DMA i-bit in a tag, STC: mask %x base %d STR %v copies %d, want 12345678 8 false %d", v.mask, v.base, str, vu.vif_hold_copies, copies)}
+
+	vtag(0x4200, 3, 1, V_NOP, V_STMASK, 0x4300) // ref: STMASK in the tag, its mask at 4300
+	vwords(0x4300, 0x0badf00d, v_base(9), V_NOP, V_NOP)
+	vtag(0x4210, 7, 0, V_NOP, V_NOP)
+	vchain(0x4200)
+	str, _, _, _ = vregs()
+	if v.mask != 0x0badf00d || v.base != 9 || str || len(v.hold) != 0 || vu.vif_hold_copies != copies {fail("VIF1 DMA ref with its code in the tag: mask %x base %d STR %v held %d copies %d, want badf00d 9 false 0 %d", v.mask, v.base, str, len(v.hold), vu.vif_hold_copies, copies)}
+
+	vtag(0x4400, 3, 1, V_STROW, 0x11, 0x4500) // ref: STROW and its first row word in the tag
+	vwords(0x4500, 0x22, 0x33, 0x44, v_base(10))
+	vtag(0x4410, 7, 0, V_NOP, V_NOP)
+	vchain(0x4400)
+	str, _, _, _ = vregs()
+	if v.row != {0x11, 0x22, 0x33, 0x44} || v.base != 10 || str || vu.vif_hold_copies != copies + 1 {fail("VIF1 DMA STROW split across a ref: row %v base %d STR %v copies %d, want 11 22 33 44, 10 false %d", v.row, v.base, str, vu.vif_hold_copies, copies + 1)}
+
+	gif_clear()
+	held := [2][4]u32{{2 | 1 << 15, 1 << 28, 0xe, 0}, gif_ad(0x40, 0x1111)} // PATH3: 2 loops, 1 sent
+	gif.gif_feed(2, ([^]u8)(&held)[:32])
+	tag, ad42 := gif_tag(1), gif_ad(0x42, 0x3333)
+	vtag(0x4600, 1, 3, V_NOP, 0x50000002) // DIRECT 2
+	vwords(0x4610, ..tag[:])
+	vwords(0x4620, ..ad42[:])
+	vwords(0x4630, v_base(11), V_NOP, V_NOP, V_NOP)
+	vtag(0x4640, 7, 0, V_NOP, V_NOP)
+	vchain(0x4600)
+	str, madr, qwc, _ = vregs()
+	if gs.state.regs[0x42] != 0 || !v.gif_wait || !str || madr != 0x4610 || qwc != 3 {fail("VIF1 DMA DIRECT while PATH3 holds the GIF: GS 42 %x waiting %v STR %v MADR %x QWC %d, want 0 true true 4610 3", gs.state.regs[0x42], v.gif_wait, str, madr, qwc)}
+	end := gif_ad(0x41, 0x5555)
+	gif.gif_feed(2, ([^]u8)(&end)[:16])
+	str, _, _, _ = vregs()
+	if gs.state.regs[0x42] != 0x3333 || v.gif_wait || v.base != 11 || str {fail("VIF1 DMA DIRECT after PATH3 ends: GS 42 %x waiting %v base %d STR %v, want 3333 false 11 false", gs.state.regs[0x42], v.gif_wait, v.base, str)}
+	gif_clear()
+
+	vchain_ibit()
+	vu.vif_fbrst(1, 1)
+	str, _, _, _ = vregs()
+	if v.stalled || len(v.hold) != 0 || str || v.base != 1 {fail("VIF1 FBRST.RST mid-stall: stalled %v held %d STR %v base %d, want false 0 false 1", v.stalled, len(v.hold), str, v.base)}
+	mem.intc_stat, mem.intc_pending = 0, 0
+}
+
+// A save state mid-stall brings back the stalled channel and what the VIF
+// held: after the load, STC ends the transfer as it did after the save.
+// Run in the snapshot coroutine (native) or inline (FLAT), last.
+@(private = "file")
+vif_dma_snap :: proc(_: rawptr) {
+	context.allocator = core.emu_allocator()
+	v := &vu.vifs[1]
+	delete(v.hold)
+	v.hold = make([dynamic]u8, 0, 64) // emulated state: in the snapshot heap
+	@(static) snap: core.Snapshot
+	@(static) loaded: bool
+	vchain_ibit()
+	core.snap_op, core.snap_target = .Save, &snap
+	core.snap_yield()
+	vcheck_ibit_stall(loaded ? "VIF1 DMA stall after a load" : "VIF1 DMA stall after a save")
+	vu.vif_fbrst(1, 8)
+	vcheck_ibit_done(loaded ? "VIF1 DMA STC after a load" : "VIF1 DMA STC after a save")
+	if !loaded {
+		loaded = true
+		core.snap_op = .Load
+		core.snap_yield()
+		when core.FLAT { // the load returns here, with the stall back
+			vcheck_ibit_stall("VIF1 DMA stall after a load")
+			vu.vif_fbrst(1, 8)
+			vcheck_ibit_done("VIF1 DMA STC after a load")
+		}
+	}
+	mem.intc_stat, mem.intc_pending = 0, 0
+	fmt.println("vu: ok")
+	os.exit(0)
+}
+
 main :: proc() {
+	core.snap_init(1 << 24)
+	mem.hw_snap()
+	dma.dma_snap()
+	gif.gif_snap()
+	vu.vif_snap()
 	vu.vu_init()
+	vu.vif_dma_hook = dma.vif_dma
 	put(0x40, 0x08 << 25 | 1 << 16 | 5) // IADDIU vi1, vi0, 5
 	put(0x44, 1 << 30 | 0xf << 21 | 2 << 16 | 1 << 11 | 3 << 6 | 0x28) // VADD.xyzw vf3, vf1, vf2 + E
 	put(0x48, 0x8000033c) // NOP
@@ -1991,6 +2184,7 @@ main :: proc() {
 	unpacks()
 	gif_paths()
 	gif_tte()
+	vif_dma()
 	spr_interleave()
 	spr_high()
 	mfifo()
@@ -1999,5 +2193,11 @@ main :: proc() {
 	kick_latch()
 	branch_delay()
 	park()
-	fmt.println("vu: ok")
+	when core.FLAT {
+		vif_dma_snap(nil)
+	} else {
+		context.allocator = core.emu_allocator()
+		core.co_allocator = context.allocator
+		core.snap_run(core.co_create(vif_dma_snap, nil))
+	}
 }

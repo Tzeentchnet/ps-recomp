@@ -22,10 +22,12 @@ Vif :: struct {
 	stalled:     bool,
 	// VIF1 stalled on a DIRECT until the GIF is free (vif1_gif_resume).
 	gif_wait:    bool,
-	pending:     [dynamic]u8, // a command split across transfers, or what waits out a stall
-	// pending[:head] has run; what waits starts at head. pending is empty
-	// whenever nothing waits, so head < len(pending) or both are 0.
-	head:        int,
+	// Words the VIF holds outside guest memory, run ahead of the next span:
+	// the rest of the quadword a DMA stall stopped in (at most 3 words), a
+	// command split across spans, and what FIFO writes and the MFIFO drain
+	// hand over while it is stalled. Empty in the steady state: DMA spans
+	// run in place from guest RAM (vif_span).
+	hold:        [dynamic]u8,
 }
 
 // The VIFs' registers, VIF1's 0x400 after VIF0's.
@@ -40,6 +42,16 @@ VIF_ERR_MII :: 1 // i-bits raise no interrupt and stall nothing
 
 vifs: [2]Vif
 
+// The DMA side of a stall (dma.vif_dma): a channel a VIF stalled keeps STR
+// set with its registers at the first quadword not taken. Called with
+// reset false once the VIF runs again (STC, or the GIF free for a DIRECT),
+// to walk the channel on from its registers; with reset true on FBRST.RST.
+vif_dma_hook: proc(id: int, reset: bool)
+
+// Spans whose last command ran from hold after more than its code word was
+// copied there: the slow path vif_span avoids for a code alone.
+vif_hold_copies: u64
+
 vif_init :: proc() {
 	vifs[0] = {id = 0, vu = &vu0, cl = 1, wl = 1}
 	vifs[1] = {id = 1, vu = &vu1, cl = 1, wl = 1}
@@ -52,45 +64,80 @@ vif_init :: proc() {
 vif1_gif_resume :: proc() {
 	v := &vifs[1]
 	v.gif_wait = false
-	if !v.stalled {vif_feed(v, nil)}
+	if !v.stalled {vif_resume(v)}
 }
+
+// Run what the VIF holds; once it has all run, the stalled channel walks on.
+@(private)
+vif_resume :: proc(v: ^Vif) {
+	vif_feed(v, nil)
+	if !vif_busy(v) && vif_dma_hook != nil {vif_dma_hook(v.id, false)}
+}
+
+// Stalled on an i-bit or waiting for the GIF: nothing runs.
+vif_busy :: #force_inline proc(v: ^Vif) -> bool {return v.stalled || v.gif_wait}
 
 @(private)
 vif_warned: map[u32]bool
 
-// Feed a transfer's words to a VIF; an incomplete trailing command waits
-// for the next transfer, and while the VIF is stalled (an i-bit, or a
-// DIRECT waiting for the GIF) every word waits.
-// DMA has already gathered the whole chain and finished the channel, so a
-// stall holds the chain's rest here instead of in the channel. What runs out
-// of pending moves head on, and the rest moves to the front only once head
-// passes half of pending: a stall can hold a megabyte that each transfer
-// would otherwise shift down by its few words.
+// Feed words to a VIF that cannot be held back: a FIFO write, an MFIFO
+// drain, a test. What does not run, at a stall or as an incomplete last
+// command, waits in hold.
 vif_feed :: proc(v: ^Vif, data: []u8) {
-	if v.stalled || v.gif_wait {
-		append(&v.pending, ..data)
-		return
-	}
+	n := vif_span(v, data)
+	if n < len(data) {append(&v.hold, ..data[n:])}
+}
+
+// Run a span of guest words in place, after what the VIF holds; returns the
+// bytes taken. Short of len(data) only when the VIF stalled (vif_busy), and
+// then at the first word not run. An incomplete last command is taken into
+// hold, to finish with the next span. len(data) is a multiple of 4.
+vif_span :: proc(v: ^Vif, data: []u8) -> int {
+	if vif_busy(v) {return 0}
 	t := cpu.prof_start()
 	defer cpu.prof_end(.VIF, t)
-	buf := data
-	if len(v.pending) != 0 {
-		append(&v.pending, ..data)
-		buf = v.pending[v.head:]
+	off := 0
+	if len(v.hold) != 0 {
+		off = vif_hold_run(v, data)
+		if len(v.hold) != 0 || vif_busy(v) {return off}
 	}
-	used := vif_run(v, ([^]u32)(raw_data(buf))[:len(buf) / 4])
-	if len(v.pending) == 0 {
-		append(&v.pending, ..buf[used * 4:])
-		return
+	rest := data[off:]
+	used := vif_run(v, ([^]u32)(raw_data(rest))[:len(rest) / 4]) * 4
+	if used < len(rest) && !vif_busy(v) {
+		append(&v.hold, ..rest[used:])
+		used = len(rest)
 	}
-	v.head += used * 4
-	if v.head == len(v.pending) {
-		clear(&v.pending)
-		v.head = 0
-	} else if v.head > len(v.pending) / 2 {
-		remove_range(&v.pending, 0, v.head)
-		v.head = 0
+	return off + used
+}
+
+// Run hold's whole commands, then finish its incomplete last one with the
+// head of data; returns the bytes of data taken. A code held alone runs with
+// its arguments read in place from data; a command split after its code is
+// copied whole into hold (vif_hold_copies). Hold is left with words only
+// when the VIF stalled or data was too short (then all of data is taken).
+@(private)
+vif_hold_run :: proc(v: ^Vif, data: []u8) -> int {
+	ran := vif_run(v, ([^]u32)(raw_data(v.hold))[:len(v.hold) / 4])
+	remove_range(&v.hold, 0, ran * 4)
+	if len(v.hold) == 0 || vif_busy(v) {return 0}
+	code := (^u32)(raw_data(v.hold))^
+	have := len(v.hold) / 4
+	take := (vif_need(v, code) - have) * 4
+	if take > len(data) {
+		append(&v.hold, ..data)
+		return len(data)
 	}
+	if have == 1 {
+		if !vif_cmd(v, code, ([^]u32)(raw_data(data))[:take / 4]) {return 0} // a DIRECT waits for the GIF
+		clear(&v.hold)
+		return take
+	}
+	append(&v.hold, ..data[:take])
+	vif_hold_copies += 1
+	// A DIRECT that waits for the GIF stays in hold, whole: data is taken.
+	ran = vif_run(v, ([^]u32)(raw_data(v.hold))[:len(v.hold) / 4])
+	remove_range(&v.hold, 0, ran * 4)
+	return take
 }
 
 // Execute VIF codes; returns the words consumed. No bounds checks: i stays
@@ -102,90 +149,108 @@ vif_run :: proc(v: ^Vif, w: []u32) -> int #no_bounds_check {
 	i := 0
 	for i < len(w) {
 		code := w[i]
-		cmd := (code >> 24) & 0x7f
-		imm := code & 0xffff
-		num := (code >> 16) & 0xff
-		need := 1
-		switch {
-		case cmd == 0x20: need = 2
-		case cmd == 0x30 || cmd == 0x31: need = 5
-		case cmd == 0x4a: need = 1 + 2 * int(num == 0 ? 256 : num)
-		case cmd == 0x50 || cmd == 0x51: need = 1 + 4 * int(imm == 0 ? 0x10000 : imm)
-		case cmd >= 0x60: need = 1 + vif_unpack_words(v, cmd, num)
-		}
+		need := vif_need(v, code)
 		if i + need > len(w) {return i}
-		arg := w[i + 1:][:need - 1]
-		mem.hw_reg(VIF0_CODE + 0x400 * u32(v.id))^ = code
-		switch cmd {
-		case 0x00: // NOP
-		case 0x01: // STCYCL
-			v.cl, v.wl = imm & 0xff, imm >> 8
-		case 0x02: // OFFSET
-			v.ofst = imm & 0x3ff
-			v.dbf = false
-			v.tops = v.base
-		case 0x03: v.base = imm & 0x3ff
-		case 0x04: v.itops = imm & 0x3ff
-		case 0x05: v.mode = imm & 3
-		case 0x06: gif.gif_mskpath3(imm & 0x8000 != 0) // MSKPATH3
-		case 0x07: // MARK
-		case 0x10, 0x11, 0x13: // FLUSHE/FLUSH/FLUSHA: the VU runs synchronously
-		case 0x14, 0x15: vif_mscal(v, imm * 8)
-		case 0x17: vif_mscal(v, v.vu.tpc)
-		case 0x20: v.mask = arg[0]
-		case 0x30: v.row = {arg[0], arg[1], arg[2], arg[3]}
-		case 0x31: v.col = {arg[0], arg[1], arg[2], arg[3]}
-		case 0x4a: // MPG
-			dst := (imm * 8) % u32(len(v.vu.micro))
-			src := ([^]u8)(&arg[0])[:len(arg) * 4]
-			for b, j in src {v.vu.micro[(dst + u32(j)) % u32(len(v.vu.micro))] = b}
-			if v.vu == &vu1 {vu1_micro_touch()} else {vu0_micro_touch()}
-		case 0x50, 0x51: // DIRECT, DIRECTHL: stall before the code while another path holds the GIF
-			if !gif.gif_feed(1, ([^]u8)(&arg[0])[:len(arg) * 4], cmd == 0x51) {
-				v.gif_wait = true
-				return i
-			}
-		case 0x60 ..= 0x7f:
-			vif_unpack(v, cmd, imm, num, arg)
-		case:
-			if !vif_warned[cmd] {
-				vif_warned[cmd] = true
-				fmt.eprintfln("vif%d: unknown code %08x", v.id, code)
-			}
-		}
+		if !vif_cmd(v, code, w[i + 1:][:need - 1]) {return i}
 		i += need
-		// The i-bit: retail interrupts once the code is done, data and all,
-		// and stalls before the next code.
-		if code & 0x80000000 != 0 && mem.hw_reg(VIF0_ERR + 0x400 * u32(v.id))^ & VIF_ERR_MII == 0 {
-			mem.hw_reg(VIF0_STAT + 0x400 * u32(v.id))^ |= VIF_STAT_VIS | VIF_STAT_INT
-			v.stalled = true
-			mem.intc_raise(mem.INTC_VIF0 + u32(v.id))
-			return i
-		}
+		if v.stalled {return i}
 	}
 	return i
 }
 
+// Words a code takes, itself included, under the VIF's cycle setting.
+@(private)
+vif_need :: #force_inline proc(v: ^Vif, code: u32) -> int {
+	cmd := (code >> 24) & 0x7f
+	imm := code & 0xffff
+	num := (code >> 16) & 0xff
+	switch {
+	case cmd == 0x20: return 2
+	case cmd == 0x30 || cmd == 0x31: return 5
+	case cmd == 0x4a: return 1 + 2 * int(num == 0 ? 256 : num)
+	case cmd == 0x50 || cmd == 0x51: return 1 + 4 * int(imm == 0 ? 0x10000 : imm)
+	case cmd >= 0x60: return 1 + vif_unpack_words(v, cmd, num)
+	}
+	return 1
+}
+
+// Run one code with its vif_need - 1 argument words. False when a DIRECT
+// waits for the GIF: the code has not run (gif_wait). The i-bit stalls the
+// VIF after the code (v.stalled).
+@(private)
+vif_cmd :: #force_inline proc(v: ^Vif, code: u32, arg: []u32) -> bool #no_bounds_check {
+	cmd := (code >> 24) & 0x7f
+	imm := code & 0xffff
+	num := (code >> 16) & 0xff
+	mem.hw_reg(VIF0_CODE + 0x400 * u32(v.id))^ = code
+	switch cmd {
+	case 0x00: // NOP
+	case 0x01: // STCYCL
+		v.cl, v.wl = imm & 0xff, imm >> 8
+	case 0x02: // OFFSET
+		v.ofst = imm & 0x3ff
+		v.dbf = false
+		v.tops = v.base
+	case 0x03: v.base = imm & 0x3ff
+	case 0x04: v.itops = imm & 0x3ff
+	case 0x05: v.mode = imm & 3
+	case 0x06: gif.gif_mskpath3(imm & 0x8000 != 0) // MSKPATH3
+	case 0x07: // MARK
+	case 0x10, 0x11, 0x13: // FLUSHE/FLUSH/FLUSHA: the VU runs synchronously
+	case 0x14, 0x15: vif_mscal(v, imm * 8)
+	case 0x17: vif_mscal(v, v.vu.tpc)
+	case 0x20: v.mask = arg[0]
+	case 0x30: v.row = {arg[0], arg[1], arg[2], arg[3]}
+	case 0x31: v.col = {arg[0], arg[1], arg[2], arg[3]}
+	case 0x4a: // MPG
+		dst := (imm * 8) % u32(len(v.vu.micro))
+		src := ([^]u8)(&arg[0])[:len(arg) * 4]
+		for b, j in src {v.vu.micro[(dst + u32(j)) % u32(len(v.vu.micro))] = b}
+		if v.vu == &vu1 {vu1_micro_touch()} else {vu0_micro_touch()}
+	case 0x50, 0x51: // DIRECT, DIRECTHL: stall before the code while another path holds the GIF
+		if !gif.gif_feed(1, ([^]u8)(&arg[0])[:len(arg) * 4], cmd == 0x51) {
+			v.gif_wait = true
+			return false
+		}
+	case 0x60 ..= 0x7f:
+		vif_unpack(v, cmd, imm, num, arg)
+	case:
+		if !vif_warned[cmd] {
+			vif_warned[cmd] = true
+			fmt.eprintfln("vif%d: unknown code %08x", v.id, code)
+		}
+	}
+	// The i-bit: retail interrupts once the code is done, data and all,
+	// and stalls before the next code.
+	if code & 0x80000000 != 0 && mem.hw_reg(VIF0_ERR + 0x400 * u32(v.id))^ & VIF_ERR_MII == 0 {
+		mem.hw_reg(VIF0_STAT + 0x400 * u32(v.id))^ |= VIF_STAT_VIS | VIF_STAT_INT
+		v.stalled = true
+		mem.intc_raise(mem.INTC_VIF0 + u32(v.id))
+	}
+	return true
+}
+
 // A write to VIF id's FBRST: RST drops the codes the VIF holds (a split
 // command, what waits out a stall or for the GIF), clears the stall and its
-// STAT bits, and for VIF1 lifts its MSKPATH3 mask. STC clears the stall and its STAT bits, and the codes that
+// STAT bits, ends a DMA it stalled (vif_dma_hook), and for VIF1 lifts its
+// MSKPATH3 mask. STC clears the stall and its STAT bits, and the codes that
 // waited run on. FBK and STP are ignored, and the write is not stored:
 // FBRST reads back 0.
 vif_fbrst :: proc(id: int, w: u32) {
 	v := &vifs[id]
 	if w & 1 != 0 {
-		clear(&v.pending)
-		v.head = 0
+		clear(&v.hold)
 		v.stalled, v.gif_wait = false, false
 		if id == 1 {gif.gif_vif1_reset()}
 		mem.hw_reg(VIF0_STAT + 0x400 * u32(id))^ &~= VIF_STAT_STALL
+		if vif_dma_hook != nil {vif_dma_hook(id, true)}
 		return
 	}
 	if w & 8 == 0 {return}
 	mem.hw_reg(VIF0_STAT + 0x400 * u32(id))^ &~= VIF_STAT_STALL
 	if !v.stalled {return}
 	v.stalled = false
-	vif_feed(v, nil) // held still while a DIRECT waits for the GIF
+	if !v.gif_wait {vif_resume(v)} // held still while a DIRECT waits for the GIF
 }
 
 @(private)

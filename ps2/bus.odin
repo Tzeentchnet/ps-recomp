@@ -168,7 +168,9 @@ dma_start :: proc(ch: u32) {
 		return
 	}
 	switch ch {
-	case mem.DMA_VIF0, mem.DMA_VIF1: dma.dma_vif(ch)
+	case mem.DMA_VIF0, mem.DMA_VIF1:
+		dma.dma_vif(ch) // finishes when the walk ends, not at a VIF stall
+		return
 	case mem.DMA_GIF:
 		dma.dma_gif()
 		if gif.gif_dma_hold() {return} // STR stays set while PATH3 data waits in the GIF
