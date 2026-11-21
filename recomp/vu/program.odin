@@ -901,6 +901,27 @@ reads_status :: proc(progs: []Prog, unit: Unit) -> bool {
 	return false
 }
 
+// Whether the VU1 program being compiled counts its pairs (Vu.cycle) and
+// tests a pending kick before its stores. native_program and emit_program
+// set it for their program (kicks) and put it back after; true outside
+// them, the safe side for any other caller.
+@(private)
+kick_timed := true
+
+// Whether any lower word of words is an XGKICK. Code for VU1 counts its
+// pairs and tests the pending kick before its stores (vu.vu1_kick_store)
+// only for a program that can kick: a kick is pending only inside the
+// vu1_exec that made it, which sends it at the end. Every lower slot is
+// tested, an I bit's immediate and data words too, so a doubtful word
+// counts as a kick.
+kicks :: proc(words: []u32) -> bool {
+	for i := 0; i + 1 < len(words); i += 2 {
+		lw := words[i]
+		if lw >> 25 == 0x40 && lw & 63 >= 0x3c && ((lw >> 4) & 0x7c) | (lw & 3) == 0x6c {return true}
+	}
+	return false
+}
+
 // A program's pairs, classified, with flag and Q demand over the pairs ext
 // compiles (nil: all), status demanded when status is set (reads_status),
 // and the dispatch targets for its entries. Both are in the temp allocator.

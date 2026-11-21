@@ -318,12 +318,47 @@ merge_dest :: proc(a: ^native.Asm, dest: u32) {
 // registers when it calls.
 @(private = "file")
 kick_check :: proc(a: ^native.Asm, u: Unit) {
-	if u != .VU1 {return}
+	if u != .VU1 || !kick_timed {return}
+	vf := IMPORTS[u][.Vf]
 	skip := native.new_label(a)
-	native.imp_load(a, .C, IMPORTS[u][.Vf], VU_KICK)
+	native.imp_load(a, .C, vf, VU_KICK)
 	native.br_zero(a, .C, skip)
+	// The call reads Vu.cycle with the pairs counted since the last flush
+	// (cycle_pend), which go back out after it: the path that skips the
+	// call has not added them.
+	if cycle_pend != 0 {
+		native.imp_load(a, .C, vf, VU_CYCLE)
+		native.alu_imm(a, .Add, .C, cycle_pend)
+		native.imp_store(a, vf, .C, VU_CYCLE)
+	}
 	native.call(a, IMPORTS[u][.Kick_Store], .A)
+	if cycle_pend != 0 {
+		native.imp_load(a, .C, vf, VU_CYCLE)
+		native.alu_imm(a, .Sub, .C, cycle_pend)
+		native.imp_store(a, vf, .C, VU_CYCLE)
+	}
 	native.bind(a, skip)
+}
+
+// The VU1 pairs a program's code has counted since it last added them to
+// Vu.cycle: micro_wait_pair counts a pair at compile time, and cycle_flush
+// adds the count before a call that reads Vu.cycle (XGKICK, the
+// interpreter's lower op and pair, which store) and wherever the
+// straight line ends (a label, a branch, a leave), so every path into a
+// label or out of the code has added the same pairs. vu_wait's stall
+// cycles add to Vu.cycle at once, in any order with these.
+@(private = "file")
+cycle_pend: u32
+
+// Add cycle_pend to Vu.cycle. Uses A.
+@(private = "file")
+cycle_flush :: proc(a: ^native.Asm, u: Unit) {
+	if cycle_pend == 0 {return}
+	vf := IMPORTS[u][.Vf]
+	native.imp_load(a, .A, vf, VU_CYCLE)
+	native.alu_imm(a, .Add, .A, cycle_pend)
+	native.imp_store(a, vf, .A, VU_CYCLE)
+	cycle_pend = 0
 }
 
 // The quadword of data memory at byte A to the dest lanes of vf[r] (a
@@ -1028,6 +1063,7 @@ micro_lower :: proc(a: ^native.Asm, u: Unit, lw, pc: u32, slow: ^map[string]int,
 		case:
 			count_slow(slow, fmt.tprintf("lower 40 special %02x", ((lw >> 4) & 0x7c) | (lw & 3)))
 		}
+		cycle_flush(a, u)
 		native.mov_imm(a, .A, lw)
 		native.mov_imm(a, .B, pc)
 		native.call(a, IMPORTS[u][.Lower], .A, .B)
@@ -1139,6 +1175,7 @@ micro_lower :: proc(a: ^native.Asm, u: Unit, lw, pc: u32, slow: ^map[string]int,
 				interp(a, u, lw, pc, slow, known)
 				return
 			}
+			cycle_flush(a, u)
 			vi_get(a, u, .A, is)
 			native.call(a, IMPORTS[u][.Xgkick], .A)
 		case 0x70 ..= 0x76, 0x78 ..= 0x7a, 0x7c ..= 0x7e: // the EFU
@@ -1216,6 +1253,7 @@ micro_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]
 	if p.mode == .Slow {
 		count_slow(slow, "pair")
 		if known != nil {known^ = KNOWN_NONE}
+		cycle_flush(a, u)
 		native.mov_imm(a, .A, p.uw)
 		native.mov_imm(a, .B, p.lw)
 		native.mov_imm(a, .C, pc)
@@ -1258,12 +1296,9 @@ micro_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]
 @(private = "file")
 micro_wait_pair :: proc(a: ^native.Asm, u: Unit, p: Pair, pc: u32, slow: ^map[string]int, known: ^[32]u8, w: Waits) {
 	vf := IMPORTS[u][.Vf]
-	// The pair's cycle, as emit_wait_pair counts it.
-	if u == .VU1 {
-		native.imp_load(a, .A, vf, VU_CYCLE)
-		native.alu_imm(a, .Add, .A, 1)
-		native.imp_store(a, vf, .A, VU_CYCLE)
-	}
+	// The pair's cycle, as emit_wait_pair counts it, added later
+	// (cycle_flush).
+	if u == .VU1 && kick_timed {cycle_pend += 1}
 	slow_pair := p.mode == .Slow && !p.ibit
 	mid, stalls := stall_waits(p, w)
 	if !slow_pair && stalls &~ 1 != 0 {
@@ -1400,9 +1435,14 @@ count_slow :: proc(slow: ^map[string]int, key: string) {
 // entries, as emit_program compiles it. Returns its code offset. The run
 // ABI is this file's header's. Counts the halves that call the interpreter
 // in slow, by opcode, when it is not nil. status: VU1 computes status, as
-// when reads_status holds; VU0 always does.
-native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32, u: Unit, status: bool, slow: ^map[string]int = nil) -> int {
+// when reads_status holds; VU0 always does. timed: VU1 counts its pairs and
+// tests a pending kick before its stores, as when kicks holds.
+native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32, u: Unit, status: bool, slow: ^map[string]int = nil, timed := true) -> int {
 	mask := MASK[u]
+	saved := kick_timed
+	kick_timed = timed
+	defer kick_timed = saved
+	cycle_pend = 0
 	pairs, target := analyze(words, ext, entries, u, u == .VU0 || status)
 	delayed, enter := delay_pairs(pairs, ext)
 	in_ext :: proc(ext: []bool, i: int) -> bool {return ext == nil || ext[i]}
@@ -1457,6 +1497,7 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 		next := i + 1 < len(pairs) ? pairs[i + 1] : Pair{}
 		if !fell || k == nil || target[i] || known == KNOWN_NONE {
 			if pc not_in labels {labels[pc] = native.new_label(a)}
+			cycle_flush(a, u) // the fallthrough's pairs
 			native.bind(a, labels[pc])
 			append(&pcs, pc)
 			known = KNOWN_NONE
@@ -1465,12 +1506,14 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 		branch := !p.ibit && p.branch != .None
 		switch {
 		case leave_pair(pairs, i):
+			cycle_flush(a, u)
 			leave(a, exit, pc)
 		case branch:
 			op := p.lw >> 25
 			micro_wait_pair(a, u, p, pc, slow, k, p.waits)
 			micro_branch(a, u, p.lw, pc, mask, delayed[i])
 			micro_wait_pair(a, u, next, pc + 8, slow, k, waits_after(p, p.waits))
+			cycle_flush(a, u)
 			not_taken, go := native.new_label(a), native.new_label(a)
 			cond := op >= 0x28
 			reg := op == 0x24 || op == 0x25
@@ -1533,6 +1576,7 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 		case p.ebit:
 			micro_wait_pair(a, u, p, pc, slow, k, p.waits)
 			micro_wait_pair(a, u, next, pc + 8, slow, k, waits_after(p, p.waits))
+			cycle_flush(a, u)
 			leave(a, exit, (pc + 16) & mask, end = true)
 		case:
 			if enter[i] { // delay_pairs: as emit_program
@@ -1553,12 +1597,14 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 			}
 			micro_wait_pair(a, u, p, pc, slow, k, p.waits)
 			if i + 1 >= len(pairs) || !in_ext(ext, i + 1) {
+				cycle_flush(a, u)
 				leave(a, exit, (pc + 8) & mask)
 			} else {
 				fell = true
 			}
 		}
 	}
+	assert(cycle_pend == 0, "vu: counted pairs left unadded at the end")
 	native.bind(a, dispatch)
 	native.search(a, pcs[:], labels, exit) // a miss leaves at T
 	native.bind(a, exit)
@@ -1578,6 +1624,7 @@ native_programs :: proc(a: ^native.Asm, img: mips.Image, capture: string, u: Uni
 	if u == .VU0 && capture == "" {return true}
 	progs := load_programs(img, capture, u) or_return
 	status := status_all || reads_status(progs[:], u)
+	timed := 0
 	for p in progs {
 		rs: []native.Blob_Range
 		if p.ext == nil {
@@ -1588,9 +1635,12 @@ native_programs :: proc(a: ^native.Asm, img: mips.Image, capture: string, u: Uni
 			rs = make([]native.Blob_Range, len(spans))
 			for s, k in spans {rs[k] = {u32(s[0]) * 8, p.words[s[0] * 2:s[1] * 2]}}
 		}
-		off := native_program(a, p.words[:], p.ext, p.entries, u, status)
+		kick := u == .VU1 && kicks(p.words[:])
+		timed += int(kick)
+		off := native_program(a, p.words[:], p.ext, p.entries, u, status, timed = kick)
 		append(spans, native.Blob_Span{u == .VU0 ? .Vu0 : .Vu1, 0, u32(off), rs})
 		free_all(context.temp_allocator)
 	}
+	if u == .VU1 {fmt.eprintfln("vu1: %d of %d programs can XGKICK and count their pairs", timed, len(progs))}
 	return true
 }

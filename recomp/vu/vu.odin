@@ -384,7 +384,7 @@ vu0_mem_base :: proc(lw: u32) -> (n: u32, off: u16, ok: bool) {
 @(private = "file")
 // The quadword helper a store of emit_lower's unit calls: mqs on VU1, for
 // a pending XGKICK, else mq.
-mq_store :: proc() -> string {return lower_unit == 1 ? "mqs" : "mq"}
+mq_store :: proc() -> string {return lower_unit == 1 && kick_timed ? "mqs" : "mq"}
 
 emit_lower :: proc(sb: ^strings.Builder, lw, pc: u32, mem: string, q := "v.q_next", window := true) -> (slow: bool) {
 	lower_unit = mem == MEM[.VU0] ? 0 : 1
@@ -746,7 +746,7 @@ emit_wait_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow:
 	slow_pair := p.mode == .Slow && !p.ibit
 	// The pair's cycle, as the interpreter counts it (vu_interp), for the
 	// GIF's reads of a kicked packet (vu.vu1_kick_store).
-	if unit == .VU1 {fmt.sbprintln(sb, "\t\t\tv.cycle += 1")}
+	if unit == .VU1 && kick_timed {fmt.sbprintln(sb, "\t\t\tv.cycle += 1")}
 	mid, stalls := stall_waits(p, w)
 	if !slow_pair && stalls &~ 1 != 0 {
 		known_stall := stalls & (stalls - 1) == 0
@@ -786,8 +786,11 @@ emit_wait_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow:
 }
 
 @(private = "file")
-emit_program :: proc(sb: ^strings.Builder, n: int, words: []u32, ext: []bool, entries: []u32, unit: Unit, status: bool, slow: ^map[string]int) {
+emit_program :: proc(sb: ^strings.Builder, n: int, words: []u32, ext: []bool, entries: []u32, unit: Unit, status: bool, slow: ^map[string]int, timed: bool) {
 	mask := MASK[unit]
+	saved := kick_timed
+	kick_timed = timed
+	defer kick_timed = saved
 	pairs, target := analyze(words, ext, entries, unit, status)
 	delayed, enter := delay_pairs(pairs, ext)
 	in_ext :: proc(ext: []bool, i: int) -> bool {return ext == nil || ext[i]}
@@ -889,10 +892,12 @@ emit_program :: proc(sb: ^strings.Builder, n: int, words: []u32, ext: []bool, en
 // pair halves that call the interpreter in slow, by opcode. With entries, it
 // is compiled as a captured image entered only there, eliding clamps as
 // VU_CLAMP_ELIDE says. status: VU1 computes status, as when reads_status
-// holds; VU0 always does.
+// holds; VU0 always does. VU1 counts its pairs and tests a pending kick
+// before its stores whether or not the program kicks, so tests/vu_micro
+// compares the count.
 emit_micro :: proc(n: int, words: []u32, unit: Unit, status: bool, slow: ^map[string]int, entries: []u32 = nil) -> string {
 	sb := strings.builder_make()
-	emit_program(&sb, n, words, nil, entries, unit, unit == .VU0 || status, slow)
+	emit_program(&sb, n, words, nil, entries, unit, unit == .VU0 || status, slow, timed = true)
 	return strings.to_string(sb)
 }
 
@@ -943,7 +948,7 @@ generate :: proc(img: mips.Image, out_dir, runtime, capture: string, unit: Unit,
 			emit_words(&sb, fmt.tprintf("code_%d_%d", n, k), p.words[r[0] * 2:r[1] * 2])
 			pairs += r[1] - r[0]
 		}
-		emit_program(&sb, n, p.words[:], p.ext, p.entries, unit, status, slow)
+		emit_program(&sb, n, p.words[:], p.ext, p.entries, unit, status, slow, kicks(p.words[:]))
 		free_all(context.temp_allocator)
 	}
 	dir, _ := filepath.join({out_dir, fmt.tprintf("vu%d", u)})

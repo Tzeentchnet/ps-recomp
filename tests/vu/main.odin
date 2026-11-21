@@ -53,7 +53,9 @@
 //
 // Then the XGKICK latch: the packet is read when the program stops or kicks
 // again, not at the instruction, so a tag stored in the pair after the kick
-// is the tag sent; a walk with no EOP inside VU1 memory sends nothing.
+// is the tag sent; a walk with no EOP inside VU1 memory sends nothing. Each
+// case runs interpreted, as registered compiled code, and as native code
+// from recomp/vu native_program (its pair count and store checks).
 //
 // Last, the branch VI delay: a conditional branch right after a pair that
 // writes its VI reads it from before that write (tests/vu_programs DELAY).
@@ -65,11 +67,15 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "ps:core"
+import "ps:ps2"
 import "ps:ps2/dma"
 import gif "ps:ps2/gif"
 import gs "ps:ps2/gs"
 import "ps:ps2/mem"
 import "ps:ps2/vu"
+import "ps:recomp/native"
+import "ps:recomp/r5900"
+import rvu "ps:recomp/vu"
 import "ps:tests/vu_programs"
 
 @(private = "file")
@@ -1593,22 +1599,85 @@ kick_latch :: proc() {
 				kick_path1_idle("XGKICK read in time across a WAITQ stall", how)
 			},
 		},
+		// A store on each side of every read line: in at K+1+2k, out at
+		// K+2+2k. Native code counts a pair late or early here, where the
+		// other cases' stores have room.
+		{
+			name = "XGKICK read in time: a store either side of each line",
+			setup = proc() {
+				w := vu1_words()
+				w[0], w[1], w[2], w[3] = 2, 1 << 28, 0xe, 0 // NLOOP 2, no EOP yet
+				w[4], w[5], w[6], w[7] = 0x1111, 0, 0x41, 0 // q1, read at K+4
+				w[8], w[9], w[10], w[11] = 0x2222, 0, 0x42, 0 // q2, read at K+6
+				vi := &vu.vu1.vi
+				vi[1], vi[2], vi[3], vi[4], vi[5], vi[6], vi[7] = 0, 0x8002, 0x8001, 0x3333, 0x5555, 0x6666, 0x7777
+				gs.state.regs[0x41], gs.state.regs[0x42] = 0, 0
+			},
+			pairs = {
+				{kick_xg(1), KICK_UNOP}, // K
+				{kick_isw(2, 1, 0), KICK_UNOP}, // K+1: EOP into the tag, in
+				{kick_isw(3, 1, 0), KICK_UNOP}, // K+2: NLOOP 1 into the tag, out
+				{kick_isw(4, 1, 1), KICK_UNOP}, // K+3: q1's 41 data, in
+				{kick_isw(5, 1, 1), KICK_UNOP}, // K+4: q1's 41 data, out
+				{kick_isw(6, 1, 2), KICK_UNOP}, // K+5: q2's 42 data, in
+				{kick_isw(7, 1, 2), KICK_E}, // K+6: q2's 42 data, out
+				{KICK_NOP, KICK_UNOP},
+			},
+			compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {
+				vi, c := &vu.vu1.vi, &vu.vu1.cycle
+				compiled_ran = true
+				c^ += 1
+				vu.vu1_xgkick(vi[1])
+				q := [6]u32{0, 0, 1, 1, 2, 2}
+				for r, k in q {
+					c^ += 1
+					kick_put(r, vi[k + 2])
+				}
+				c^ += 1
+				return 0x40, .End
+			},
+			check = proc(how: string) {
+				r := gs.state.regs
+				if r[0x41] != 0x3333 || r[0x42] != 0x6666 {
+					fail("XGKICK store either side (%s): GS 41 %x 42 %x, want 3333 6666", how, r[0x41], r[0x42])
+				}
+				kick_path1_idle("XGKICK store either side", how)
+			},
+		},
 	}
-	for c in cases {
+	// Every case's pairs as native code, one blob.
+	codes := make([][]u32, len(cases), context.temp_allocator)
+	a := r5900.native_asm(native.Arch(core.NATIVE_ARCH))
+	spans := make([]native.Blob_Span, len(cases), context.temp_allocator)
+	for c, n in cases {
 		code := make([]u32, 2 * len(c.pairs), context.temp_allocator)
 		for p, k in c.pairs {code[2 * k], code[2 * k + 1] = p[0], p[1]}
-		for how in ([]string{"interpreted", "compiled"}) {
+		if !rvu.kicks(code) {fail("%s: kicks misses the XGKICK", c.name)}
+		codes[n] = code
+		off := u32(rvu.native_program(&a, code, nil, []u32{0}, .VU1, false, timed = true))
+		ranges := make([]native.Blob_Range, 1, context.temp_allocator)
+		ranges[0] = {0, code}
+		spans[n] = {.Vu1, 0, off, ranges}
+	}
+	blob, err := core.native_load(native.make_blob(&a, nil, {}, spans), ps2.native_imports())
+	if err != "" {fail("kick cases: native_load: %s", err)}
+	for c, n in cases {
+		code := codes[n]
+		for how in ([]string{"interpreted", "compiled", "native"}) {
+			if how == "native" && err != "" {continue}
 			gif.gif_reset()
 			gif_clear()
 			for &b in vu.vu1_mem {b = 0}
 			// Other code first, so what a compiled case registered is gone.
 			mpg(&vu.vifs[1], END_CODE[:])
 			if how == "compiled" {vu.vu1_register(code, c.compiled)}
+			if how == "native" {vu.vu_register_native(1, {{0, code}}, cast(vu.Vu_Native)rawptr(blob.base + uintptr(blob.spans[n].off)))}
 			mpg(&vu.vifs[1], code)
 			c.setup()
 			compiled_ran = false
 			vu.vu1_start(0)
 			if compiled_ran != (how == "compiled") {fail("%s (%s): compiled code ran %v", c.name, how, compiled_ran)}
+			if how == "native" && vu.vu1.cycle == 0 {fail("%s (native): no pairs counted", c.name)}
 			c.check(how)
 		}
 	}
