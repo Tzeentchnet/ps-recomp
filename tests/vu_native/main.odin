@@ -220,7 +220,7 @@ main :: proc() {
 		fmt.eprintln("FAIL vu_native: no VU1 program without a status read")
 		fails += 1
 	} else {
-		vu.vu_register_native(1, {{0, progs[stale].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[stale].off)))
+		vu.vu_register_native(1, {{0, progs[stale].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[stale].off)), 0)
 		if !vu_programs.stale_status(progs[stale].words, progs[stale].pcs[0]) {fails += 1}
 	}
 	// A VU1 program that reads S alone, registered beside it, so compiled
@@ -233,15 +233,28 @@ main :: proc() {
 		fmt.eprintln("FAIL vu_native: no VU1 program that reads S alone")
 		fails += 1
 	} else {
-		vu.vu_register_native(1, {{0, progs[low].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[low].off)))
+		vu.vu_register_native(1, {{0, progs[low].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[low].off)), rvu.STATUS_LOW)
 		if !vu_programs.stale_status_low(progs[low].words, progs[low].pcs[0]) {fails += 1}
+	}
+	// A VU1 program that reads the sticky bits, registered beside them: the
+	// first program's code still keeps no status, whatever the others read.
+	all := -1
+	for p, k in progs {
+		if p.unit == .VU1 && p.entries == nil && vu_programs.status_kept(p.words, p.unit) == vu.VU_STATUS_ALL {all = k; break}
+	}
+	if all < 0 {
+		fmt.eprintln("FAIL vu_native: no VU1 program that reads the sticky bits")
+		fails += 1
+	} else {
+		vu.vu_register_native(1, {{0, progs[all].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[all].off)), vu.VU_STATUS_ALL)
+		if stale >= 0 && !vu_programs.stale_status(progs[stale].words, progs[stale].pcs[0]) {fails += 1}
 	}
 
 	// The runtime's dispatch: the same trials, the micro generation moved
 	// for each program's micro memory.
 	for p, k in progs {
-		if k == stale || k == low {continue} // registered above
-		vu.vu_register_native(p.unit == .VU0 ? 0 : 1, {{0, p.words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[k].off)))
+		if k == stale || k == low || k == all {continue} // registered above
+		vu.vu_register_native(p.unit == .VU0 ? 0 : 1, {{0, p.words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[k].off)), vu_programs.status_kept(p.words, p.unit))
 	}
 	rand.reset(SEED)
 	dispatch_fails := 0
@@ -507,7 +520,7 @@ test_miss_capture :: proc(progs: []vu_programs.Prog, arch: native.Arch) -> (fail
 		fail(&fails, fmt.tprint("native_load:", err2))
 		return
 	}
-	vu.vu_register_native(1, {{0, words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[0].off)))
+	vu.vu_register_native(1, {{0, words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[0].off)), 0)
 	for &m in micro {m = 0}
 	copy(micro, words)
 	micro[TARGET / 4], micro[TARGET / 4 + 1] = vu_programs.NOP_L, vu_programs.NOP_U | vu_programs.E_BIT
@@ -755,7 +768,7 @@ test_park :: proc(arch: native.Arch) -> (fails: int) {
 	if want[4].v.vi[4] != 9 || want[4].v.vi[5] != 9 {fail(&fails, fmt.tprintf("the script's end, interpreted: vi4 %d vi5 %d, want 9 9", want[4].v.vi[4], want[4].v.vi[5]))}
 	if want[0].v.old_mac == 0xffff {fail(&fails, "the first loop, interpreted: the ADD before it left the older MAC flags alone")}
 
-	vu.vu_register_native(0, {{0, words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[0].off)))
+	vu.vu_register_native(0, {{0, words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[0].off)), 0)
 	vu.vu0_micro_touch()
 	script(&got)
 	for &g, k in got {
@@ -792,7 +805,7 @@ test_xtop :: proc(arch: native.Arch) -> (fails: int) {
 		fmt.eprintfln("FAIL vu_native XTOP: native_load %q, interpreter calls %v", err, slow)
 		return 1
 	}
-	vu.vu_register_native(1, {{0, words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[0].off)))
+	vu.vu_register_native(1, {{0, words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[0].off)), 0)
 	for &b in vu.vu1.micro {b = 0}
 	copy(([^]u32)(&vu.vu1.micro[0])[:len(words)], words)
 	vu.vu1_micro_touch()

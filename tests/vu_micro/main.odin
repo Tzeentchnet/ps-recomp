@@ -311,7 +311,7 @@ main :: proc() {
 		fails += 1
 	} else {
 		c := CASES[stale]
-		vu.vu1_register_ranges({{0, c.words}}, c.run)
+		vu.vu1_register_ranges({{0, c.words}}, c.run, c.status)
 		if !vu_programs.stale_status(c.words, c.pc) {fails += 1}
 	}
 	// A VU1 case that reads S alone, registered beside it, so compiled VU1
@@ -325,8 +325,22 @@ main :: proc() {
 		fails += 1
 	} else {
 		c := CASES[low]
-		vu.vu1_register_ranges({{0, c.words}}, c.run)
+		vu.vu1_register_ranges({{0, c.words}}, c.run, c.status)
 		if !vu_programs.stale_status_low(c.words, c.pc) {fails += 1}
+	}
+	// A VU1 case that reads the sticky bits, registered beside them: the
+	// first case's code still keeps no status, whatever the others read.
+	all := -1
+	for c, n in CASES {
+		if !c.vu0 && c.status == vu.VU_STATUS_ALL && !c.leave {all = n; break}
+	}
+	if all < 0 {
+		fmt.eprintln("FAIL vu_micro: no VU1 case that reads the sticky bits")
+		fails += 1
+	} else {
+		c := CASES[all]
+		vu.vu1_register_ranges({{0, c.words}}, c.run, c.status)
+		if stale >= 0 && !vu_programs.stale_status(CASES[stale].words, CASES[stale].pc) {fails += 1}
 	}
 	fails += park()
 	fmt.printfln("vu_micro: %d cases x %d trials, %d failing, MAC changed in %d, VU0 I or D set in %d, VU1 in %d", len(CASES), TRIALS, fails, flagged, status_set, vu1_set)

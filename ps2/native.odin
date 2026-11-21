@@ -496,25 +496,37 @@ load_native :: proc(path: string, hooked: u64 = 0) -> bool {
 @(private = "file")
 register_vus :: proc(code: ^core.Native_Code) {
 	if len(code.spans) == 0 || core.env("VUNATIVE") == "0" {return}
+	vu1, kept := blob_vu1_kept(code)
+	vu1_kept = vu1 ? kept : vu.VU_STATUS_ALL
 	n := 0
-	vu1 := false
-	reads: u32
 	for s in code.spans {
 		if s.kind != .Vu0 && s.kind != .Vu1 {continue} // not this runtime's
-		ranges := span_ranges(code, s)
-		vu.vu_register_native(s.kind == .Vu0 ? 0 : 1, ranges, span_native(code, s))
+		vu.vu_register_native(s.kind == .Vu0 ? 0 : 1, span_ranges(code, s), span_native(code, s), kept)
 		n += 1
-		vu1 ||= s.kind == .Vu1
-		if s.kind == .Vu1 {reads |= vu.vu_status_reads(ranges)}
 	}
-	vu1_kept = vu1 ? vu.vu_status_kept(reads) : vu.VU_STATUS_ALL
 	fmt.eprintfln("native: %d VU microprograms", n)
 }
 
-// The status bits the startup blob's VU1 code surely keeps. recomp keeps,
-// for every VU1 program of a blob, the bits status_kept gives for what the
-// programs it read read; those of the blob's registered programs give a
-// floor (a program read but not compiled can have made it keep more).
+// Whether code has VU1 programs, and the status bits its VU1 code surely
+// keeps: recomp keeps, for every VU1 program of a blob, the bits
+// status_kept gives for what the programs it read read; those of the
+// blob's programs give a floor (a program read but not compiled, or
+// status_all, can have made it keep more). A floor leaves more bits stale
+// and compares fewer, never the reverse. The blob does not record the
+// bits itself.
+@(private = "file")
+blob_vu1_kept :: proc(code: ^core.Native_Code) -> (vu1: bool, kept: u32) {
+	reads: u32
+	for s in code.spans {
+		if s.kind != .Vu1 {continue}
+		vu1 = true
+		reads |= vu.vu_status_reads(span_ranges(code, s))
+	}
+	return vu1, vu.vu_status_kept(reads)
+}
+
+// The status bits the startup blob's VU1 code surely keeps
+// (blob_vu1_kept).
 @(private = "file")
 vu1_kept: u32 = vu.VU_STATUS_ALL
 
@@ -569,8 +581,9 @@ load_native_vus :: proc(blob: []u8, name: string) -> (added, known: int, skipped
 		core.native_free(&code)
 		return
 	}
+	_, kept := blob_vu1_kept(&code)
 	for s in news {
-		vu.vu_register_native(s.kind == .Vu0 ? 0 : 1, span_ranges(&code, s), span_native(&code, s))
+		vu.vu_register_native(s.kind == .Vu0 ? 0 : 1, span_ranges(&code, s), span_native(&code, s), kept)
 	}
 	added = len(news)
 	// The ranges keep the pool and the mapping; the rest goes.

@@ -474,6 +474,22 @@ FS_READ := []u32 {
 }
 FS_READ_PCS := []u32{0, 0x10, 0x28}
 
+// A sticky read of an op whose status the next op writes over: SUB sets
+// Z, and sticky Z, on every lane; the ADD right after clears Z but not the
+// sticky bit, which the FSAND five pairs on must see. With every status
+// bit kept, an upper op that writes MAC does not end the demand on status
+// (recomp/vu analyze), so the SUB's status is computed.
+FS_STICKY := []u32 {
+	NOP_L, upper(SUB, 3, 1, 1),
+	NOP_L, upper(ADD, 4, 1, 2),
+	NOP_L, NOP_U,
+	NOP_L, NOP_U,
+	NOP_L, NOP_U, // 0x20
+	fs_op(FSAND, 1, 0xfc0), NOP_U,
+	NOP_L, NOP_U | E_BIT,
+	NOP_L, NOP_U,
+}
+
 // Reads of S, and Z and S, alone (FSAND 0x002, 0x003), after chains of
 // upper ops, some with part of the dest: compiled VU1 code keeps only
 // status bits 0-3 (recomp/vu STATUS_LOW), which the last upper op that
@@ -606,7 +622,7 @@ programs :: proc() -> (progs: [dynamic]Prog) {
 	// entered at each pc.
 	late := [?]struct {
 		words, pcs: []u32,
-	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FS_LOW, FS_LOW_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {FCSET_PAIR, FCSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
+	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FS_STICKY, AT_0}, {FS_LOW, FS_LOW_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {FCSET_PAIR, FCSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
 	for l in late {
 		for u in vu.Unit {append(&progs, Prog{l.words, u, nil, l.pcs, nil}, Prog{l.words, u, l.pcs, l.pcs, nil})}
 	}
@@ -623,8 +639,9 @@ programs :: proc() -> (progs: [dynamic]Prog) {
 // status read, is registered compiled and runs from pc through vu1_start.
 // Then a VU0 load through its window (slot 48, status), an EE macro VLQI
 // the same way, and an FSAND in VU1 code the interpreter runs must each be
-// a Vu1_Status compat row, which none is before the run. Says what fails
-// on stderr; false then. Leaves VU1 status no longer stale.
+// a Vu1_Status compat row, which none is before the run. Rows counted
+// before the call do not count. Says what fails on stderr; false then.
+// Leaves VU1 status no longer stale.
 stale_status :: proc(words: []u32, pc: u32) -> (ok: bool) {
 	ok = true
 	check :: proc(ok: ^bool, cond: bool, what: string) {
@@ -643,11 +660,12 @@ stale_status :: proc(words: []u32, pc: u32) -> (ok: bool) {
 		if w >> 25 == 0x25 {ps2_vu.vu0_macro(w)} else {ps2_vu.vu0_lower(w, WINDOW_PC)}
 	}
 
+	w0, m0, f0 := row(.Window, WINDOW_PC), row(.Macro, 0), row(.Fs, FS_PC)
 	ps2_vu.vu1_status_stale = 0
 	window(lq)
 	window(vlqi)
 	ps2_vu.vu1_lower(fsand, FS_PC)
-	check(&ok, row(.Window, WINDOW_PC) + row(.Macro, 0) + row(.Fs, FS_PC) == 0, "a status read before any compiled VU1 code is a row")
+	check(&ok, row(.Window, WINDOW_PC) == w0 && row(.Macro, 0) == m0 && row(.Fs, FS_PC) == f0, "a status read before any compiled VU1 code is a row")
 
 	micro := ([^]u32)(&ps2_vu.vu1.micro[0])[:len(ps2_vu.vu1.micro) / 4]
 	for &m in micro {m = 0}
@@ -656,15 +674,15 @@ stale_status :: proc(words: []u32, pc: u32) -> (ok: bool) {
 	ps2_vu.vu1.q_wait, ps2_vu.vu1.p_wait = 0, 0 // compiled code starts with none pending
 	ps2_vu.vu1.vih = {}
 	ps2_vu.vu1_start(pc)
-	check(&ok, ps2_vu.vu1_status_stale == ps2_vu.VU_STATUS_ALL, "compiled VU1 code with no status read leaves status not stale")
+	check(&ok, ps2_vu.vu1_status_stale == ps2_vu.VU_STATUS_ALL, "compiled VU1 code with no status read leaves some status bit not stale")
 	window(lq)
-	check(&ok, row(.Window, WINDOW_PC) == 1, "a VU0 window load of VU1 status is no row")
+	check(&ok, row(.Window, WINDOW_PC) == w0 + 1, "a VU0 window load of VU1 status is no row")
 	window(vlqi)
-	check(&ok, row(.Macro, 0) == 1, "an EE macro window load of VU1 status is no row")
+	check(&ok, row(.Macro, 0) == m0 + 1, "an EE macro window load of VU1 status is no row")
 	ps2_vu.vu1_lower(fsand, FS_PC)
-	check(&ok, row(.Fs, FS_PC) == 1, "an interpreted FSAND of VU1 status is no row")
+	check(&ok, row(.Fs, FS_PC) == f0 + 1, "an interpreted FSAND of VU1 status is no row")
 	window(lq)
-	check(&ok, row(.Window, WINDOW_PC) == 2, "a second window load is not counted")
+	check(&ok, row(.Window, WINDOW_PC) == w0 + 2, "a second window load is not counted")
 	ps2_vu.vu1_status_stale = 0
 	return ok
 }

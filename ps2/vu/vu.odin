@@ -643,6 +643,9 @@ Vu_Program :: struct {
 	run:      Vu_Run,
 	native:   Vu_Native, // run instead when set
 	size:     int, // pairs, over all ranges
+	// The status bits its code keeps exact: every bit on VU0; on VU1 those
+	// recomp/vu status_kept gave the set of programs it was compiled with.
+	kept:     u32,
 	ok_gen:   u32, // the micro generation when ok was checked
 	ok:       bool, // micro memory holds ranges
 	// VU0_STATS, VU1_STATS: runs entered, range checks, and checks that
@@ -669,9 +672,7 @@ Micro_Table :: struct($N: int) {
 	stop:       [N]bool,
 	stop_gen:   u32,
 	nocomp:     bool, // interpret everything (VUNOCOMP, capturing)
-	// The status bits registered programs read (vu_status_reads), so
-	// compiled VU1 code keeps those of vu_status_kept exact (recomp/vu
-	// status_kept); VUCHECK then compares them on VU1 too.
+	// The status bits registered programs read (vu_status_reads).
 	reads:      u32,
 }
 
@@ -683,11 +684,11 @@ vu1_table: Micro_Table(len(vu1_micro) / 8)
 // vu_op's pc for a macro instruction, which has no micro address.
 VU_PC_MACRO :: max(u32)
 
-// Compiled VU1 code keeps only the status bits of vu_status_kept for what
-// registered VU1 programs read (Micro_Table.reads; recomp/vu
-// status_kept), as nothing else can on the gate discs. Once such code has
-// run, the other bits are stale until the end of the run: a later read of
-// one is a read the elision did not foresee. It is a compat row
+// Compiled VU1 code keeps only the status bits of its program's
+// Vu_Program.kept (recomp/vu status_kept for what the programs it was
+// compiled with read), as nothing else can on the gate discs. Once such
+// code has run, the other bits are stale until the end of the run: a later
+// read of one is a read the elision did not foresee. It is a compat row
 // (Vu1_Status) on every run, and said once on stderr.
 vu1_status_stale: u32
 @(private)
@@ -733,25 +734,29 @@ vu1_micro_touch :: #force_inline proc() {
 }
 
 // A program compiled from micro memory starting at 0 (a .vutext program).
-vu1_register :: proc(code: []u32, run: Vu_Run) {
-	vu1_register_ranges({{0, code}}, run)
+// kept: the status bits its code keeps exact (Vu_Program.kept); every bit
+// by default, as code generated before kept was passed computes them all.
+vu1_register :: proc(code: []u32, run: Vu_Run, kept: u32 = VU_STATUS_ALL) {
+	vu1_register_ranges({{0, code}}, run, kept)
 }
 
-// A program compiled from the given runs of micro memory.
+// A program compiled from the given runs of micro memory. VU0 code keeps
+// every status bit; VU1 code those of kept (Vu_Program.kept).
 vu0_register_ranges :: proc(ranges: []Vu_Range, run: Vu_Run) {
-	micro_register(&vu0_table, ranges, run)
+	micro_register(&vu0_table, ranges, run, kept = VU_STATUS_ALL)
 }
-vu1_register_ranges :: proc(ranges: []Vu_Range, run: Vu_Run) {
-	micro_register(&vu1_table, ranges, run)
+vu1_register_ranges :: proc(ranges: []Vu_Range, run: Vu_Run, kept: u32 = VU_STATUS_ALL) {
+	micro_register(&vu1_table, ranges, run, kept = kept)
 }
 
 // A program in native code (ps2/native.odin load_native, unless VUNATIVE=0),
-// from the given runs of unit's micro memory.
-vu_register_native :: proc(unit: int, ranges: []Vu_Range, native: Vu_Native) {
+// from the given runs of unit's micro memory. kept as vu1_register_ranges;
+// VU0's is every bit.
+vu_register_native :: proc(unit: int, ranges: []Vu_Range, native: Vu_Native, kept: u32 = VU_STATUS_ALL) {
 	if unit == 0 {
-		micro_register(&vu0_table, ranges, nil, native)
+		micro_register(&vu0_table, ranges, nil, native, VU_STATUS_ALL)
 	} else {
-		micro_register(&vu1_table, ranges, nil, native)
+		micro_register(&vu1_table, ranges, nil, native, kept)
 	}
 }
 
@@ -812,12 +817,13 @@ vu1_programs :: proc() -> (n: int, reads: u32) {
 
 // Candidates are longest first; of the same size, native code before Odin.
 @(private)
-micro_register :: proc(t: ^Micro_Table($N), ranges: []Vu_Range, run: Vu_Run, native: Vu_Native = nil) {
+micro_register :: proc(t: ^Micro_Table($N), ranges: []Vu_Range, run: Vu_Run, native: Vu_Native = nil, kept: u32) {
 	context.allocator = core.long_allocator()
 	p := new(Vu_Program)
 	p.ranges = slice.clone(ranges)
 	p.run = run
 	p.native = native
+	p.kept = kept
 	for r in ranges {p.size += len(r.code) / 2}
 	t.reads |= vu_status_reads(ranges)
 	append(&t.programs, p)
@@ -1030,7 +1036,7 @@ micro_exec :: #force_inline proc(v: ^Vu, t: ^Micro_Table($N), gen: ^u32, pairs: 
 					cpu.fallback_vu_unlabelled[{v == &vu0 ? 0 : 1, u32(index), pc}] += 1
 				}
 			}
-			if v == &vu1 {vu1_status_stale |= ~vu_status_kept(t.reads) & VU_STATUS_ALL}
+			if v == &vu1 {vu1_status_stale |= ~prog.kept & VU_STATUS_ALL}
 			if exit == .End {return pc, true, false}
 			// Parked as the interpreter parks: the pipeline drained.
 			if park && exit == .Park {
@@ -1308,24 +1314,24 @@ vu_stall_count :: proc(v: ^Vu, uw, lw: u32) {
 @(private)
 vu0_compare :: proc(addr: u32) {
 	@(static) mem0, mem1: [len(vu0_mem)]u8
-	vu_compare(&vu0, vu0_mem[:], mem0[:], mem1[:], vu0_table.programs[:], VU_STATUS_ALL, vu0_lookup(addr & u32(len(vu0_micro) - 1) &~ 7), addr, vu0_exec)
+	vu_compare(&vu0, vu0_mem[:], mem0[:], mem1[:], vu0_table.programs[:], vu0_lookup(addr & u32(len(vu0_micro) - 1) &~ 7), addr, vu0_exec)
 }
 @(private)
 vu1_compare :: proc(addr: u32) {
 	@(static) mem0, mem1: [len(vu1_mem)]u8
-	vu_compare(&vu1, vu1_mem[:], mem0[:], mem1[:], vu1_table.programs[:], vu_status_kept(vu1_table.reads), vu1_lookup(addr & u32(len(vu1_micro) - 1) &~ 7), addr, vu1_exec)
+	vu_compare(&vu1, vu1_mem[:], mem0[:], mem1[:], vu1_table.programs[:], vu1_lookup(addr & u32(len(vu1_micro) - 1) &~ 7), addr, vu1_exec)
 }
 
 // Run v's program at addr with exec in the interpreter, then compiled from
 // the same state with XGKICK muted, and report differences; mem is v's data
 // memory, mem0 and mem1 scratch of its size, entry the program compiled at
-// addr. Status is compared in the bits status keeps: all on VU0, and on
-// VU1 those of vu_status_kept once a program reads it (Micro_Table.reads);
-// compiled VU1 code leaves the rest alone. q_flags, which hold I and D, is
+// addr. Status is compared in the bits the compiled run kept: all on VU0,
+// and on VU1 those every program it ran keeps (Vu_Program.kept, as the
+// stale bits it left); compiled VU1 code leaves the rest alone. q_flags, which hold I and D, is
 // compared when status keeps those. Where the run stopped is compared too: tpc,
 // and whether VU0 parked. The interpreter's results are kept.
 @(private)
-vu_compare :: proc(v: ^Vu, mem, mem0, mem1: []u8, programs: []^Vu_Program, status: u32, entry: ^Vu_Program, addr: u32, exec: proc(addr: u32, compiled: bool)) {
+vu_compare :: proc(v: ^Vu, mem, mem0, mem1: []u8, programs: []^Vu_Program, entry: ^Vu_Program, addr: u32, exec: proc(addr: u32, compiled: bool)) {
 	@(static) reported: int
 	v0 := v^
 	copy(mem0, mem)
@@ -1336,7 +1342,13 @@ vu_compare :: proc(v: ^Vu, mem, mem0, mem1: []u8, programs: []^Vu_Program, statu
 	v^ = v0
 	copy(mem, mem0)
 	vu1_kick_hash, vu1_kick_mute = 0, true
+	// The interpreter's status is kept, so the compiled run's stale bits
+	// only say what to compare.
+	stale := vu1_status_stale
+	vu1_status_stale = 0
 	exec(addr, true)
+	status := v == &vu1 ? VU_STATUS_ALL &~ vu1_status_stale : VU_STATUS_ALL
+	vu1_status_stale = stale
 	vu1_kick_mute = false
 	v2, kick2 := v^, vu1_kick_hash
 	unit := v == &vu1 ? 1 : 0

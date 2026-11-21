@@ -928,14 +928,14 @@ generate :: proc(img: mips.Image, out_dir, runtime, capture: string, unit: Unit,
 	fmt.sbprintln(&sb, "register :: proc() {")
 	for p, n in progs {
 		if p.ext == nil {
-			fmt.sbprintfln(&sb, "\tvu.vu1_register(code_%d[:], run_%d)", n, n)
+			fmt.sbprintfln(&sb, "\tvu.vu1_register(code_%d[:], run_%d, 0x%03x)", n, n, status)
 			continue
 		}
 		fmt.sbprintf(&sb, "\tvu.vu%d_register_ranges({{", u)
 		for r, k in ranges(p.ext) {
 			fmt.sbprintf(&sb, "%s{{0x%04x, code_%d_%d[:]}}", k == 0 ? "" : ", ", r[0] * 8, n, k)
 		}
-		fmt.sbprintfln(&sb, "}, run_%d)", n)
+		if unit == .VU1 {fmt.sbprintfln(&sb, "}, run_%d, 0x%03x)", n, status)} else {fmt.sbprintfln(&sb, "}, run_%d)", n)}
 	}
 	fmt.sbprintln(&sb, "}\n")
 	pairs := 0

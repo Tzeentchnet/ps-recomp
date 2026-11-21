@@ -152,7 +152,7 @@ micro_writes :: proc() {
 	vu.vu1_register(END_CODE[:], proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {
 		compiled_ran = true
 		return 0x10, .End
-	})
+	}) // the form generated before kept: every status bit
 	start := proc(want: bool, what: string) {
 		compiled_ran = false
 		vu.vu1.tpc = 0
@@ -1772,8 +1772,8 @@ kick_latch :: proc() {
 			for &b in vu.vu1_mem {b = 0}
 			// Other code first, so what a compiled case registered is gone.
 			mpg(&vu.vifs[1], END_CODE[:])
-			if how == "compiled" {vu.vu1_register(code, c.compiled)}
-			if how == "native" {vu.vu_register_native(1, {{0, code}}, cast(vu.Vu_Native)rawptr(blob.base + uintptr(blob.spans[n].off)))}
+			if how == "compiled" {vu.vu1_register(code, c.compiled, 0)}
+			if how == "native" {vu.vu_register_native(1, {{0, code}}, cast(vu.Vu_Native)rawptr(blob.base + uintptr(blob.spans[n].off)), 0)}
 			mpg(&vu.vifs[1], code)
 			c.setup()
 			compiled_ran = false
