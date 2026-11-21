@@ -4,11 +4,13 @@
 // alpha test, depth test, blending and masked frame/depth writes. Pixel
 // interlock orders the read-modify-write of each pixel by primitive.
 #extension GL_ARB_fragment_shader_interlock : require
+#ifndef LANE_LOCAL_STATE
+#extension GL_KHR_shader_subgroup_ballot : require
+#endif
 // The swizzle tables as private globals rather than const: the copies NIR
 // makes then sit at the top of main, outside the State loop, and still
 // become constant data.
 #define TABLE
-#define VRAM_DESCRIPTOR
 #include "common.glsl"
 #include "draw.glsl"
 
@@ -144,10 +146,17 @@ void main() {
 	uint fl;
 	bool alive, write_fb, write_z, write_alpha;
 	ivec4 src;
+#ifdef LANE_LOCAL_STATE
 	{
 		// Keep State lane-local: subgroup-divergent control flow around this
 		// phase is not reliable with the interlocked descriptor VRAM path.
 		S = pc.states.s[key];
+#else
+	for (;;) {
+		uint first = subgroupBroadcastFirst(key);
+		if (first != key) continue;
+		S = pc.states.s[first];
+#endif
 		fl = S.flags;
 		alive = px >= S.sx0 && px <= S.sx1 && py >= S.sy0 && py <= S.sy1;
 
@@ -211,6 +220,9 @@ void main() {
 				}
 			}
 		}
+#ifndef LANE_LOCAL_STATE
+		break;
+#endif
 	}
 	S = pc.states.s[key];
 	fl = S.flags;
