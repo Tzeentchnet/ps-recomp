@@ -1,15 +1,19 @@
 #version 460
 // CLUT load (../mem.odin `clut_load`): entries base..base+n of the
 // persistent 512-entry CLUT come from native-resolution local memory, the
-// rest keep their value. The whole table is then copied to `outp` for the
-// primitives after this load; n = 0 only copies it.
+// rest keep their value. Before it, the loads skipped as hits since the last
+// dispatch (pend, gpu.odin `hw_clut`) set their entries from their ring
+// copies, in order. The whole table is then copied to ring copy `out` for
+// the primitives after this load, unless out is ~0; n = 0 only copies it.
 #include "common.glsl"
 
 layout(local_size_x = 64) in;
 
 layout(push_constant) uniform PC {
-	Words vram, cur, outp;
+	Words vram, cur, ring;
 	uint cpsm, cbp, cbw, cou, cov, csm2, n, base;
+	uint out_;
+	uint pend[16]; // ring index | base << 13 | n << 22; n = 0: none
 } pc;
 
 void main() {
@@ -17,6 +21,12 @@ void main() {
 	VR = pc.vram;
 	LB = 0u;
 	uint v = pc.cur.w[i];
+	for (uint j = 0u; j < 16u; j++) {
+		uint e = pc.pend[j];
+		if (((i - ((e >> 13) & 511u)) & 511u) < (e >> 22)) {
+			v = pc.ring.w[(e & 8191u) * 512u + i];
+		}
+	}
 	uint k = (i - pc.base) & 511u;
 	if (k < pc.n) {
 		uint x, y, bw = 1u;
@@ -33,7 +43,9 @@ void main() {
 			y = k >> 3;
 		}
 		v = read_raw(pc.cpsm, pc.cbp, bw, x, y);
-		pc.cur.w[i] = v;
 	}
-	pc.outp.w[i] = v;
+	pc.cur.w[i] = v;
+	if (pc.out_ != 0xffffffffu) {
+		pc.ring.w[pc.out_ * 512u + i] = v;
+	}
 }

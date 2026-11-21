@@ -12,7 +12,12 @@
 // CSM1 and CT16 CSM2, with nothing, an upload, a draw, a depth-only draw,
 // or a partial load of another key between (the GPU GS skips a repeat
 // whose source pages nobody wrote), and draw with no load after a save
-// state is loaded back and in the next frame. Needs a Vulkan device: without one
+// state is loaded back and in the next frame. The clut hit cases reload an
+// older key (the GPU GS reuses its copy, a hit): a PSMT8 draw, a draw
+// reading past the hit's entries, a hit then a save state, a hit then a
+// ring overflow, hits over each other replayed in order, a hit whose source
+// is written before a draw reading past it, and a hit wrapping past entry
+// 511. Needs a Vulkan device: without one
 // it says so on stderr and exits 0, which is a skip, not a pass.
 package main
 
@@ -73,6 +78,14 @@ CASES := [?]Case {
 	{"clut z", clut_z},
 	{"clut snap", clut_snap},
 	{"clut frame", clut_frame},
+	{"clut hit", clut_hit},
+	{"clut hit window", clut_hit_window},
+	{"clut hit snap", clut_hit_snap},
+	{"clut hit overflow", clut_hit_overflow},
+	{"clut hit order", clut_hit_order},
+	{"clut hit src", clut_hit_src},
+	{"clut hit save", clut_hit_save},
+	{"clut hit wrap", clut_hit_wrap},
 }
 
 // Local memory after each case of each software round.
@@ -604,4 +617,153 @@ clut_frame :: proc() {
 	clut_band(1, t)
 	gs.scanout()
 	clut_band(2, no_load(t))
+}
+
+// CLUT sources for the hit cases: two PSMT8 (256 entries) and two PSMT4 (16)
+// CT32 CSM1 tables on pages 300..303.
+@(private = "file")
+HA, HB, H4, H4B :: 9600, 9632, 9664, 9696
+
+@(private = "file")
+hit_setup :: proc(salt: u32) {
+	picture(0, 4, W, 256)
+	picture(128 * 32, 4, W, 64, PSMT8)
+	picture(HA, 1, 16, 16, 0, salt)
+	picture(HB, 1, 16, 16, 0, salt + 1)
+	picture(H4, 1, 8, 2, 0, salt + 2)
+	picture(H4B, 1, 8, 2, 0, salt + 3)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, clut_tex(HA))
+}
+
+// PSMT8 loads A, B, A again (a hit), each drawn.
+@(private = "file")
+clut_hit :: proc() {
+	hit_setup(10)
+	a, b := clut_tex(HA), clut_tex(HB)
+	clut_band(0, a)
+	clut_band(1, b)
+	clut_band(2, a)
+	clut_band(3, b)
+}
+
+// A PSMT4 load at entries 16..31, a PSMT8 load, the PSMT4 load again (a
+// hit, its copy exact in 16..31 only), then draws with no load reading
+// entries 32..47 and all 256: both must read the PSMT8 load's entries.
+@(private = "file")
+clut_hit_window :: proc() {
+	hit_setup(20)
+	t4, b := clut_tex(H4, true, 1), clut_tex(HB)
+	clut_band(0, t4)
+	clut_band(1, b)
+	clut_band(2, t4)
+	clut_band(3, no_load(clut_tex(H4, true, 2)))
+	clut_band(4, t4)
+	clut_band(5, no_load(b))
+}
+
+// A PSMT8 load A, a PSMT4 load at 16..31, A again (a hit), a save state;
+// then B, the PSMT4 load, B again (a hit, pending at the restore), the
+// state loaded back, and draws with no load of entries 16..31 and all 256:
+// the saved CLUT has A's there, and B's hit is not replayed over it.
+@(private = "file")
+clut_hit_snap :: proc() {
+	hit_setup(30)
+	a, t4 := clut_tex(HA), clut_tex(H4, true, 1)
+	clut_band(0, a)
+	clut_band(1, t4)
+	clut_band(2, a)
+	snap_save()
+	b := clut_tex(HB)
+	clut_band(3, b)
+	clut_band(4, t4)
+	clut_band(5, b)
+	snap_load()
+	clut_band(6, no_load(t4))
+	clut_band(7, no_load(a))
+}
+
+// A PSMT8 load, a PSMT4 load at 16..31, the PSMT8 load again (a hit), then
+// enough sprites to overflow the vertex ring, then a draw with no load of
+// entries 16..31: the new slot's CLUT has the hit's.
+@(private = "file")
+clut_hit_overflow :: proc() {
+	hit_setup(40)
+	a, t4 := clut_tex(HA), clut_tex(H4, true, 1)
+	clut_band(0, a)
+	clut_band(1, t4)
+	clut_band(2, a)
+	gs.gs_write(0x4c, 200 | 4 << 16) // FRAME_1: page 200
+	for i in 0 ..< u64(50000) {
+		x, y := i % W, i / W % H
+		gs.gs_write(0x00, 6) // PRIM: SPRITE, flat
+		gs.gs_write(0x01, 0x80000000 | i)
+		gs.gs_write(0x05, (x << 4) | (y << 4) << 16) // XYZ2
+		gs.gs_write(0x05, (x + 1) << 4 | ((y + 1) << 4) << 16)
+	}
+	gs.gs_write(0x4c, 4 << 16)
+	clut_band(3, no_load(t4))
+}
+
+// Loads A, B (PSMT8) and a PSMT4 load at 16..31, then hits A, B, A over
+// one another (A last, though its first hit came first), then a PSMT4 load at 32..47 (a dispatch, the hits replayed
+// before it), then a draw with no load of entries 16..31: A's, the last
+// hit over them.
+@(private = "file")
+clut_hit_order :: proc() {
+	hit_setup(50)
+	a, b, t4 := clut_tex(HA), clut_tex(HB), clut_tex(H4, true, 1)
+	clut_band(0, a)
+	clut_band(1, b)
+	clut_band(2, t4)
+	clut_band(3, a)
+	clut_band(4, b)
+	clut_band(5, a)
+	clut_band(6, clut_tex(H4B, true, 2))
+	clut_band(0, no_load(t4))
+}
+
+// PSMT8 loads A, B, A again (a hit), A's source written, then draws with no
+// load of entries 320..335 (past the hit's: a whole copy) and all 256: both
+// read A's entries as loaded, not as written after.
+@(private = "file")
+clut_hit_src :: proc() {
+	hit_setup(60)
+	a, b := clut_tex(HA), clut_tex(HB)
+	clut_band(0, a)
+	clut_band(1, b)
+	clut_band(2, a)
+	picture(HA, 1, 16, 16, 0, 64)
+	clut_band(3, no_load(clut_tex(H4, true, 20)))
+	clut_band(4, no_load(a))
+}
+
+// A PSMT8 load A, a PSMT4 load at 16..31, A again (a hit), a save state,
+// then a draw with no load of entries 16..31: the save brought A's hit into
+// the CLUT before it, and the draw after reads the CLUT as saved.
+@(private = "file")
+clut_hit_save :: proc() {
+	hit_setup(70)
+	a, t4 := clut_tex(HA), clut_tex(H4, true, 1)
+	clut_band(0, a)
+	clut_band(1, t4)
+	clut_band(2, a)
+	snap_save()
+	clut_band(3, no_load(t4))
+}
+
+// PSMT8 loads A at entries 496..511 and 0..239, B at 0..255, A again (a
+// hit), then draws with no load of entries 496..511, 0..15 (in the hit's
+// range across 511), 240..255 (past it: a whole copy, the hit replayed) and
+// all 256 from 496.
+@(private = "file")
+clut_hit_wrap :: proc() {
+	hit_setup(80)
+	a, b := clut_tex(HA, false, 31), clut_tex(HB)
+	clut_band(0, a)
+	clut_band(1, b)
+	clut_band(2, a)
+	clut_band(3, no_load(clut_tex(H4, true, 31)))
+	clut_band(4, no_load(clut_tex(H4, true, 0)))
+	clut_band(5, no_load(clut_tex(H4, true, 15)))
+	clut_band(6, no_load(a))
 }

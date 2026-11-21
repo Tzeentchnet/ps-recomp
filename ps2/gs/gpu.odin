@@ -27,6 +27,7 @@ VERT_CAP :: 1 << 18 // vertices per slot (20 MiB)
 STATE_CAP :: 1 << 14
 @(private)
 CLUT_CAP :: 1 << 13 // CLUT copies of 512 words (16 MiB)
+CLUT_PEND :: 16 // hits a dispatch brings into clut_cur (Clut_PC: 128 bytes)
 @(private)
 UP_CAP :: 1 << 22 // transfer words per slot (16 MiB)
 @(private)
@@ -88,8 +89,10 @@ Copy_PC :: struct {
 }
 @(private)
 Clut_PC :: struct {
-	vram, cur, outp:                            vk.DeviceAddress,
+	vram, cur, ring:                            vk.DeviceAddress,
 	cpsm, cbp, cbw, cou, cov, csm2, n, base: u32,
+	out:                                        u32, // ring copy index, or max(u32): none
+	pend:                                       [CLUT_PEND]u32, // hw.clut_pend
 }
 @(private)
 Decode_PC :: struct {
@@ -158,6 +161,14 @@ hw: struct {
 	// The last load while clut_ok (it left clut_off), and seq after it.
 	clut_key:            Clut_Key,
 	clut_seq:            u64,
+	// {lo, n}: the entries lo..lo+n (mod 512) of the copy at clut_off that
+	// are clut_cur's; {0, 512} after a dispatch, the load's range after a hit.
+	clut_exact:          [2]u32,
+	// Loads skipped as hits since the last dispatch, not yet in clut_cur:
+	// ring index | base << 13 | n << 22, each load once, in order of its
+	// last use; entries from clut_npend on are 0.
+	clut_pend:           [CLUT_PEND]u32,
+	clut_npend:          int,
 	// Pages drawn since the last barrier; a primitive texturing from one
 	// must wait for the barrier. Pixel interlock orders fragments by
 	// framebuffer pixel, not by address, so a page drawn through a different
@@ -273,6 +284,8 @@ hw_begin_slot :: proc() {
 	hw.batch = 0
 	hw.clip = CLIP_EMPTY
 	hw.state_ok, hw.clut_ok = false, false
+	assert(hw.clut_npend == 0, "gs: CLUT loads left pending past a slot")
+	clear(&hw_cluts) // their copies are in the other slot's ring
 	hw.rendering = false
 	hw.barrier_due = true // orders this slot after the previous one
 }
@@ -379,6 +392,8 @@ hw_flush_upload :: proc() {
 
 @(private)
 hw_submit :: proc(wait, signal: vk.Semaphore) {
+	// The next slot starts from clut_cur alone: bring the hits into it.
+	if hw.clut_npend != 0 {hw_clut_dispatch(0, 0, 0, 0, 0, false, 0, 0, false)}
 	s := &hw.slots[hw.cur]
 	core.vk_submit(s.cmd, s.fence, wait, signal)
 }
@@ -473,6 +488,17 @@ Clut_Key :: struct {
 // clears where clut_off stops naming that copy or clut_cur changes another
 // way: a new slot (hw_begin_slot, so also an overflow) and a snapshot
 // save or restore (hw_snap_copy).
+//
+// A load repeating an older one of this slot (hw_cluts), its source pages
+// unwritten since, is a hit: no dispatch, which would end the render pass.
+// Entries base..base+n of that load's copy are what this load reads, by
+// the same argument; the rest are clut_cur as it was then, so clut_off names
+// a copy exact in base..base+n only (clut_exact), and hw_state dispatches a
+// whole copy for a draw reading past it. The hit's entries go into clut_cur
+// at the next dispatch, before its own load (clut_pend, CLUT_PEND loads at
+// most: a hit past that dispatches), so clut_cur ends as if every load ran:
+// each entry from the last load over it. hw_submit dispatches the ones left
+// at a slot's end, a save brings them in first and a restore drops them.
 @(private)
 hw_clut :: proc(cpsm, cbp, cbw, cou, cov: u32, csm2: bool, n, base: u32) {
 	hw_flush_upload()
@@ -481,16 +507,52 @@ hw_clut :: proc(cpsm, cbp, cbw, cou, cov: u32, csm2: bool, n, base: u32) {
 	// clut_load's read: one row of a cbw-wide buffer, or blocks cbp..cbp+4.
 	src := csm2 ? rect_pages(cpsm, cbp, cbw, cou * 16, cov, n, 1) : [2]u32{cbp / 32, (cbp + 3) / 32 - cbp / 32 + 1}
 	if hw.clut_ok && key == hw.clut_key && pages_seq(src) <= hw.clut_seq {return}
-	if hw.slots[hw.cur].ncluts == CLUT_CAP {hw_overflow()}
-	s := &hw.slots[hw.cur]
-	hw.clut_off = u32(s.ncluts * 512)
-	s.ncluts += 1
-	hw.clut_ok = true
+	if e, ok := hw_cluts[key]; ok && n != 0 && pages_seq(src) <= e.seq && hw_clut_pend(e.off / 512 | base << 13 | n << 22) {
+		hw.clut_off, hw.clut_ok, hw.clut_exact = e.off, true, {base, n}
+		hw.clut_key, hw.clut_seq = key, e.seq
+		return
+	}
+	hw_clut_dispatch(cpsm, cbp, cbw, cou, cov, csm2, n, base, true)
 	hw.clut_key, hw.clut_seq = key, hw.seq
+	if n != 0 {hw_cluts[key] = {hw.seq, hw.clut_off}}
+}
+
+// The ring copies of this slot's loads, by key, each with seq after it.
+@(private)
+Clut_Ent :: struct {
+	seq: u64,
+	off: u32,
+}
+
+@(private)
+hw_cluts: map[Clut_Key]Clut_Ent
+
+// Hit e (hw.clut_pend's form) goes last in clut_pend; false when full.
+@(private)
+hw_clut_pend :: proc(e: u32) -> bool {
+	p := &hw.clut_pend
+	for i in 0 ..< hw.clut_npend {
+		if p[i] & 8191 != e & 8191 {continue}
+		copy(p[i:hw.clut_npend], p[i + 1:hw.clut_npend])
+		p[hw.clut_npend - 1] = e
+		return true
+	}
+	if hw.clut_npend == CLUT_PEND {return false}
+	p[hw.clut_npend] = e
+	hw.clut_npend += 1
+	return true
+}
+
+// The pending hits, then the load, into clut_cur; with keep, the whole
+// table into a new copy at clut_off as well.
+@(private)
+hw_clut_dispatch :: proc(cpsm, cbp, cbw, cou, cov: u32, csm2: bool, n, base: u32, keep: bool) {
+	if keep && hw.slots[hw.cur].ncluts == CLUT_CAP {hw_overflow()}
+	s := &hw.slots[hw.cur]
 	pc := Clut_PC {
 		vram = hw.vram.addr,
 		cur  = hw.clut_cur.addr,
-		outp = s.cluts.addr + vk.DeviceAddress(hw.clut_off * 4),
+		ring = s.cluts.addr,
 		cpsm = cpsm,
 		cbp  = cbp,
 		cbw  = cbw,
@@ -499,8 +561,26 @@ hw_clut :: proc(cpsm, cbp, cbw, cou, cov: u32, csm2: bool, n, base: u32) {
 		csm2 = u32(csm2),
 		n    = n,
 		base = base,
+		out  = max(u32),
+		pend = hw.clut_pend,
+	}
+	hw.clut_pend, hw.clut_npend = {}, 0
+	if keep {
+		pc.out = u32(s.ncluts)
+		hw.clut_off = u32(s.ncluts * 512)
+		s.ncluts += 1
+		hw.clut_ok, hw.clut_exact = true, {0, 512}
 	}
 	hw_dispatch(hw.clut, &pc, 512 / 64, 1)
+}
+
+// Whether a draw of texture t reads only entries of the copy at clut_off
+// that are clut_cur's: prim.frag reads csa * 16 + index, mod 512.
+@(private)
+hw_clut_covers :: proc(t: ^Tex) -> bool {
+	lo, n := hw.clut_exact[0], hw.clut_exact[1]
+	w: u32 = psm_bits(t.psm) == 8 ? 256 : 16
+	return n == 512 || (t.csa * 16 - lo) & 511 + w <= n
 }
 
 // ----------------------------------------------------------- primitives
@@ -814,7 +894,7 @@ hw_state :: proc(c: ^Ctx) -> u32 {
 	// offset moves only on a load (a TEX0/TEX2 write, which changes ctx_key)
 	// or below.
 	pal := c.tme && psm_bits(t.psm) <= 8
-	if hw.state_ok && hw.state_key == ctx_key && (!pal || hw.clut_ok) && (!c.tme || hw.dec_seq == hw.seq) {
+	if hw.state_ok && hw.state_key == ctx_key && (!pal || hw.clut_ok && hw_clut_covers(t)) && (!c.tme || hw.dec_seq == hw.seq) {
 		return hw.state_idx
 	}
 	hw.state_key = ctx_key
@@ -863,7 +943,11 @@ hw_state :: proc(c: ^Ctx) -> u32 {
 		st.mip = u32(t.lcm) | t.mxl << 1 | t.mmin << 4 | t.l << 7 | (u32(t.k) & 0xfff) << 16
 		for i in 1 ..= 6 {st.mtb[i - 1] = t.mtbp[i] | t.mtbw[i] << 16}
 		if psm_bits(t.psm) <= 8 {
-			if !hw.clut_ok {hw_clut(0, 0, 0, 0, 0, false, 0, 0)}
+			if !hw.clut_ok {
+				hw_clut(0, 0, 0, 0, 0, false, 0, 0)
+			} else if !hw_clut_covers(t) {
+				hw_clut_dispatch(0, 0, 0, 0, 0, false, 0, 0, true) // after a hit
+			}
 			st.clut = hw.clut_off
 		}
 	}
@@ -1193,6 +1277,9 @@ hw_snap_load :: proc(id: int) {
 @(private)
 hw_snap_copy :: proc(b: core.Vk_Buf, save: bool) {
 	hw_flush_upload()
+	// A save takes clut_cur with the hits in it; a restore replaces them.
+	if save && hw.clut_npend != 0 {hw_clut_dispatch(0, 0, 0, 0, 0, false, 0, 0, false)}
+	hw.clut_pend, hw.clut_npend = {}, 0
 	hw_split()
 	cmd := hw.slots[hw.cur].cmd
 	hw_barrier(cmd)
