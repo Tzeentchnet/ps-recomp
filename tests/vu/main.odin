@@ -29,6 +29,11 @@
 // stalls the VIF; what follows, in that transfer or later ones, waits until
 // FBRST.STC, then runs. With VIF_ERR.MII set an i-bit does nothing.
 //
+// Then the VIF's waiting words: a stall that leaves words in the middle of
+// what waits, a code split across the stall and two transfers, the same
+// words again from a copy of that state (as a snapshot restores it), and
+// FBRST.RST in the middle.
+//
 // Last, the GIF paths: an XGKICK (PATH1) between two VIF1 DIRECT codes
 // (PATH2) that split one packet waits for the second DIRECT to end the
 // packet, then sends its own. A PATH3 IMAGE packet gives the GIF to a
@@ -695,6 +700,52 @@ ibit :: proc() {
 	mem.hw_reg(vu.VIF0_ERR + 0x400)^ = 0
 	v.cl, v.wl, v.base, v.itops = 1, 1, 0, 0
 	mem.intc_stat, mem.intc_pending = 0, 0
+}
+
+// VIF1 holds BASE 1, BASE 2 (both with the i-bit), BASE 3 and the first
+// word of an STMASK after an i-bit NOP: each STC runs on to the next stall,
+// so what waits starts inside pending. A second transfer brings the
+// STMASK's word and BASE 7. From a copy of the state after the first STC,
+// the same steps end the same way. FBRST.RST with words waiting drops them:
+// what waits after it starts at its own first word.
+@(private = "file")
+vif_head :: proc() {
+	v := &vu.vifs[1]
+	stc :: proc() {vu.vif_fbrst(1, 8)}
+	steps :: proc(v: ^vu.Vif, from: string) {
+		stc() // BASE 2, stalls again
+		if v.base != 2 || !v.stalled {fail("VIF head (%s): second STC: base %d stalled %v, want 2 true", from, v.base, v.stalled)}
+		feed(v, 0xaaaaaaaa, 0x03000007) // the STMASK's word, BASE 7: waits
+		if v.mask != 0 || v.base != 2 {fail("VIF head (%s): stalled VIF1 ran a transfer: mask %x base %d", from, v.mask, v.base)}
+		stc() // BASE 3, STMASK, BASE 7
+		if v.stalled || v.base != 7 || v.mask != 0xaaaaaaaa {fail("VIF head (%s): third STC: stalled %v base %d mask %x, want false 7 aaaaaaaa", from, v.stalled, v.base, v.mask)}
+		if len(v.pending) != 0 || v.head != 0 {fail("VIF head (%s): %d bytes pending, head %d after all ran", from, len(v.pending), v.head)}
+	}
+	mem.intc_stat = 0
+	feed(v, 0x80000000, 0x83000001, 0x83000002, 0x03000003, 0x20000000)
+	if !v.stalled || v.base != 0 {fail("VIF head: i-bit NOP: stalled %v base %d", v.stalled, v.base)}
+	stc() // BASE 1, stalls with BASE 2 on waiting
+	if v.base != 1 || !v.stalled || v.head == 0 {fail("VIF head: first STC: base %d stalled %v head %d, want 1 true >0", v.base, v.stalled, v.head)}
+	saved, saved_bytes := v^, slice.clone(v.pending[:])
+	steps(v, "fed")
+	v.mask = 0
+	v^ = saved
+	v.pending = {}
+	append(&v.pending, ..saved_bytes)
+	steps(v, "copy")
+
+	v.mask = 0
+	feed(v, 0x80000000, 0x83000001, 0x03000002, 0x03000003)
+	stc() // BASE 1, stalls with words waiting past head
+	if v.head == 0 || len(v.pending) == 0 {fail("VIF head: before RST: head %d, %d bytes pending", v.head, len(v.pending))}
+	vu.vif_fbrst(1, 1)
+	if len(v.pending) != 0 || v.head != 0 {fail("VIF head: RST left %d bytes pending, head %d", len(v.pending), v.head)}
+	feed(v, 0x80000000, 0x03000009)
+	stc()
+	if v.base != 9 || len(v.pending) != 0 {fail("VIF head: after RST: base %d, %d bytes pending, want 9 0", v.base, len(v.pending))}
+	v.base, v.mask = 0, 0
+	mem.intc_stat, mem.intc_pending = 0, 0
+	delete(saved_bytes)
 }
 
 // One A+D qword: data to GS register reg.
@@ -1851,6 +1902,7 @@ main :: proc() {
 	q_latency()
 	stalls()
 	ibit()
+	vif_head()
 	tops_wrap()
 	gif_paths()
 	gif_tte()

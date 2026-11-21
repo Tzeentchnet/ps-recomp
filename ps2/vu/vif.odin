@@ -23,6 +23,9 @@ Vif :: struct {
 	// VIF1 stalled on a DIRECT until the GIF is free (vif1_gif_resume).
 	gif_wait:    bool,
 	pending:     [dynamic]u8, // a command split across transfers, or what waits out a stall
+	// pending[:head] has run; what waits starts at head. pending is empty
+	// whenever nothing waits, so head < len(pending) or both are 0.
+	head:        int,
 }
 
 // The VIFs' registers, VIF1's 0x400 after VIF0's.
@@ -59,7 +62,10 @@ vif_warned: map[u32]bool
 // for the next transfer, and while the VIF is stalled (an i-bit, or a
 // DIRECT waiting for the GIF) every word waits.
 // DMA has already gathered the whole chain and finished the channel, so a
-// stall holds the chain's rest here instead of in the channel.
+// stall holds the chain's rest here instead of in the channel. What runs out
+// of pending moves head on, and the rest moves to the front only once head
+// passes half of pending: a stall can hold a megabyte that each transfer
+// would otherwise shift down by its few words.
 vif_feed :: proc(v: ^Vif, data: []u8) {
 	if v.stalled || v.gif_wait {
 		append(&v.pending, ..data)
@@ -70,14 +76,20 @@ vif_feed :: proc(v: ^Vif, data: []u8) {
 	buf := data
 	if len(v.pending) != 0 {
 		append(&v.pending, ..data)
-		buf = v.pending[:]
+		buf = v.pending[v.head:]
 	}
 	used := vif_run(v, ([^]u32)(raw_data(buf))[:len(buf) / 4])
-	rest := buf[used * 4:]
-	if len(v.pending) != 0 {
-		remove_range(&v.pending, 0, used * 4)
-	} else {
-		append(&v.pending, ..rest)
+	if len(v.pending) == 0 {
+		append(&v.pending, ..buf[used * 4:])
+		return
+	}
+	v.head += used * 4
+	if v.head == len(v.pending) {
+		clear(&v.pending)
+		v.head = 0
+	} else if v.head > len(v.pending) / 2 {
+		remove_range(&v.pending, 0, v.head)
+		v.head = 0
 	}
 }
 
@@ -163,6 +175,7 @@ vif_fbrst :: proc(id: int, w: u32) {
 	v := &vifs[id]
 	if w & 1 != 0 {
 		clear(&v.pending)
+		v.head = 0
 		v.stalled, v.gif_wait = false, false
 		if id == 1 {gif.gif_vif1_reset()}
 		mem.hw_reg(VIF0_STAT + 0x400 * u32(id))^ &~= VIF_STAT_STALL
