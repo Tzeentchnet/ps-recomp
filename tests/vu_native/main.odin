@@ -27,7 +27,6 @@ import "core:fmt"
 import "core:math/rand"
 import "core:os"
 import "core:slice"
-@(require) import "core:sys/linux" // used only under ODIN_OS == .Linux
 import "ps:core"
 import "ps:ps2"
 import "ps:ps2/vu"
@@ -101,7 +100,7 @@ same_regs :: proc(got, want: ^vu.Vu, status: bool) -> bool {
 main :: proc() {
 	progs := vu_programs.programs()
 	arch := native.Arch(core.NATIVE_ARCH)
-	a := native.make_asm(arch, r5900.native_ram())
+	a := r5900.native_asm(arch)
 	vus := make([]native.Blob_Span, len(progs))
 	slow_fails := 0
 	for p, k in progs {
@@ -342,6 +341,12 @@ test_miss_capture :: proc(progs: []vu_programs.Prog, arch: native.Arch) -> (fail
 		fmt.eprintln("FAIL vu_native capture:", msg)
 		fails^ += 1
 	}
+	when ODIN_OS != .Linux {
+		// The capture file's lock is flock (flock_linux.odin), and the wasi
+		// shim (web/wasi.js) cannot cut a file or list a directory.
+		fmt.println("vu_native capture: skipped, Linux only")
+		return
+	}
 	IMAGE :: 9 + 16 * 1024
 	ENTRY :: 13
 	// The file's length and its images; -1 for a record that is not whole.
@@ -414,7 +419,7 @@ test_miss_capture :: proc(progs: []vu_programs.Prog, arch: native.Arch) -> (fail
 		lock :: proc(path: string, flags: os.File_Flags) -> ^os.File {
 			f, e := os.open(path, flags, os.Permissions_Read_All + {.Write_User})
 			if e != nil {return nil}
-			if linux.flock(linux.Fd(os.fd(f)), {.EX, .NB}) != .NONE {
+			if !flock_try(f) {
 				_ = os.close(f)
 				return nil
 			}
@@ -482,7 +487,7 @@ test_miss_capture :: proc(progs: []vu_programs.Prog, arch: native.Arch) -> (fail
 		vu_programs.lower_op(vu_programs.JR, 0, 0, 1, 0), vu_programs.NOP_U,
 		vu_programs.NOP_L, vu_programs.NOP_U,
 	}
-	a := native.make_asm(arch, r5900.native_ram())
+	a := r5900.native_asm(arch)
 	off := u32(rvu.native_program(&a, words, nil, []u32{0}, .VU1, false))
 	code, err2 := core.native_load(native.make_blob(&a, nil, {}, []native.Blob_Span{{.Vu1, 0, off, []native.Blob_Range{{0, words}}}}), ps2.native_imports())
 	if err2 != "" {
@@ -595,7 +600,7 @@ test_park :: proc(arch: native.Arch) -> (fails: int) {
 		}
 	}
 
-	a := native.make_asm(arch, r5900.native_ram())
+	a := r5900.native_asm(arch)
 	ranges := []native.Blob_Range{{0, words}}
 	slow: map[string]int
 	off0 := u32(rvu.native_program(&a, words, nil, nil, .VU0, false, &slow))
@@ -766,7 +771,7 @@ test_park :: proc(arch: native.Arch) -> (fails: int) {
 @(private = "file")
 test_xtop :: proc(arch: native.Arch) -> (fails: int) {
 	words := []u32{vu_programs.lower_sp(0x68, 0, 1, 0), vu_programs.NOP_U | vu_programs.E_BIT, vu_programs.NOP_L, vu_programs.NOP_U}
-	a := native.make_asm(arch, r5900.native_ram())
+	a := r5900.native_asm(arch)
 	slow: map[string]int
 	off := u32(rvu.native_program(&a, words, nil, nil, .VU1, false, &slow))
 	code, err := core.native_load(native.make_blob(&a, nil, {}, []native.Blob_Span{{.Vu1, 0, off, []native.Blob_Range{{0, words}}}}), ps2.native_imports())
