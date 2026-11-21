@@ -112,9 +112,11 @@ Scan_PC :: struct {
 Fsr_PC :: struct {
 	input_data, output_data: vk.DeviceAddress,
 	input_size, output_size: [2]u32,
-	pass:                    u32,
+	pass, output_bgra:       u32,
 	sharpness:               f32,
+	_:                       u32,
 }
+#assert(size_of(Fsr_PC) == 48)
 
 @(private)
 Slot :: struct {
@@ -272,6 +274,11 @@ hw_init :: proc(win: ^sdl.Window, scale: u32) -> bool {
 	hw.decode = core.vk_compute_pipeline(#load("shaders/decode.comp.spv"), hw.comp_layout)
 	hw.fsr = core.vk_compute_pipeline(#load("shaders/fsr.comp.spv"), hw.comp_layout)
 	hw.fsr_on = core.env("UPSCALER") == "fsr1"
+	fsr_format := core.vkc.swap_fmt == .R8G8B8A8_UNORM || core.vkc.swap_fmt == .B8G8R8A8_UNORM
+	if hw.fsr_on && win != nil && !fsr_format {
+		fmt.eprintfln("gs: FSR 1 does not support swapchain format %v; using linear scaling", core.vkc.swap_fmt)
+		hw.fsr_on = false
+	}
 
 	hw.shown = 1
 	hw_begin_slot()
@@ -1257,6 +1264,7 @@ hw_fsr_record :: proc(s: ^Slot, dst: vk.Image, ox, oy, dw, dh: i32) {
 		input_size = {u32(s.scan_w), u32(s.scan_h)},
 		output_size = {u32(dw), u32(dh)},
 		pass = 0,
+		output_bgra = u32(core.vkc.swap_fmt == .B8G8R8A8_UNORM),
 		sharpness = 0.2,
 	}
 	vk.CmdBindPipeline(cmd, .COMPUTE, hw.fsr)

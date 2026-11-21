@@ -19,7 +19,9 @@ layout(push_constant) uniform PC {
 	uvec2 input_size;
 	uvec2 output_size;
 	uint pass;
+	uint output_bgra;
 	float sharpness;
+	uint pad;
 } pc;
 
 vec4 load_color(ivec2 p) {
@@ -56,6 +58,7 @@ void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}
 
 uint pack_color(vec3 c) {
 	uvec3 q = uvec3(round(clamp(c, 0.0, 1.0) * 255.0));
+	if (pc.pass != 0u && pc.output_bgra != 0u) q = q.bgr;
 	return q.r | (q.g << 8u) | (q.b << 16u) | 0xff000000u;
 }
 
