@@ -621,6 +621,23 @@ x64_imp_ldst :: proc(a: ^Asm, r: Reg, base: string, store: bool, off: u32, w: Wi
 	op_state(a, false, op, X64_REG[r], off, reg)
 }
 
+// add dword [import base + off], n: through r15 when base is the pinned
+// import, else through rdx.
+x64_imp_add_imm :: proc(a: ^Asm, base: string, off: u32, n: i32) {
+	reg: u8 = R15
+	if base != a.pin {
+		op_imp(a, true, 0x8b, RDX, imp(a, base)) // mov rdx, [slot]
+		reg = RDX
+	}
+	if n >= -128 && n < 128 {
+		op_state(a, false, 0x83, 0, off, reg)
+		emit8(a, u8(i8(n)))
+	} else {
+		op_state(a, false, 0x81, 0, off, reg)
+		emit32(a, u32(n))
+	}
+}
+
 x64_vec_shift16 :: proc(a: ^Asm, op: Alu, v: Vreg, n: u32) {
 	digit: u8 = 6 if op == .Shl else 2 if op == .Shr else 4 // psllw, psrlw, psraw
 	emit8(a, 0x66, 0x0f, 0x71, 0xc0 | digit << 3 | u8(v), u8(n))

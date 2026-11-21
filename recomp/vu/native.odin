@@ -356,14 +356,11 @@ cycle_pend: u32
 @(private = "file")
 carry_stubs: int
 
-// Add n, maybe negative, to Vu.cycle. Uses A.
+// Add n, maybe negative, to Vu.cycle. Uses A, but on x86-64.
 @(private = "file")
 cycle_add :: proc(a: ^native.Asm, u: Unit, n: i64) {
 	if n == 0 {return}
-	vf := IMPORTS[u][.Vf]
-	native.imp_load(a, .A, vf, VU_CYCLE)
-	native.alu_imm(a, .Add if n > 0 else .Sub, .A, u32(abs(n)))
-	native.imp_store(a, vf, .A, VU_CYCLE)
+	native.imp_add_imm(a, IMPORTS[u][.Vf], VU_CYCLE, i32(n))
 }
 
 // Add cycle_pend to Vu.cycle. Uses A.

@@ -914,6 +914,19 @@ imp_store :: proc(a: ^Asm, base: string, src: Reg, off: u32 = 0, w := Width.B32)
 	}
 }
 
+// The 4 bytes at off from the address in import base += n, wrapping. On
+// x86-64 one add to memory; elsewhere a load, add and store through A.
+imp_add_imm :: proc(a: ^Asm, base: string, off: u32, n: i32) {
+	switch a.arch {
+	case .X64_SysV, .X64_Win:
+		x64_imp_add_imm(a, base, off, n)
+	case .Arm64, .Wasm32:
+		imp_load(a, .A, base, off)
+		alu_imm(a, .Add if n > 0 else .Sub, .A, u32(abs(n)))
+		imp_store(a, base, .A, off)
+	}
+}
+
 // Each 16-bit lane of v shifted (Shl, Shr or Sar) by n < 16.
 vec_shift16 :: proc(a: ^Asm, op: Alu, v: Vreg, n: u32) {
 	assert(op == .Shl || op == .Shr || op == .Sar, "native: vector shift")
