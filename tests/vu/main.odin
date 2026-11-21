@@ -1432,6 +1432,61 @@ kick_path1_idle :: proc(name, how: string) {
 	if vu.vu1.kick != 0 {fail("%s (%s): a kick is still latched after the program", name, how)}
 }
 
+// The loop cases: XGKICK, n NOPs, then L: ISW.x vi2, 0(vi8); IBNE vi8,
+// vi9 back to L; IADDIU vi8, vi8, 1 in the delay slot; the E-bit pair.
+@(private = "file")
+kick_loop_pairs :: proc(n: int) -> [][2]u32 {
+	p := make([dynamic][2]u32, context.temp_allocator)
+	append(&p, [2]u32{kick_xg(1), KICK_UNOP})
+	for _ in 0 ..< n {append(&p, [2]u32{KICK_NOP, KICK_UNOP})}
+	append(&p, [2]u32{kick_isw(2, 8, 0), KICK_UNOP})
+	append(&p, [2]u32{0x29 << 25 | 8 << 16 | 9 << 11 | u32(-2 & 0x7ff), KICK_UNOP})
+	append(&p, [2]u32{0x08 << 25 | 8 << 16 | 8 << 11 | 1, KICK_UNOP})
+	append(&p, [2]u32{KICK_NOP, KICK_E})
+	append(&p, [2]u32{KICK_NOP, KICK_UNOP})
+	return p[:]
+}
+
+@(private = "file")
+kick_loop_setup :: proc() {
+	w := vu1_words()
+	w[0], w[1], w[2], w[3] = 3 | 1 << 15, 1 << 28, 0xe, 0 // NLOOP 3, EOP
+	w[4], w[5], w[6], w[7] = 0x1111, 0, 0x41, 0
+	w[8], w[9], w[10], w[11] = 0x2222, 0, 0x42, 0
+	w[12], w[13], w[14], w[15] = 0x3333, 0, 0x43, 0
+	vi := &vu.vu1.vi
+	vi[1], vi[2], vi[8], vi[9] = 0, 0x5555, 1, 3
+	gs.state.regs[0x41], gs.state.regs[0x42], gs.state.regs[0x43] = 0, 0, 0
+}
+
+@(private = "file")
+kick_loop_compiled :: proc(n: int) -> (u32, vu.Vu_Exit) {
+	vi, c := &vu.vu1.vi, &vu.vu1.cycle
+	compiled_ran = true
+	c^ += 1
+	vu.vu1_xgkick(vi[1])
+	c^ += u32(n)
+	for j in u32(0) ..< 3 {
+		c^ += 1
+		kick_put(1 + j, vi[2])
+		c^ += 2
+	}
+	vi[8] = 4
+	c^ += 1
+	return u32(n + 6) * 8, .End
+}
+
+@(private = "file")
+kick_loop_check :: proc(n: int, how: string) {
+	r := gs.state.regs
+	for j in 0 ..< 3 {
+		old := u64(0x1111 * (j + 1))
+		want := 1 + n + 3 * j <= 3 + 2 * j ? 0x5555 : old
+		if r[0x41 + j] != want {fail("XGKICK store in a loop, n %d (%s): GS %x %x, want %x", n, how, 0x41 + j, r[0x41 + j], want)}
+	}
+	kick_path1_idle("XGKICK store in a loop", how)
+}
+
 @(private = "file")
 kick_latch :: proc() {
 	cases := []Kick_Case {
@@ -1642,6 +1697,53 @@ kick_latch :: proc() {
 					fail("XGKICK store either side (%s): GS 41 %x 42 %x, want 3333 6666", how, r[0x41], r[0x42])
 				}
 				kick_path1_idle("XGKICK store either side", how)
+			},
+		},
+		// A loop label after n pairs: its fallthrough's pairs stay pending
+		// into it (the carry), and the branch back adds its own less them.
+		// Visit j stores at 1+n+3j into qword 1+j, read at 3+2j: n = 1
+		// lands q1 in, q2 on the line, q3 out by 1; n = 2 q1 on the line,
+		// q2 out by 1; n = 3 q1 out by 1.
+		{name = "XGKICK store in a loop, 1 pair before it", setup = kick_loop_setup, pairs = kick_loop_pairs(1), compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {return kick_loop_compiled(1)}, check = proc(how: string) {kick_loop_check(1, how)}},
+		{name = "XGKICK store in a loop, 2 pairs before it", setup = kick_loop_setup, pairs = kick_loop_pairs(2), compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {return kick_loop_compiled(2)}, check = proc(how: string) {kick_loop_check(2, how)}},
+		{name = "XGKICK store in a loop, 3 pairs before it", setup = kick_loop_setup, pairs = kick_loop_pairs(3), compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {return kick_loop_compiled(3)}, check = proc(how: string) {kick_loop_check(3, how)}},
+		// A JR into a label its fallthrough reaches with a pair pending:
+		// the dispatch's entry takes the pair off first. The store is the
+		// 4th pair run (3), into q1, read at 3: in.
+		{
+			name = "XGKICK store after a JR into a carry label",
+			setup = proc() {
+				w := vu1_words()
+				w[0], w[1], w[2], w[3] = 1 | 1 << 15, 1 << 28, 0xe, 0 // NLOOP 1, EOP
+				w[4], w[5], w[6], w[7] = 0x1111, 0, 0x41, 0
+				vi := &vu.vu1.vi
+				vi[1], vi[2], vi[8], vi[10] = 0, 0x5555, 1, 4
+				gs.state.regs[0x41] = 0
+			},
+			pairs = {
+				{kick_xg(1), KICK_UNOP}, // 0
+				{0x24 << 25 | 10 << 11, KICK_UNOP}, // 1: JR vi10, to 0x20
+				{KICK_NOP, KICK_UNOP}, // 2: delay slot
+				{KICK_NOP, KICK_UNOP}, // 3: falls into 4 with a pair pending
+				{kick_isw(2, 8, 0), KICK_UNOP}, // 4: the label, run 4th
+				{0x29 << 25 | u32(-2 & 0x7ff), KICK_UNOP}, // 5: IBNE vi0, vi0 back to 4, never taken
+				{KICK_NOP, KICK_UNOP},
+				{KICK_NOP, KICK_E},
+				{KICK_NOP, KICK_UNOP},
+			},
+			compiled = proc(_: u32, _: ^int) -> (u32, vu.Vu_Exit) {
+				c := &vu.vu1.cycle
+				compiled_ran = true
+				c^ += 1
+				vu.vu1_xgkick(vu.vu1.vi[1])
+				c^ += 3
+				kick_put(1, vu.vu1.vi[2])
+				c^ += 4
+				return 0x48, .End
+			},
+			check = proc(how: string) {
+				if r := gs.state.regs[0x41]; r != 0x5555 {fail("XGKICK store after a JR into a carry label (%s): GS 41 %x, want 5555", how, r)}
+				kick_path1_idle("XGKICK store after a JR into a carry label", how)
 			},
 		},
 	}

@@ -343,21 +343,33 @@ kick_check :: proc(a: ^native.Asm, u: Unit) {
 // The VU1 pairs a program's code has counted since it last added them to
 // Vu.cycle: micro_wait_pair counts a pair at compile time, and cycle_flush
 // adds the count before a call that reads Vu.cycle (XGKICK, the
-// interpreter's lower op and pair, which store) and wherever the
-// straight line ends (a label, a branch, a leave), so every path into a
-// label or out of the code has added the same pairs. vu_wait's stall
-// cycles add to Vu.cycle at once, in any order with these.
+// interpreter's lower op and pair, which store) and before each leave, so
+// the code leaves with Vu.cycle exact. kick_check adds it around its call.
+// A label keeps the count its fallthrough brings (native_program's carry):
+// a jump to it adds its own count less that one, and the dispatch's entry
+// to it takes that one off Vu.cycle first, so every path into the label
+// has the same count pending. vu_wait's stall cycles add to Vu.cycle at
+// once, in any order with these.
 @(private = "file")
 cycle_pend: u32
+// The carry labels' dispatch entries native_program has emitted.
+@(private = "file")
+carry_stubs: int
+
+// Add n, maybe negative, to Vu.cycle. Uses A.
+@(private = "file")
+cycle_add :: proc(a: ^native.Asm, u: Unit, n: i64) {
+	if n == 0 {return}
+	vf := IMPORTS[u][.Vf]
+	native.imp_load(a, .A, vf, VU_CYCLE)
+	native.alu_imm(a, .Add if n > 0 else .Sub, .A, u32(abs(n)))
+	native.imp_store(a, vf, .A, VU_CYCLE)
+}
 
 // Add cycle_pend to Vu.cycle. Uses A.
 @(private = "file")
 cycle_flush :: proc(a: ^native.Asm, u: Unit) {
-	if cycle_pend == 0 {return}
-	vf := IMPORTS[u][.Vf]
-	native.imp_load(a, .A, vf, VU_CYCLE)
-	native.alu_imm(a, .Add, .A, cycle_pend)
-	native.imp_store(a, vf, .A, VU_CYCLE)
+	cycle_add(a, u, i64(cycle_pend))
 	cycle_pend = 0
 }
 
@@ -1476,6 +1488,21 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 	for i in 0 ..< len(pairs) {
 		if in_ext(ext, i) && (k == nil || target[i]) {labels[u32(i) * 8] = native.new_label(a)}
 	}
+	// The carry: the pairs counted on a label's fallthrough stay pending
+	// into it (cycle_pend). A jump from before the label is emitted cannot
+	// know that count, so a label any branch reaches forward (its target,
+	// or the pair after a conditional one's delay slot) keeps none and
+	// adds the fallthrough's pairs as before.
+	fwd := make([]bool, len(pairs), context.temp_allocator)
+	for p, i in pairs {
+		if !in_ext(ext, i) || p.ibit || p.branch == .None || leave_pair(pairs, i) {continue}
+		pc := u32(i) * 8
+		op := p.lw >> 25
+		if t := branch_target(p.lw, pc, mask); op != 0x24 && op != 0x25 && t > pc && int(t / 8) < len(pairs) {fwd[t / 8] = true}
+		if op >= 0x28 && i + 2 < len(pairs) {fwd[i + 2] = true}
+	}
+	carry := make(map[u32]u32, context.temp_allocator)
+	carry_at :: proc(carry: map[u32]u32, pc: u32) -> i64 {return i64(carry[pc] or_else 0)}
 	dispatch, exit := native.new_label(a), native.new_label(a)
 	// Leave with pc in run_pc, or with end, End.
 	leave :: proc(a: ^native.Asm, exit: native.Label, pc: u32, end := false) {
@@ -1497,7 +1524,11 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 		next := i + 1 < len(pairs) ? pairs[i + 1] : Pair{}
 		if !fell || k == nil || target[i] || known == KNOWN_NONE {
 			if pc not_in labels {labels[pc] = native.new_label(a)}
-			cycle_flush(a, u) // the fallthrough's pairs
+			if fell && !fwd[i] {
+				if cycle_pend != 0 {carry[pc] = cycle_pend}
+			} else {
+				cycle_flush(a, u) // the fallthrough's pairs
+			}
 			native.bind(a, labels[pc])
 			append(&pcs, pc)
 			known = KNOWN_NONE
@@ -1513,11 +1544,16 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 			micro_wait_pair(a, u, p, pc, slow, k, p.waits)
 			micro_branch(a, u, p.lw, pc, mask, delayed[i])
 			micro_wait_pair(a, u, next, pc + 8, slow, k, waits_after(p, p.waits))
-			cycle_flush(a, u)
 			not_taken, go := native.new_label(a), native.new_label(a)
 			cond := op >= 0x28
 			reg := op == 0x24 || op == 0x25
+			// Each path adds the pairs pending less the carry of the label
+			// it jumps to (none: the dispatch, a leave, a forward label).
+			pend := i64(cycle_pend)
+			cycle_pend = 0
+			carry_go := reg ? 0 : carry_at(carry, branch_target(p.lw, pc, mask))
 			if cond {native.br_zero(a, .T, not_taken)}
+			cycle_add(a, u, pend - carry_go)
 			// As emit_program: the interpreter's jumps clear Vu.vih.
 			t := int(branch_target(p.lw, pc, mask) / 8)
 			if reg || (t < len(pairs) && (delayed[t] || enter[t])) {
@@ -1541,6 +1577,7 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 				native.imp_load(a, .B, vf, VU_Q_DUE)
 				native.alu(a, .Or, .A, .B)
 				native.br_zero(a, .A, lap, nonzero = true)
+				cycle_add(a, u, carry_go)
 				leave(a, exit, p.head | PARK_BIT)
 				native.bind(a, lap)
 				native.mov_imm(a, .A, p.head | PARK_BIT)
@@ -1556,6 +1593,7 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 			native.alu_imm(a, .Sub, .A, 1)
 			native.imp_store(a, budget, .A)
 			native.br_cmp_imm(a, .Gt, .A, 0, go)
+			cycle_add(a, u, carry_go)
 			if reg {
 				native.jmp(a, exit)
 			} else {
@@ -1568,6 +1606,7 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 				goto(a, labels, exit, branch_target(p.lw, pc, mask))
 			}
 			native.bind(a, not_taken)
+			if cond {cycle_add(a, u, pend - carry_at(carry, (pc + 16) & mask))}
 			if cond && p.lap == .Back { // out of the loop
 				native.mov_imm(a, .A, 0)
 				native.imp_store(a, run_pc, .A)
@@ -1605,8 +1644,24 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 		}
 	}
 	assert(cycle_pend == 0, "vu: counted pairs left unadded at the end")
+	// The dispatch enters a carry label with Vu.cycle exact: take the
+	// carry off first, as it is pending at the label.
+	entry := labels
+	if len(carry) > 0 {
+		entry = make(map[u32]native.Label, len(labels), context.temp_allocator)
+		for pc, l in labels {entry[pc] = l}
+		native.jmp(a, dispatch)
+		for pc, n in carry {
+			stub := native.new_label(a)
+			native.bind(a, stub)
+			cycle_add(a, u, -i64(n))
+			native.jmp(a, labels[pc])
+			entry[pc] = stub
+		}
+		carry_stubs += len(carry)
+	}
 	native.bind(a, dispatch)
-	native.search(a, pcs[:], labels, exit) // a miss leaves at T
+	native.search(a, pcs[:], entry, exit) // a miss leaves at T
 	native.bind(a, exit)
 	native.imp_store(a, run_pc, .T)
 	native.ret(a)
@@ -1623,6 +1678,7 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 native_programs :: proc(a: ^native.Asm, img: mips.Image, capture: string, u: Unit, spans: ^[dynamic]native.Blob_Span, status_all := false) -> bool {
 	if u == .VU0 && capture == "" {return true}
 	progs := load_programs(img, capture, u) or_return
+	carry_stubs = 0
 	status := status_all || reads_status(progs[:], u)
 	timed := 0
 	for p in progs {
@@ -1641,6 +1697,6 @@ native_programs :: proc(a: ^native.Asm, img: mips.Image, capture: string, u: Uni
 		append(spans, native.Blob_Span{u == .VU0 ? .Vu0 : .Vu1, 0, u32(off), rs})
 		free_all(context.temp_allocator)
 	}
-	if u == .VU1 {fmt.eprintfln("vu1: %d of %d programs can XGKICK and count their pairs", timed, len(progs))}
+	if u == .VU1 {fmt.eprintfln("vu1: %d of %d programs can XGKICK and count their pairs, %d dispatch entries carry pairs", timed, len(progs), carry_stubs)}
 	return true
 }
