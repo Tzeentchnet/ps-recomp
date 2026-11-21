@@ -8,7 +8,11 @@
 // own (the GPU GS starts once a process). Two cases instead upload over a
 // decoded texture between two samples of it, for the pages a transfer
 // writes, one of them a single page; one draws two sprites per state, the
-// second sampling what the first wrote. Needs a Vulkan device: without one
+// second sampling what the first wrote. The clut cases repeat a CLUT load,
+// CSM1 and CT16 CSM2, with nothing, an upload, a draw, a depth-only draw,
+// or a partial load of another key between (the GPU GS skips a repeat
+// whose source pages nobody wrote), and draw with no load after a save
+// state is loaded back and in the next frame. Needs a Vulkan device: without one
 // it says so on stderr and exits 0, which is a skip, not a pass.
 package main
 
@@ -60,18 +64,28 @@ CASES := [?]Case {
 	{"t8 odd width", t8_odd_width},
 	{"one page", one_page},
 	{"halves", halves},
+	{"clut repeat", clut_repeat},
+	{"clut drawn", clut_drawn},
+	{"clut in frame", clut_in_frame},
+	{"clut partial", clut_partial},
+	{"clut csm2", clut_csm2},
+	{"clut z", clut_z},
+	{"clut snap", clut_snap},
+	{"clut frame", clut_frame},
 }
 
 // Local memory after each case of each software round.
 @(private = "file")
 want: [ROUNDS][len(CASES)][]u32
 
-// A picture of w x h pixels at block bp, PSMCT32 or PSMT8 (psm), every
-// pixel a different colour, alpha kept.
+// A picture of w x h pixels at block bp, PSMCT32, PSMCT16 or PSMT8 (psm),
+// every pixel a different colour, alpha kept; another salt, another picture.
 @(private = "file")
-picture :: proc(bp, bw, w, h: u64, psm: u64 = 0) {
-	px := make([]u32, psm == PSMT8 ? w * h / 4 : w * h, context.temp_allocator)
-	seed: u32 = 0x9e3779b9 ~ u32(bp)
+picture :: proc(bp, bw, w, h: u64, psm: u64 = 0, salt: u32 = 0) {
+	words := w * h
+	if psm == PSMT8 {words /= 4} else if psm == PSMCT16 {words /= 2}
+	px := make([]u32, words, context.temp_allocator)
+	seed: u32 = 0x9e3779b9 ~ u32(bp) ~ salt << 16
 	for &v in px {
 		seed ~= seed << 13
 		seed ~= seed >> 17
@@ -123,6 +137,8 @@ tex0 :: proc(tbp, tbw, tw, th: u64) -> u64 {
 @(private = "file")
 ZMSK :: 1 << 32
 
+@(private = "file")
+PSMCT16 :: 0x02
 @(private = "file")
 PSMT8 :: 0x13
 @(private = "file")
@@ -359,4 +375,198 @@ child :: proc(scale: u32) -> ! {
 		}
 	}
 	os.exit(failed != 0 ? 1 : 0)
+}
+
+// Rows 28 k .. 28 k + 27 of the frame (k < 8), from texel rows 0..27 of
+// TEX0 tex as it stands: one sprite, z = k + 1.
+@(private = "file")
+clut_band :: proc(k: u64, tex: u64) {
+	BAND :: 28
+	gs.gs_write(0x06, tex) // TEX0_1: the load
+	gs.gs_write(0x00, 6 | 1 << 4 | 1 << 8) // PRIM: SPRITE, TME, FST
+	gs.gs_write(0x01, 0x80808080)
+	gs.gs_write(0x03, 8 | 8 << 16) // UV
+	gs.gs_write(0x05, (k * BAND << 4) << 16 | (k + 1) << 32) // XYZ2 (0, 28 k)
+	gs.gs_write(0x03, W << 4 + 8 | (BAND << 4 + 8) << 16)
+	gs.gs_write(0x05, W << 4 | ((k + 1) * BAND << 4) << 16 | (k + 1) << 32) // XYZ2 (W, 28 k + 28)
+}
+
+// A 256 x 64 PSMT8 texture at page 128, its CLD = 1 TEX0 for a CT32 CSM1
+// CLUT at block cbp (PSMT4 and entries csa * 16 up when t4; a CT16 CSM2
+// CLUT, from where TEXCLUT says, when csm2).
+@(private = "file")
+clut_tex :: proc(cbp: u64, t4 := false, csa: u64 = 0, csm2 := false) -> u64 {
+	t: u64 = 128 * 32 | 4 << 14 | (t4 ? PSMT4 : PSMT8) << 20 | 8 << 26 | 6 << 30 | 1 << 34 | 1 << 35 | cbp << 37 | csa << 56 | 1 << 61
+	return csm2 ? t | PSMCT16 << 51 | 1 << 55 : t
+}
+
+// TEX0 tex with CLD = 0: no CLUT load, the draw uses the CLUT as it stands.
+@(private = "file")
+no_load :: proc(tex: u64) -> u64 {return tex &~ (7 << 61)}
+
+// The same CLUT load before each band, from a 16 x 16 source on page 300:
+// (a) nothing written between, (c) the source uploaded again.
+@(private = "file")
+clut_repeat :: proc() {
+	CBP :: 9600 // page 300
+	picture(0, 4, W, 256)
+	picture(128 * 32, 4, W, 64, PSMT8)
+	picture(CBP, 1, 16, 16)
+	t := clut_tex(CBP)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	clut_band(0, t)
+	clut_band(1, t) // (a)
+	picture(CBP, 1, 16, 16, 0, 1) // (c)
+	clut_band(2, t)
+}
+
+// (b) The same CLUT load around a sprite drawn over half its source.
+@(private = "file")
+clut_drawn :: proc() {
+	CBP :: 9600 // page 300
+	picture(0, 4, W, 256)
+	picture(CBP, 1, 16, 16, 0, 2)
+	t := clut_tex(CBP)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	clut_band(0, t)
+	gs.gs_write(0x4c, 300 | 1 << 16) // FRAME_1: page 300, 64 wide
+	gs.gs_write(0x00, 6) // PRIM: SPRITE, flat
+	gs.gs_write(0x01, 0x80402010)
+	gs.gs_write(0x05, 0) // XYZ2 (0, 0)
+	gs.gs_write(0x05, 8 << 4 | (16 << 4) << 16) // XYZ2 (8, 16)
+	gs.gs_write(0x4c, 4 << 16) // FRAME_1 back
+	clut_band(1, t)
+}
+
+// (b) The CLUT in the frame itself, rows 192..207 (page 24): band 6 (rows
+// 168..195) draws over it after the load before it, then band 7 loads it.
+@(private = "file")
+clut_in_frame :: proc() {
+	picture(0, 4, W, 256)
+	t := clut_tex(24 * 32)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	for k in 4 ..< u64(8) {clut_band(k, t)}
+}
+
+// (d) Partial loads: a PSMT8 load, a PSMT4 load into entries 16..31 from
+// page 302, the same at entries 32..47 (only CSA differs), the PSMT8 load
+// again.
+@(private = "file")
+clut_partial :: proc() {
+	CBP, CBP4 :: 9600, 9664
+	picture(0, 4, W, 256)
+	picture(CBP4, 1, 8, 2)
+	t, t4, t4b := clut_tex(CBP), clut_tex(CBP4, true, 1), clut_tex(CBP4, true, 2)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	clut_band(0, t)
+	clut_band(1, t4)
+	clut_band(2, t4b)
+	clut_band(3, t)
+	clut_band(4, t4b)
+}
+
+// (c) A CT16 CSM2 CLUT, one 256-entry row of a 256-wide buffer at page
+// 300: loaded, repeated, its row uploaded again, then row 1 (COV 1, another
+// key), then row 0 again.
+@(private = "file")
+clut_csm2 :: proc() {
+	CBP :: 9600 // page 300
+	picture(0, 4, W, 256)
+	picture(128 * 32, 4, W, 64, PSMT8)
+	picture(CBP, 4, 256, 2, PSMCT16)
+	t := clut_tex(CBP, csm2 = true)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	gs.gs_write(0x1c, 4) // TEXCLUT: CBW 4, COU 0, COV 0
+	clut_band(0, t)
+	clut_band(1, t)
+	picture(CBP, 4, 256, 1, PSMCT16, 3)
+	clut_band(2, t)
+	gs.gs_write(0x1c, 4 | 1 << 12) // COV 1
+	clut_band(3, t)
+	gs.gs_write(0x1c, 4)
+	clut_band(4, t)
+}
+
+// (b) The same CLUT load around a sprite that writes only depth, all of
+// page 300 (the CLUT's source) as the Z buffer.
+@(private = "file")
+clut_z :: proc() {
+	CBP :: 9600 // page 300
+	picture(0, 4, W, 256)
+	picture(CBP, 1, 16, 16, 0, 4)
+	t := clut_tex(CBP)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	clut_band(0, t)
+	gs.gs_write(0x4c, 4 << 16 | 0xffffffff << 32) // FRAME_1: every bit masked
+	gs.gs_write(0x4e, 300) // ZBUF_1: page 300, Z32, written
+	gs.gs_write(0x47, 1 << 16 | 1 << 17) // TEST_1: ZTE, ZTST ALWAYS
+	gs.gs_write(0x00, 6) // PRIM: SPRITE, flat
+	gs.gs_write(0x01, 0x80402010)
+	gs.gs_write(0x05, 0x5a5a1234 << 32) // XYZ2 (0, 0)
+	gs.gs_write(0x05, 64 << 4 | (32 << 4) << 16 | 0x5a5a1234 << 32) // XYZ2 (64, 32)
+	gs.gs_write(0x4c, 4 << 16)
+	gs.gs_write(0x4e, 0x100 | ZMSK)
+	gs.gs_write(0x47, 0)
+	clut_band(1, t)
+}
+
+// The GS's save state regions and, on the GPU, its snapshot.
+@(private = "file")
+snap_parts: [dynamic][]u8
+
+@(private = "file")
+snap_saved: [dynamic][]u8
+
+@(private = "file")
+SNAP_ID :: 7
+
+@(private = "file")
+snap_save :: proc() {
+	clear(&snap_parts)
+	clear(&snap_saved)
+	gs.snap_regions(proc(b: []u8) {append(&snap_parts, b)})
+	for b in snap_parts {append(&snap_saved, slice.clone(b, context.temp_allocator))}
+	if gs.hw_on {gs.hw_snap_save(SNAP_ID)}
+}
+
+@(private = "file")
+snap_load :: proc() {
+	for b, i in snap_parts {copy(b, snap_saved[i])}
+	if gs.hw_on {gs.hw_snap_load(SNAP_ID)}
+}
+
+// A load, a save state, a load of another source with the same key, the
+// state loaded back, then a draw with no load: it must use the CLUT the
+// state holds, not the last load's.
+@(private = "file")
+clut_snap :: proc() {
+	CBP :: 9600 // page 300
+	picture(0, 4, W, 256)
+	picture(CBP, 1, 16, 16, 0, 5)
+	t := clut_tex(CBP)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	clut_band(0, t)
+	snap_save()
+	picture(CBP, 1, 16, 16, 0, 6)
+	clut_band(1, t)
+	snap_load()
+	clut_band(2, no_load(t))
+}
+
+// Two loads a frame apart, then a draw with no load in the next frame: on
+// the GPU each frame has a slot of its own, and the CLUT copy in the first
+// slot's ring is of the first load.
+@(private = "file")
+clut_frame :: proc() {
+	CBP :: 9600 // page 300
+	picture(0, 4, W, 256)
+	picture(CBP, 1, 16, 16, 0, 7)
+	t := clut_tex(CBP)
+	setup(4 << 16, 0x100 | ZMSK, 0, 0, t)
+	clut_band(0, t)
+	gs.scanout()
+	picture(CBP, 1, 16, 16, 0, 8)
+	clut_band(1, t)
+	gs.scanout()
+	clut_band(2, no_load(t))
 }

@@ -26,7 +26,7 @@ VERT_CAP :: 1 << 18 // vertices per slot (16 MiB)
 @(private)
 STATE_CAP :: 1 << 14
 @(private)
-CLUT_CAP :: 1 << 10 // CLUT copies of 512 words
+CLUT_CAP :: 1 << 13 // CLUT copies of 512 words (16 MiB)
 @(private)
 UP_CAP :: 1 << 22 // transfer words per slot (16 MiB)
 @(private)
@@ -154,6 +154,9 @@ hw: struct {
 	state_key:           [2]u64, // a ctx_key whose context gives state
 	clut_off:            u32, // the CLUT's copy in the slot's ring
 	clut_ok:             bool,
+	// The last load while clut_ok (it left clut_off), and seq after it.
+	clut_key:            Clut_Key,
+	clut_seq:            u64,
 	// Pages drawn since the last barrier; a primitive texturing from one
 	// must wait for the barrier. Pixel interlock orders fragments by
 	// framebuffer pixel, not by address, so a page drawn through a different
@@ -445,17 +448,41 @@ hw_copy :: proc(sbp, sbw, spsm, dbp, dbw, dpsm, sx, sy, dx, dy, w, h: u32) {
 	hw_dispatch(hw.copy, &pc, (w + 7) / 8, (h + 7) / 8)
 }
 
+@(private)
+Clut_Key :: struct {
+	cpsm, cbp, cbw, cou, cov, n, base: u32,
+	csm2:                              bool,
+}
+
 // CLUT load: entries base..base+n from local memory, as `clut_load` reads
 // them, then the whole CLUT into the slot's ring for the primitives after.
 // n = 0 only brings the CLUT into a new slot.
+//
+// A load repeating the last one, with no write to its source pages since,
+// is skipped and its copy at clut_off kept: the last load set entries
+// base..base+n of clut_cur from those pages and only a load writes
+// clut_cur, so this one would store the same words and copy the same
+// table. Every write to local memory moves page_seq (pages_write): uploads,
+// copies, a restore, and draws, which mark their frame and depth pages at
+// the first draw after a barrier; the last load's dispatch was a barrier, so
+// any draw since into its source has moved page_seq past clut_seq. clut_ok
+// clears where clut_off stops naming that copy or clut_cur changes another
+// way: a new slot (hw_begin_slot, so also an overflow) and a snapshot
+// save or restore (hw_snap_copy).
 @(private)
 hw_clut :: proc(cpsm, cbp, cbw, cou, cov: u32, csm2: bool, n, base: u32) {
+	hw_flush_upload()
+	key := Clut_Key{cpsm, cbp, cbw, cou, cov, n, base, csm2}
+	if !csm2 {key.cbw, key.cou, key.cov = 0, 0, 0} // TEXCLUT is CSM2's only
+	// clut_load's read: one row of a cbw-wide buffer, or blocks cbp..cbp+4.
+	src := csm2 ? rect_pages(cpsm, cbp, cbw, cou * 16, cov, n, 1) : [2]u32{cbp / 32, (cbp + 3) / 32 - cbp / 32 + 1}
+	if hw.clut_ok && key == hw.clut_key && pages_seq(src) <= hw.clut_seq {return}
 	if hw.slots[hw.cur].ncluts == CLUT_CAP {hw_overflow()}
 	s := &hw.slots[hw.cur]
-	hw_flush_upload()
 	hw.clut_off = u32(s.ncluts * 512)
 	s.ncluts += 1
 	hw.clut_ok = true
+	hw.clut_key, hw.clut_seq = key, hw.seq
 	pc := Clut_PC {
 		vram = hw.vram.addr,
 		cur  = hw.clut_cur.addr,
