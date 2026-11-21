@@ -808,7 +808,6 @@ hw_dec :: proc(t: ^Tex, st: ^Hw_State, tex: [2]u32) -> (off, stride: u32) {
 // The primitive's state index, appending the state if it changed.
 @(private)
 hw_state :: proc(c: ^Ctx) -> u32 {
-	s := &hw.slots[hw.cur]
 	t := &c.tex
 	// c is draw's ctx_cur, decoded at ctx_key. The same context gives the
 	// same state while its CLUT copy and decoded texture stand: the CLUT's
@@ -888,6 +887,8 @@ hw_state :: proc(c: ^Ctx) -> u32 {
 		if hw.state_ok && st == hw.state {return hw.state_idx}
 	}
 	hw.state, hw.state_ok = st, true
+	// Taken here, not at entry: hw_clut above may overflow into the other slot.
+	s := &hw.slots[hw.cur]
 	hw.state_idx = u32(s.nstates)
 	([^]Hw_State)(s.states.ptr)[s.nstates] = st
 	s.nstates += 1
