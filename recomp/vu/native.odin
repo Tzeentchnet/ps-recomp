@@ -325,7 +325,8 @@ kick_check :: proc(a: ^native.Asm, u: Unit) {
 	native.br_zero(a, .C, skip)
 	// The call reads Vu.cycle with the pairs counted since the last flush
 	// (cycle_pend), which go back out after it: the path that skips the
-	// call has not added them.
+	// call has not added them. Not cycle_add: off x86-64 it uses A, which
+	// holds the store's address here, so this goes through C.
 	if cycle_pend != 0 {
 		native.imp_load(a, .C, vf, VU_CYCLE)
 		native.alu_imm(a, .Add, .C, cycle_pend)
@@ -356,14 +357,15 @@ cycle_pend: u32
 @(private = "file")
 carry_stubs: int
 
-// Add n, maybe negative, to Vu.cycle. Uses A, but on x86-64.
+// Add n, maybe negative, to Vu.cycle. Uses A, except on x86-64.
 @(private = "file")
 cycle_add :: proc(a: ^native.Asm, u: Unit, n: i64) {
 	if n == 0 {return}
+	assert(n > i64(min(i32)) && n <= i64(max(i32)))
 	native.imp_add_imm(a, IMPORTS[u][.Vf], VU_CYCLE, i32(n))
 }
 
-// Add cycle_pend to Vu.cycle. Uses A.
+// Add cycle_pend to Vu.cycle. Uses A, except on x86-64.
 @(private = "file")
 cycle_flush :: proc(a: ^native.Asm, u: Unit) {
 	cycle_add(a, u, i64(cycle_pend))
