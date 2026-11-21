@@ -345,9 +345,13 @@ flat_resume :: proc($L: bool) -> (x: ^kernel.Flat_Ctx, pc: u32, lf: ^core.Learn_
 					flat_enter(x, e.arg, e.pc)
 				}
 			case .Return:
-				// Native code's `jr $ra` returns, whatever it jumps to.
-				flat_unwind(x, L, e.pc)
-				if !flat_return(x, L, true, e.pc) {return}
+				// Native code's `jr $ra` returns, or, when no call returns
+				// to e.pc (a thread or coroutine resume), jumps there as the
+				// interpreter's .Jr does, the calls it leaves kept open.
+				if flat_unwind(x, L, e.pc) {
+					when L {kernel.flat_learn_end(x, x.depth, true)}
+					x.pc = e.pc
+				} else if !flat_return(x, L, true, e.pc) {return}
 			case .Sys:
 				// Run here, or by kernel.sys_in_place with the commit owed.
 				x.pc = e.pc

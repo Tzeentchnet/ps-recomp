@@ -70,6 +70,7 @@ import "core:slice"
 import "ps:core"
 import "ps:ps2"
 import cpu "ps:ps2/cpu"
+import kernel "ps:ps2/kernel"
 import mem "ps:ps2/mem"
 import "ps:recomp/r5900"
 
@@ -202,6 +203,22 @@ A14 :: u32(0x00100d00)
 Q :: u32(0x0011d000)
 @(private = "file")
 Q1 :: Q + 12
+// The last case runs as the game's thread does (ps2.run), not in a host
+// call, whose host code under the run would leave any `jr $ra` a return:
+// E0: sp = SP; v0 = 0; jal W; nop; then, where T goes back to,
+// addiu v0, v0, 2; sw v0, JUMP_RES; hang.
+// W: lui ra, hi(T); ori ra, ra, lo(T); jr ra; nop. Learned: a resume's
+// `jr $ra` to T, where no call returns, is a jump there.
+// T: addiu v0, v0, 4; lui ra, hi(E0 + 20); ori ra, ra, lo(E0 + 20); jr ra;
+// nop. Interpreted: returns from E0's call of W, still open.
+@(private = "file")
+E0 :: u32(0x00100e00)
+@(private = "file")
+W :: u32(0x0011e000)
+@(private = "file")
+T :: u32(0x0011f000)
+@(private = "file")
+JUMP_RES :: u32(0x001c0000)
 @(private = "file")
 LOOPS :: u32(70000)
 #assert(LOOPS > core.LEARN_STORES_MAX)
@@ -619,5 +636,34 @@ main :: proc() {
 		if !eok {for r in erecs {fmt.eprintfln("  %08x lo %08x %v n %d", r.entry, r.lo, r.flags, len(r.words))}}
 	}
 	if failed != 0 {os.exit(1)}
-	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens a run at the transfer; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter; a call into learned code where it has no block notes a run there, a jump there none; a return into learned code where it has no block goes on with the run")
+	LUI_RA :: u32(0x3c1f0000)
+	ORI_RA :: u32(0x37ff0000)
+	w := [?]u32{LUI_RA | T >> 16, ORI_RA | T & 0xffff, JR_RA, NOP}
+	put(W, w[:])
+	put(T, {addiu_v0(2, 4), LUI_RA | (E0 + 20) >> 16, ORI_RA | (E0 + 20) & 0xffff, JR_RA, NOP})
+	// lui sp; ori sp; addiu v0, zero, 0; jal W; nop; addiu v0, v0, 2;
+	// lui t0; sw v0, 0(t0); beq zero, zero, -1; nop
+	put(E0, {0x3c1d0000 | SP >> 16, 0x37bd0000 | SP & 0xffff, addiu_v0(0, 0), jal(W), NOP, addiu_v0(2, 2), 0x3c080000 | JUMP_RES >> 16, 0xad020000, 0x1000ffff, NOP})
+	jblob, jskipped := r5900.learned_blob({{W, W, w[:]}}, .Wasm32)
+	check(jskipped == 0 && os.write_entire_file("jump.bin", jblob) == nil && ps2.load_learned("jump.bin"), "load W's blob")
+	if failed != 0 {os.exit(1)}
+	jump_calls = cpu.learned_calls
+	kernel.vblank_hook = vblank_jump
+	kernel.update_next_event() // the cases above held events off
+	ps2.run(E0)
+}
+
+// cpu.learned_calls as the jump case begins.
+@(private = "file")
+jump_calls: u64
+
+// The jump case's end, at the second vblank.
+@(private = "file")
+vblank_jump :: proc() {
+	if kernel.k.frame < 2 {return}
+	v0, ran := mem.rd32(JUMP_RES), cpu.learned_calls != jump_calls
+	check(v0 == 6 && ran, fmt.tprintf("jump: E0: v0 %d, learned code ran %v; want 6 (T ran), W", v0, ran))
+	if failed != 0 {os.exit(1)}
+	fmt.println("ok ee_flat_learn: an interpreted call's runs are written as they return; a call to learned code opens none; learned code's jump to a lookup miss opens one there; a jump into learned code where it has no block opens none, in a function of one block too; an entry left to the interpreter opens none; a transfer with a BREAK or SYSCALL slot runs learned as interpreted and opens a run at the transfer; learned code's call to learned code is made in place while RAM holds the callee's words, at an entry a larger function holds in-line too; the report finds none open; a loop storing more often than the store log holds is checked all through and compiled when clean, and left to the interpreter when it stores into its own code; a stale .Smc_Unknown record is compacted away, so its entry is recorded again and compiled, while a .Smc one stays left to the interpreter; a call into learned code where it has no block notes a run there, a jump there none; a return into learned code where it has no block goes on with the run; learned code's `jr $ra` where no call returns, in the game's thread, is a jump there")
+	os.exit(0)
 }
