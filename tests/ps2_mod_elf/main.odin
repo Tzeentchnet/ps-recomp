@@ -361,7 +361,8 @@ main :: proc() {
 	check(err == "" && len(set.mods) == 1 && len(set.hooks) == 6, fmt.tprint("mods_read:", err, len(set.mods), len(set.hooks)))
 	// set.hooks is in the temp allocator, which mods_blob frees.
 	hooks = slice.clone(set.hooks)
-	funcs := mod_funcs(set)
+	// Read before mods_load frees set's temp memory; only native loads them.
+	when !core.FLAT {funcs := mod_funcs(set)}
 	if err = ps2.mods_load(set); err != "" {
 		fmt.eprintln("FAIL ps2_mod_elf:", err)
 		os.exit(1)
