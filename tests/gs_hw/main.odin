@@ -16,8 +16,9 @@
 // older key (the GPU GS reuses its copy, a hit): a PSMT8 draw, a draw
 // reading past the hit's entries, a hit then a save state, a hit then a
 // ring overflow, hits over each other replayed in order, a hit whose source
-// is written before a draw reading past it, and a hit wrapping past entry
-// 511. Needs a Vulkan device: without one
+// is written before a draw reading past it, a hit wrapping past entry 511,
+// 17 hits in a row (one more than a dispatch replays), and a TEX0_2 hit
+// before a context 1 draw. Needs a Vulkan device: without one
 // it says so on stderr and exits 0, which is a skip, not a pass.
 package main
 
@@ -86,6 +87,8 @@ CASES := [?]Case {
 	{"clut hit src", clut_hit_src},
 	{"clut hit save", clut_hit_save},
 	{"clut hit wrap", clut_hit_wrap},
+	{"clut hit full", clut_hit_full},
+	{"clut hit ctx2", clut_hit_ctx2},
 }
 
 // Local memory after each case of each software round.
@@ -429,9 +432,15 @@ screen_overflow :: proc(scale: u32) {
 // TEX0 tex as it stands: one sprite, z = k + 1.
 @(private = "file")
 clut_band :: proc(k: u64, tex: u64) {
-	BAND :: 28
 	gs.gs_write(0x06, tex) // TEX0_1: the load
-	gs.gs_write(0x00, 6 | 1 << 4 | 1 << 8) // PRIM: SPRITE, TME, FST
+	band_draw(k)
+}
+
+// Band k of clut_band with no TEX0 write: context 1 as it stands.
+@(private = "file")
+band_draw :: proc(k: u64) {
+	BAND :: 28
+	gs.gs_write(0x00, 6 | 1 << 4 | 1 << 8) // PRIM: SPRITE, TME, FST, CTXT 1
 	gs.gs_write(0x01, 0x80808080)
 	gs.gs_write(0x03, 8 | 8 << 16) // UV
 	gs.gs_write(0x05, (k * BAND << 4) << 16 | (k + 1) << 32) // XYZ2 (0, 28 k)
@@ -580,6 +589,10 @@ snap_save :: proc() {
 @(private = "file")
 snap_load :: proc() {
 	for b, i in snap_parts {copy(b, snap_saved[i])}
+	// What the GS snap hook does on a load (gs_snap, regs.odin): the texture
+	// cache drops its entries. Its ctx_gen bump is left to the TEX0 write of
+	// each draw after a load.
+	gs.tc_flush()
 	if gs.hw_on {gs.hw_snap_load(SNAP_ID)}
 }
 
@@ -663,8 +676,10 @@ clut_hit_window :: proc() {
 
 // A PSMT8 load A, a PSMT4 load at 16..31, A again (a hit), a save state;
 // then B, the PSMT4 load, B again (a hit, pending at the restore), the
-// state loaded back, and draws with no load of entries 16..31 and all 256:
-// the saved CLUT has A's there, and B's hit is not replayed over it.
+// state loaded back, and a draw with no load of entries 16..31: the saved
+// CLUT has A's there, and B's hit is not replayed over it. Before the
+// restore A's source is written and A loaded from it; after, A is loaded
+// again from the source as saved: not a hit on the copy of the written one.
 @(private = "file")
 clut_hit_snap :: proc() {
 	hit_setup(30)
@@ -677,9 +692,12 @@ clut_hit_snap :: proc() {
 	clut_band(3, b)
 	clut_band(4, t4)
 	clut_band(5, b)
+	picture(HA, 1, 16, 16, 0, 34)
+	clut_band(3, a)
+	clut_band(4, t4)
 	snap_load()
 	clut_band(6, no_load(t4))
-	clut_band(7, no_load(a))
+	clut_band(7, a)
 }
 
 // A PSMT8 load, a PSMT4 load at 16..31, the PSMT8 load again (a hit), then
@@ -766,4 +784,31 @@ clut_hit_wrap :: proc() {
 	clut_band(4, no_load(clut_tex(H4, true, 0)))
 	clut_band(5, no_load(clut_tex(H4, true, 15)))
 	clut_band(6, no_load(a))
+}
+
+// PSMT4 loads at entries 0..15 up to 256..271 (17 keys), a PSMT8 load over
+// 256..511, then the 17 again: 16 hits pend, the 17th is a dispatch. Then a
+// draw with no load of 256..511 (past the last load's entries): the 17th
+// load's entries, then the PSMT8 load's.
+@(private = "file")
+clut_hit_full :: proc() {
+	hit_setup(90)
+	for csa in u64(0) ..= 16 {gs.gs_write(0x06, clut_tex(H4, true, csa))}
+	gs.gs_write(0x06, clut_tex(HB, false, 16))
+	for csa in u64(0) ..= 16 {gs.gs_write(0x06, clut_tex(H4, true, csa))}
+	clut_band(0, no_load(clut_tex(HA, false, 16)))
+	clut_band(1, no_load(clut_tex(HA)))
+}
+
+// PSMT4 load at 16..31 and PSMT8 load B (TEX0_1), then the PSMT4 load again
+// through TEX0_2 (a hit), then a context 1 draw with no TEX0_1 write of all
+// 256 entries (past the hit's): B's, the hit's at 16..31.
+@(private = "file")
+clut_hit_ctx2 :: proc() {
+	hit_setup(100)
+	t4, b := clut_tex(H4, true, 1), clut_tex(HB)
+	clut_band(0, t4)
+	clut_band(1, b)
+	gs.gs_write(0x07, t4) // TEX0_2
+	band_draw(2)
 }

@@ -28,6 +28,9 @@ STATE_CAP :: 1 << 14
 @(private)
 CLUT_CAP :: 1 << 13 // CLUT copies of 512 words (16 MiB)
 CLUT_PEND :: 16 // hits a dispatch brings into clut_cur (Clut_PC: 128 bytes)
+// clut.comp hardcodes pend[16] in its push constants and 16 as its replay
+// loop bound: change them with this.
+#assert(CLUT_PEND == 16)
 @(private)
 UP_CAP :: 1 << 22 // transfer words per slot (16 MiB)
 @(private)
@@ -524,6 +527,8 @@ Clut_Ent :: struct {
 	off: u32,
 }
 
+// A restore blocks hits on them through pages_write: every page's seq moves
+// past every entry's.
 @(private)
 hw_cluts: map[Clut_Key]Clut_Ent
 
