@@ -68,6 +68,13 @@ status_reads :: proc(words: []u32) -> (n: int) {
 	return
 }
 
+// The status bits compiled code of unit for words keeps (recomp/vu
+// status_kept): every bit on VU0; on VU1 those for its reads.
+status_kept :: proc(words: []u32, unit: vu.Unit) -> u32 {
+	if unit == .VU0 {return vu.STATUS_ALL}
+	return vu.status_kept(vu.words_reads_status(words))
+}
+
 // The pairs in words the compiled code leaves to the interpreter (vu_pair),
 // outside I-bit pairs: the status reads, FSSET, and FCSET beside a CLIP.
 slow_pairs :: proc(words: []u32) -> (n: int) {
@@ -467,6 +474,27 @@ FS_READ := []u32 {
 }
 FS_READ_PCS := []u32{0, 0x10, 0x28}
 
+// Reads of S, and Z and S, alone (FSAND 0x002, 0x003), after chains of
+// upper ops, some with part of the dest: compiled VU1 code keeps only
+// status bits 0-3 (recomp/vu STATUS_LOW), which the last upper op that
+// writes MAC as a read sees sets whole, so the upper ops between are left
+// without status; each read must see what the interpreter's does.
+FS_LOW := []u32 {
+	NOP_L, upper(SUB, 3, 1, 1),
+	NOP_L, upper(ADD, 4, 1, 2),
+	fs_op(FSAND, 1, 0x002), NOP_U,
+	NOP_L, upper(MUL, 5, 2, 2) &~ (0b0111 << 21), // 0x18, x alone
+	NOP_L, upper(SUB, 6, 2, 1),
+	fs_op(FSAND, 2, 0x002), NOP_U, // 0x28
+	NOP_L, upper(ADD, 7, 1, 3) &~ (0b1000 << 21), // yzw
+	NOP_L, NOP_U,
+	fs_op(FSAND, 5, 0x003), NOP_U, // 0x40
+	NOP_L, upper(MUL, 8, 1, 2),
+	fs_op(FSAND, 10, 0x002), upper(ADD, 9, 2, 3) | E_BIT, // 0x50
+	NOP_L, NOP_U,
+}
+FS_LOW_PCS := []u32{0, 0x18, 0x30}
+
 // FSSET in the pair of a SUB that sets Z: the FSAND four pairs after sees
 // the SUB's Z with FSSET's sticky D (vu_pair keeps the upper's bits).
 FSSET_PAIR := []u32 {
@@ -578,7 +606,7 @@ programs :: proc() -> (progs: [dynamic]Prog) {
 	// entered at each pc.
 	late := [?]struct {
 		words, pcs: []u32,
-	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {FCSET_PAIR, FCSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
+	}{{LATE_MAC, LATE_MAC_PCS}, {LATE_CLIP, LATE_CLIP_PCS}, {LATE_BRANCH, LATE_BRANCH_PCS}, {Q_LAT, Q_LAT_PCS}, {Q_BRANCH, Q_BRANCH_PCS}, {Q_LOOP, AT_0}, {Q_STALL, Q_STALL_PCS}, {P_STALL, P_STALL_PCS}, {FS_READ, FS_READ_PCS}, {FS_LOW, FS_LOW_PCS}, {FSSET_PAIR, FSSET_PAIR_PCS}, {FCSET_PAIR, FCSET_PAIR_PCS}, {DELAY, DELAY_PCS}}
 	for l in late {
 		for u in vu.Unit {append(&progs, Prog{l.words, u, nil, l.pcs, nil}, Prog{l.words, u, l.pcs, l.pcs, nil})}
 	}
@@ -615,7 +643,7 @@ stale_status :: proc(words: []u32, pc: u32) -> (ok: bool) {
 		if w >> 25 == 0x25 {ps2_vu.vu0_macro(w)} else {ps2_vu.vu0_lower(w, WINDOW_PC)}
 	}
 
-	ps2_vu.vu1_status_stale = false
+	ps2_vu.vu1_status_stale = 0
 	window(lq)
 	window(vlqi)
 	ps2_vu.vu1_lower(fsand, FS_PC)
@@ -628,7 +656,7 @@ stale_status :: proc(words: []u32, pc: u32) -> (ok: bool) {
 	ps2_vu.vu1.q_wait, ps2_vu.vu1.p_wait = 0, 0 // compiled code starts with none pending
 	ps2_vu.vu1.vih = {}
 	ps2_vu.vu1_start(pc)
-	check(&ok, ps2_vu.vu1_status_stale, "compiled VU1 code with no status read leaves status not stale")
+	check(&ok, ps2_vu.vu1_status_stale == ps2_vu.VU_STATUS_ALL, "compiled VU1 code with no status read leaves status not stale")
 	window(lq)
 	check(&ok, row(.Window, WINDOW_PC) == 1, "a VU0 window load of VU1 status is no row")
 	window(vlqi)
@@ -637,7 +665,45 @@ stale_status :: proc(words: []u32, pc: u32) -> (ok: bool) {
 	check(&ok, row(.Fs, FS_PC) == 1, "an interpreted FSAND of VU1 status is no row")
 	window(lq)
 	check(&ok, row(.Window, WINDOW_PC) == 2, "a second window load is not counted")
-	ps2_vu.vu1_status_stale = false
+	ps2_vu.vu1_status_stale = 0
+	return ok
+}
+
+// The outside readers of VU1 status after compiled VU1 code that keeps
+// only status bits 0-3 (ps2/vu vu_status_kept): words, a VU1 program that
+// reads those alone, is registered compiled, beside stale_status's program
+// at most, and runs from pc through vu1_start. Then a VU0 window load of
+// status and an interpreted FSAND of the sticky bits must each be a
+// Vu1_Status compat row, an interpreted FSAND of S none. Says what fails
+// on stderr; false then. Leaves VU1 status no longer stale.
+stale_status_low :: proc(words: []u32, pc: u32) -> (ok: bool) {
+	ok = true
+	check :: proc(ok: ^bool, cond: bool, what: string) {
+		if !cond {
+			fmt.eprintfln("FAIL stale_status_low: %s", what)
+			ok^ = false
+		}
+	}
+	row :: proc(reader: ps2_vu.Vu_Status_Reader, pc: u32) -> u64 {return core.compat.calls[{.Vu1_Status, u32(reader), pc}].n}
+	WINDOW_PC, S_PC, STICKY_PC :: 0x30, 0x38, 0x40
+	lq := lower_op(0x00, 15, 1, 1, 0) // LQ vf1, 0(vi1)
+	ps2_vu.vu1_status_stale = 0
+	micro := ([^]u32)(&ps2_vu.vu1.micro[0])[:len(ps2_vu.vu1.micro) / 4]
+	for &m in micro {m = 0}
+	copy(micro, words)
+	ps2_vu.vu1_micro_touch()
+	ps2_vu.vu1.q_wait, ps2_vu.vu1.p_wait = 0, 0 // compiled code starts with none pending
+	ps2_vu.vu1.vih = {}
+	ps2_vu.vu1_start(pc)
+	check(&ok, ps2_vu.vu1_status_stale == ps2_vu.VU_STATUS_ALL &~ ps2_vu.VU_STATUS_LOW, "compiled VU1 code that reads S alone leaves other than the bits past 0-3 stale")
+	ps2_vu.vu0.vi[1] = 0x430 // window slot 48, status
+	ps2_vu.vu0_lower(lq, WINDOW_PC)
+	check(&ok, row(.Window, WINDOW_PC) == 1, "a VU0 window load of VU1 status is no row")
+	ps2_vu.vu1_lower(fs_op(FSAND, 3, 0x002), S_PC)
+	check(&ok, row(.Fs, S_PC) == 0, "an interpreted FSAND of S is a row")
+	ps2_vu.vu1_lower(fs_op(FSAND, 3, 0x0c0), STICKY_PC)
+	check(&ok, row(.Fs, STICKY_PC) == 1, "an interpreted FSAND of the sticky bits is no row")
+	ps2_vu.vu1_status_stale = 0
 	return ok
 }
 

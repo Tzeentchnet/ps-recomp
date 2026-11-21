@@ -92,11 +92,11 @@ main :: proc() {
 	fmt.sbprintln(&sb, "_ :: math\n_ :: simd\n_ :: slice\n")
 	fmt.sbprintln(&sb, vu.VU_HELPERS)
 	fmt.sbprintln(&sb, vu.MACRO_HELPERS)
-	fmt.sbprintln(&sb, "Case :: struct {words: []u32, run: vu.Vu_Run, vu0: bool, pc: u32, leave, status: bool}\n")
+	fmt.sbprintln(&sb, "Case :: struct {words: []u32, run: vu.Vu_Run, vu0: bool, pc: u32, leave: bool, status: u32}\n")
 	// Appended at run time: a literal this size warns of LLVM trouble.
 	fmt.sbprintln(&sb, "CASES: [dynamic]Case\n\nadd_cases :: proc() {")
 	for p, n in progs {
-		status := vu_programs.status_reads(p.words) > 0
+		status := vu_programs.status_kept(p.words, p.unit)
 		for pc in p.pcs {fmt.sbprintfln(&sb, "\tappend(&CASES, Case{{code_%d[:], run_%d, %v, 0x%x, false, %v}})", n, n, p.unit == .VU0, pc, status)}
 		for pc in p.leaves {fmt.sbprintfln(&sb, "\tappend(&CASES, Case{{code_%d[:], run_%d, %v, 0x%x, true, %v}})", n, n, p.unit == .VU0, pc, status)}
 	}
@@ -107,8 +107,7 @@ main :: proc() {
 		for w, k in p.words {fmt.sbprintf(&sb, "%s0x%08x", k == 0 ? "" : ", ", w)}
 		fmt.sbprintln(&sb, "}\n")
 		slow: map[string]int
-		reads := vu_programs.status_reads(p.words)
-		code := vu.emit_micro(n, p.words, p.unit, reads > 0, &slow, p.entries)
+		code := vu.emit_micro(n, p.words, p.unit, vu_programs.status_kept(p.words, p.unit), &slow, p.entries)
 		fmt.sbprintln(&sb, code)
 		pairs := vu_programs.slow_pairs(p.words)
 		for op, count in slow {if op != "pair" || count != pairs {fail("program %d calls the interpreter for %s (%d)", n, op, count)}}
@@ -138,7 +137,7 @@ main :: proc() {
 	// for each unit: only VU0's parks (the harness's park).
 	for unit, k in ([]vu.Unit{.VU0, .VU1}) {
 		slow: map[string]int
-		fmt.sbprintln(&sb, vu.emit_micro(len(progs) + k, vu_programs.park_image(), unit, false, &slow))
+		fmt.sbprintln(&sb, vu.emit_micro(len(progs) + k, vu_programs.park_image(), unit, 0, &slow))
 		if len(slow) != 0 {fail("the park programs (%v) call the interpreter: %v", unit, slow)}
 		fmt.sbprintfln(&sb, "PARK_VU%d :: run_%d\n", k, len(progs) + k)
 	}
@@ -181,7 +180,7 @@ unit_packages :: proc() {
 		vu.emit_head(&sb, unit, "ps:ps2/vu")
 		fmt.sbprintln(&sb, "_ :: math\n_ :: simd\n")
 		slow: map[string]int
-		fmt.sbprintln(&sb, vu.emit_micro(0, words, unit, false, &slow))
+		fmt.sbprintln(&sb, vu.emit_micro(0, words, unit, 0, &slow))
 		if len(slow) != 0 {fail("%v DIV program calls the interpreter: %v", unit, slow)}
 		dir := fmt.tprintf("%s/vu%d", CASES_DIR, int(unit))
 		if !os.exists(dir) {
@@ -278,13 +277,13 @@ main :: proc() {
 			got := v^
 			if want.mac != init.mac {flagged += 1}
 			if c.vu0 && want.status & 0x30 != 0 {status_set += 1}
-			if !c.vu0 && c.status && want.status & 0x30 != 0 {vu1_set += 1}
+			if !c.vu0 && c.status & 0x30 != 0 && want.status & 0x30 != 0 {vu1_set += 1}
 			same := exit == want_exit && pc == want.tpc && got.vi == want.vi && got.acc.u == want.acc.u && got.mac == want.mac
 			same &&= transmute(u32)got.q == transmute(u32)want.q && transmute(u32)got.p == transmute(u32)want.p && slice.equal(mem, mem_want)
 			same &&= transmute(u32)got.q_next == transmute(u32)want.q_next && got.q_wait == want.q_wait
 			same &&= transmute(u32)got.p_next == transmute(u32)want.p_next && got.p_wait == want.p_wait
 			same &&= got.q_flags == want.q_flags && got.q_due == want.q_due
-			same &&= !(c.vu0 || c.status) || got.status == want.status
+			same &&= (got.status ~ want.status) & c.status == 0
 			for k in 0 ..< 32 {same &&= got.vf[k].u == want.vf[k].u}
 			same &&= !c.vu0 || vu_programs.vu1_same(&vu.vu1, &vu1_want)
 			same &&= c.vu0 || got.cycle == want.cycle // VU1 pairs and stalls, which time an XGKICK's read
@@ -305,7 +304,7 @@ main :: proc() {
 	// code does not compute status: its outside readers are compat rows.
 	stale := -1
 	for c, n in CASES {
-		if !c.vu0 && !c.status && !c.leave {stale = n; break}
+		if !c.vu0 && c.status == 0 && !c.leave {stale = n; break}
 	}
 	if stale < 0 {
 		fmt.eprintln("FAIL vu_micro: no VU1 case without a status read")
@@ -314,6 +313,20 @@ main :: proc() {
 		c := CASES[stale]
 		vu.vu1_register_ranges({{0, c.words}}, c.run)
 		if !vu_programs.stale_status(c.words, c.pc) {fails += 1}
+	}
+	// A VU1 case that reads S alone, registered beside it, so compiled VU1
+	// code keeps status bits 0-3 alone: a read of the others is a row.
+	low := -1
+	for c, n in CASES {
+		if !c.vu0 && c.status == vu.VU_STATUS_LOW && !c.leave {low = n; break}
+	}
+	if low < 0 {
+		fmt.eprintln("FAIL vu_micro: no VU1 case that reads S alone")
+		fails += 1
+	} else {
+		c := CASES[low]
+		vu.vu1_register_ranges({{0, c.words}}, c.run)
+		if !vu_programs.stale_status_low(c.words, c.pc) {fails += 1}
 	}
 	fails += park()
 	fmt.printfln("vu_micro: %d cases x %d trials, %d failing, MAC changed in %d, VU0 I or D set in %d, VU1 in %d", len(CASES), TRIALS, fails, flagged, status_set, vu1_set)

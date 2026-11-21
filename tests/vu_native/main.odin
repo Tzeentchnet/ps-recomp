@@ -86,7 +86,7 @@ drain :: proc(v: ^vu.Vu, pc: u32) {
 
 // Whether got and want hold the same registers, but for the pc.
 @(private = "file")
-same_regs :: proc(got, want: ^vu.Vu, status: bool) -> bool {
+same_regs :: proc(got, want: ^vu.Vu, status: u32) -> bool {
 	same := got.vi == want.vi && got.acc.u == want.acc.u
 	for r in 0 ..< 32 {same &&= got.vf[r].u == want.vf[r].u}
 	same &&= transmute(u32)got.q == transmute(u32)want.q && transmute(u32)got.p == transmute(u32)want.p
@@ -94,7 +94,7 @@ same_regs :: proc(got, want: ^vu.Vu, status: bool) -> bool {
 	same &&= transmute(u32)got.p_next == transmute(u32)want.p_next && got.p_wait == want.p_wait
 	same &&= transmute(u32)got.i == transmute(u32)want.i && got.r == want.r && got.clip == want.clip && got.mac == want.mac
 	same &&= got.q_flags == want.q_flags && got.q_due == want.q_due
-	return same && (!status || got.status == want.status)
+	return same && (got.status ~ want.status) & status == 0
 }
 
 main :: proc() {
@@ -107,8 +107,8 @@ main :: proc() {
 		ranges := make([]native.Blob_Range, 1)
 		ranges[0] = {0, p.words}
 		slow: map[string]int
-		reads := vu_programs.status_reads(p.words)
-		vus[k] = {p.unit == .VU0 ? .Vu0 : .Vu1, 0, u32(rvu.native_program(&a, p.words, nil, p.entries, p.unit, reads > 0, &slow)), ranges}
+		kept := vu_programs.status_kept(p.words, p.unit)
+		vus[k] = {p.unit == .VU0 ? .Vu0 : .Vu1, 0, u32(rvu.native_program(&a, p.words, nil, p.entries, p.unit, kept, &slow)), ranges}
 		pairs := vu_programs.slow_pairs(p.words)
 		if slow["pair"] != pairs {
 			fmt.eprintfln("FAIL vu_native: program %d leaves %d of its %d slow pairs (status reads, FSSET, FCSET beside CLIP) to the interpreter", k, slow["pair"], pairs)
@@ -137,7 +137,7 @@ main :: proc() {
 	for p, k in progs {
 		run := cast(proc())rawptr(code.base + uintptr(code.spans[k].off))
 		vu0 := p.unit == .VU0
-		status := vu0 || vu_programs.status_reads(p.words) > 0
+		status := vu_programs.status_kept(p.words, p.unit)
 		v := vu0 ? &vu.vu0 : &vu.vu1
 		nr := &vu.native_run[p.unit == .VU0 ? 0 : 1]
 		mem := ([^]u32)(raw_data(v.mem))[:len(v.mem) / 4]
@@ -174,7 +174,7 @@ main :: proc() {
 
 				if want.mac != init.mac {flagged += 1}
 				if vu0 && want.status & 0x30 != 0 {status_set += 1}
-				if !vu0 && status && want.status & 0x30 != 0 {vu1_set += 1}
+				if !vu0 && status & 0x30 != 0 && want.status & 0x30 != 0 {vu1_set += 1}
 				same := got_pc == want.tpc | END_BIT && same_regs(&got, &want, status) && slice.equal(mem, mem_want)
 				same &&= !vu0 || vu_programs.vu1_same(&vu.vu1, &vu1_want)
 				same &&= vu0 || got.cycle == want.cycle // VU1 pairs and stalls, which time an XGKICK's read
@@ -223,11 +223,24 @@ main :: proc() {
 		vu.vu_register_native(1, {{0, progs[stale].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[stale].off)))
 		if !vu_programs.stale_status(progs[stale].words, progs[stale].pcs[0]) {fails += 1}
 	}
+	// A VU1 program that reads S alone, registered beside it, so compiled
+	// VU1 code keeps status bits 0-3 alone: a read of the others is a row.
+	low := -1
+	for p, k in progs {
+		if p.unit == .VU1 && p.entries == nil && vu_programs.status_kept(p.words, p.unit) == rvu.STATUS_LOW {low = k; break}
+	}
+	if low < 0 {
+		fmt.eprintln("FAIL vu_native: no VU1 program that reads S alone")
+		fails += 1
+	} else {
+		vu.vu_register_native(1, {{0, progs[low].words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[low].off)))
+		if !vu_programs.stale_status_low(progs[low].words, progs[low].pcs[0]) {fails += 1}
+	}
 
 	// The runtime's dispatch: the same trials, the micro generation moved
 	// for each program's micro memory.
 	for p, k in progs {
-		if k == stale {continue} // registered above
+		if k == stale || k == low {continue} // registered above
 		vu.vu_register_native(p.unit == .VU0 ? 0 : 1, {{0, p.words}}, cast(vu.Vu_Native)rawptr(code.base + uintptr(code.spans[k].off)))
 	}
 	rand.reset(SEED)
@@ -235,7 +248,7 @@ main :: proc() {
 	for p, k in progs {
 		run := cast(proc())rawptr(code.base + uintptr(code.spans[k].off))
 		vu0 := p.unit == .VU0
-		status := vu0 || vu_programs.status_reads(p.words) > 0
+		status := vu_programs.status_kept(p.words, p.unit)
 		v := vu0 ? &vu.vu0 : &vu.vu1
 		nr := &vu.native_run[vu0 ? 0 : 1]
 		mem := ([^]u32)(raw_data(v.mem))[:len(v.mem) / 4]
@@ -488,7 +501,7 @@ test_miss_capture :: proc(progs: []vu_programs.Prog, arch: native.Arch) -> (fail
 		vu_programs.NOP_L, vu_programs.NOP_U,
 	}
 	a := r5900.native_asm(arch)
-	off := u32(rvu.native_program(&a, words, nil, []u32{0}, .VU1, false))
+	off := u32(rvu.native_program(&a, words, nil, []u32{0}, .VU1, 0))
 	code, err2 := core.native_load(native.make_blob(&a, nil, {}, []native.Blob_Span{{.Vu1, 0, off, []native.Blob_Range{{0, words}}}}), ps2.native_imports())
 	if err2 != "" {
 		fail(&fails, fmt.tprint("native_load:", err2))
@@ -603,8 +616,8 @@ test_park :: proc(arch: native.Arch) -> (fails: int) {
 	a := r5900.native_asm(arch)
 	ranges := []native.Blob_Range{{0, words}}
 	slow: map[string]int
-	off0 := u32(rvu.native_program(&a, words, nil, nil, .VU0, false, &slow))
-	off1 := u32(rvu.native_program(&a, words, nil, nil, .VU1, false, &slow))
+	off0 := u32(rvu.native_program(&a, words, nil, nil, .VU0, 0, &slow))
+	off1 := u32(rvu.native_program(&a, words, nil, nil, .VU1, 0, &slow))
 	if len(slow) != 0 {fail(&fails, fmt.tprintf("the programs call the interpreter: %v", slow))}
 	code, err := core.native_load(native.make_blob(&a, nil, {}, []native.Blob_Span{{.Vu0, 0, off0, ranges}, {.Vu1, 0, off1, ranges}}), ps2.native_imports())
 	if err != "" {
@@ -752,14 +765,14 @@ test_park :: proc(arch: native.Arch) -> (fails: int) {
 		// code counts in taken branches: only that it does not park.
 		same := g.parked == w.parked && g.stat == w.stat
 		if k != 6 {
-			same &&= g.v.tpc == w.v.tpc && same_regs(&g.v, &w.v, true)
+			same &&= g.v.tpc == w.v.tpc && same_regs(&g.v, &w.v, vu.VU_STATUS_ALL)
 			same &&= g.v.old_mac == w.v.old_mac && g.v.old_status == w.v.old_status && g.v.old_clip == w.v.old_clip
 			// The integer history is state only while the program is parked.
 			same &&= !g.parked || g.v.vih == w.v.vih
 		}
 		if !same {
 			fail(&fails, fmt.tprintf("%s, native: parked %v, VPU-STAT %d, tpc %04x, older MAC %04x; interpreted: parked %v, VPU-STAT %d, tpc %04x, older MAC %04x; same registers %v",
-				NAMES[k], g.parked, g.stat, g.v.tpc, g.v.old_mac, w.parked, w.stat, w.v.tpc, w.v.old_mac, same_regs(&g.v, &w.v, true)))
+				NAMES[k], g.parked, g.stat, g.v.tpc, g.v.old_mac, w.parked, w.stat, w.v.tpc, w.v.old_mac, same_regs(&g.v, &w.v, vu.VU_STATUS_ALL)))
 		}
 	}
 	return
@@ -773,7 +786,7 @@ test_xtop :: proc(arch: native.Arch) -> (fails: int) {
 	words := []u32{vu_programs.lower_sp(0x68, 0, 1, 0), vu_programs.NOP_U | vu_programs.E_BIT, vu_programs.NOP_L, vu_programs.NOP_U}
 	a := r5900.native_asm(arch)
 	slow: map[string]int
-	off := u32(rvu.native_program(&a, words, nil, nil, .VU1, false, &slow))
+	off := u32(rvu.native_program(&a, words, nil, nil, .VU1, 0, &slow))
 	code, err := core.native_load(native.make_blob(&a, nil, {}, []native.Blob_Span{{.Vu1, 0, off, []native.Blob_Range{{0, words}}}}), ps2.native_imports())
 	if err != "" || len(slow) != 0 {
 		fmt.eprintfln("FAIL vu_native XTOP: native_load %q, interpreter calls %v", err, slow)

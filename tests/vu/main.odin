@@ -1756,7 +1756,7 @@ kick_latch :: proc() {
 		for p, k in c.pairs {code[2 * k], code[2 * k + 1] = p[0], p[1]}
 		if !rvu.kicks(code) {fail("%s: kicks misses the XGKICK", c.name)}
 		codes[n] = code
-		off := u32(rvu.native_program(&a, code, nil, []u32{0}, .VU1, false, timed = true))
+		off := u32(rvu.native_program(&a, code, nil, []u32{0}, .VU1, 0, timed = true))
 		ranges := make([]native.Blob_Range, 1, context.temp_allocator)
 		ranges[0] = {0, code}
 		spans[n] = {.Vu1, 0, off, ranges}

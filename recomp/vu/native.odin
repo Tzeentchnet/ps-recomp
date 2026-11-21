@@ -891,14 +891,16 @@ op :: proc(a: ^native.Asm, u: Unit, w: u32, flags: Flags, known: ^[32]u8 = nil, 
 	native.alu(a, .Or, .C, .B)
 	native.imp_store(a, IMPORTS[u][.Vf], .C, VU_MAC)
 	if flags == .Mac {return true}
-	// status: Z and S in bits 0-1, sticky in 6-7
+	// status: Z and S in bits 0-1, sticky in 6-7 (not with .Mac_Status_Low)
 	native.set_cond_imm(a, .Ne, .A, 0)
 	native.alu_imm(a, .Shl, .A, 1)
 	native.set_cond_imm(a, .Ne, .B, 0)
 	native.alu(a, .Or, .B, .A)
-	native.mov(a, .A, .B)
-	native.alu_imm(a, .Shl, .A, 6)
-	native.alu(a, .Or, .B, .A)
+	if flags == .Mac_Status {
+		native.mov(a, .A, .B)
+		native.alu_imm(a, .Shl, .A, 6)
+		native.alu(a, .Or, .B, .A)
+	}
 	native.imp_load(a, .A, IMPORTS[u][.Vf], VU_STATUS)
 	native.alu_imm(a, .And, .A, ~u32(0xf))
 	native.alu(a, .Or, .A, .B)
@@ -1203,8 +1205,7 @@ micro_lower :: proc(a: ^native.Asm, u: Unit, lw, pc: u32, slow: ^map[string]int,
 // lower ones. known as op's; a call forgets all of it.
 @(private = "file")
 micro_upper :: proc(a: ^native.Asm, u: Unit, p: Pair, slow: ^map[string]int, known: ^[32]u8) {
-	flags := Flags.Mac_Status
-	if u == .VU1 && p.out[.Status] & DEPTH_NOW == 0 {flags = Flags.Mac if p.out[.Mac] & DEPTH_NOW != 0 else Flags.None}
+	flags := p.flags // analyze's
 	fn := p.uw & 63
 	inline := fn < 0x30 || (fn >= 0x3c && ((p.uw >> 4) & 0x7c) | (p.uw & 3) < 0x30)
 	if inline && op(a, u, p.uw, flags, known) {return}
@@ -1445,16 +1446,16 @@ count_slow :: proc(slow: ^map[string]int, key: string) {
 // address 0, compiling the pairs ext marks (nil: all) and entered at
 // entries, as emit_program compiles it. Returns its code offset. The run
 // ABI is this file's header's. Counts the halves that call the interpreter
-// in slow, by opcode, when it is not nil. status: VU1 computes status, as
-// when reads_status holds; VU0 always does. timed: VU1 counts its pairs and
+// in slow, by opcode, when it is not nil. status: the status bits VU1
+// keeps (status_kept); VU0 keeps them all. timed: VU1 counts its pairs and
 // tests a pending kick before its stores, as when kicks holds.
-native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32, u: Unit, status: bool, slow: ^map[string]int = nil, timed := true) -> int {
+native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32, u: Unit, status: u32, slow: ^map[string]int = nil, timed := true) -> int {
 	mask := MASK[u]
 	saved := kick_timed
 	kick_timed = timed
 	defer kick_timed = saved
 	cycle_pend = 0
-	pairs, target := analyze(words, ext, entries, u, u == .VU0 || status)
+	pairs, target := analyze(words, ext, entries, u, u == .VU0 ? STATUS_ALL : status)
 	delayed, enter := delay_pairs(pairs, ext)
 	in_ext :: proc(ext: []bool, i: int) -> bool {return ext == nil || ext[i]}
 	run_pc := IMPORTS[u][.Run_Pc]
@@ -1670,15 +1671,15 @@ native_program :: proc(a: ^native.Asm, words: []u32, ext: []bool, entries: []u32
 
 // The native functions of unit u's programs, the ones generate compiles
 // to Odin, appended to a's code and to spans. Their ranges point into the
-// programs' words, which stay allocated. status_all: VU1 code computes
-// status whatever the programs read (reads_status), for code the runtime
+// programs' words, which stay allocated. status_all: VU1 code keeps
+// every status bit whatever the programs read (reads_status), for code the runtime
 // registers beside code compiled from another set of programs, whose
 // reads this set's elision cannot foresee.
 native_programs :: proc(a: ^native.Asm, img: mips.Image, capture: string, u: Unit, spans: ^[dynamic]native.Blob_Span, status_all := false) -> bool {
 	if u == .VU0 && capture == "" {return true}
 	progs := load_programs(img, capture, u) or_return
 	carry_stubs = 0
-	status := status_all || reads_status(progs[:], u)
+	status := status_all ? STATUS_ALL : status_kept(reads_status(progs[:], u))
 	timed := 0
 	for p in progs {
 		rs: []native.Blob_Range

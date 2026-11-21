@@ -550,7 +550,7 @@ vu0_window_load :: proc(n: u16, pc: u32) -> (q: [4]u32) {
 	case 0 ..< 32: q = vu1.vf[s].u
 	case 32 ..< 48: q.x = u32(vu1.vi[s - 32])
 	case 48:
-		if pc == VU_PC_MACRO {vu1_status_read(.Macro, 0)} else {vu1_status_read(.Window, pc)}
+		if pc == VU_PC_MACRO {vu1_status_read(.Macro, 0, VU_STATUS_ALL)} else {vu1_status_read(.Window, pc, VU_STATUS_ALL)}
 		q.x = vu1.status
 	case 49: q.x = vu1.mac
 	case 50: q.x = vu1.clip
@@ -669,10 +669,10 @@ Micro_Table :: struct($N: int) {
 	stop:       [N]bool,
 	stop_gen:   u32,
 	nocomp:     bool, // interpret everything (VUNOCOMP, capturing)
-	// A registered program reads status (FSEQ, FSAND, FSOR), so compiled
-	// VU1 code keeps status exact (recomp/vu reads_status); VUCHECK then
-	// compares it on VU1 too.
-	status:     bool,
+	// The status bits registered programs read (vu_status_reads), so
+	// compiled VU1 code keeps those of vu_status_kept exact (recomp/vu
+	// status_kept); VUCHECK then compares them on VU1 too.
+	reads:      u32,
 }
 
 @(private)
@@ -683,13 +683,13 @@ vu1_table: Micro_Table(len(vu1_micro) / 8)
 // vu_op's pc for a macro instruction, which has no micro address.
 VU_PC_MACRO :: max(u32)
 
-// Compiled VU1 code computes status only when a registered VU1 program
-// reads it (Micro_Table.status; recomp/vu reads_status), as nothing else
-// can on the gate discs. Once such code has run, VU1's status, sticky bits
-// and all, is stale until the end of the run: a later read is one the
-// elision did not foresee. It is a compat row (Vu1_Status) on every run,
-// and said once on stderr.
-vu1_status_stale: bool
+// Compiled VU1 code keeps only the status bits of vu_status_kept for what
+// registered VU1 programs read (Micro_Table.reads; recomp/vu
+// status_kept), as nothing else can on the gate discs. Once such code has
+// run, the other bits are stale until the end of the run: a later read of
+// one is a read the elision did not foresee. It is a compat row
+// (Vu1_Status) on every run, and said once on stderr.
+vu1_status_stale: u32
 @(private)
 vu1_status_warned: bool
 
@@ -699,10 +699,10 @@ vu1_status_warned: bool
 // runs.
 Vu_Status_Reader :: enum u32 {Window, Macro, Fs}
 
-// Note a read of VU1's status by reader at pc (0 for Macro, which has no
-// micro address) when it is stale.
-vu1_status_read :: proc(reader: Vu_Status_Reader, pc: u32) {
-	if !vu1_status_stale {return}
+// Note a read of the status bits bits of VU1 by reader at pc (0 for Macro,
+// which has no micro address) when one is stale.
+vu1_status_read :: proc(reader: Vu_Status_Reader, pc: u32, bits: u32) {
+	if vu1_status_stale & bits == 0 {return}
 	core.compat_unknown(.Vu1_Status, u32(reader), pc, pc = pc)
 	if !vu1_status_warned {
 		vu1_status_warned = true
@@ -755,16 +755,35 @@ vu_register_native :: proc(unit: int, ranges: []Vu_Range, native: Vu_Native) {
 	}
 }
 
-// Whether the program of ranges reads status: FSEQ, FSAND or FSOR (lower
-// 0x14, 0x16, 0x17), not under an I bit.
-vu_reads_status :: proc(ranges: []Vu_Range) -> bool {
+// Every status bit, and Z, S, U and O alone (bits 0-3), which each upper op
+// that writes MAC sets whole: the two sets compiled VU1 code keeps
+// (vu_status_kept).
+VU_STATUS_ALL :: 0xfff
+VU_STATUS_LOW :: 0x00f
+
+// The status bits the program of ranges reads, not under an I bit: FSAND's
+// (lower 0x16) immediate, every bit for FSEQ and FSOR (0x14, 0x17), which
+// compare the whole status. As recomp/vu words_reads_status.
+vu_status_reads :: proc(ranges: []Vu_Range) -> (bits: u32) {
 	for r in ranges {
 		for k := 0; k + 1 < len(r.code); k += 2 {
-			op := r.code[k] >> 25
-			if r.code[k + 1] & (1 << 31) == 0 && (op == 0x14 || op == 0x16 || op == 0x17) {return true}
+			if r.code[k + 1] & (1 << 31) != 0 {continue}
+			lw := r.code[k]
+			switch lw >> 25 {
+			case 0x16: bits |= (lw >> 10) & 0x800 | lw & 0x7ff
+			case 0x14, 0x17: bits |= VU_STATUS_ALL
+			}
 		}
 	}
-	return false
+	return bits
+}
+
+// The status bits compiled VU1 code keeps exact when its programs read
+// reads: none for no read, VU_STATUS_LOW when only those are read, else
+// every bit. As recomp/vu status_kept.
+vu_status_kept :: proc(reads: u32) -> u32 {
+	if reads == 0 {return 0}
+	return reads & ~u32(VU_STATUS_LOW) == 0 ? VU_STATUS_LOW : VU_STATUS_ALL
 }
 
 // Whether a program of unit's with ranges, the same addresses and words,
@@ -785,10 +804,10 @@ vu_registered :: proc(unit: int, ranges: []Vu_Range) -> bool {
 	return same(&vu0_table, ranges) if unit == 0 else same(&vu1_table, ranges)
 }
 
-// VU1's registered programs, and whether one reads status
-// (Micro_Table.status).
-vu1_programs :: proc() -> (n: int, status: bool) {
-	return len(vu1_table.programs), vu1_table.status
+// VU1's registered programs, and the status bits they read
+// (Micro_Table.reads).
+vu1_programs :: proc() -> (n: int, reads: u32) {
+	return len(vu1_table.programs), vu1_table.reads
 }
 
 // Candidates are longest first; of the same size, native code before Odin.
@@ -800,7 +819,7 @@ micro_register :: proc(t: ^Micro_Table($N), ranges: []Vu_Range, run: Vu_Run, nat
 	p.run = run
 	p.native = native
 	for r in ranges {p.size += len(r.code) / 2}
-	t.status ||= vu_reads_status(ranges)
+	t.reads |= vu_status_reads(ranges)
 	append(&t.programs, p)
 	for r in ranges {
 		for k in 0 ..< len(r.code) / 2 {
@@ -1011,7 +1030,7 @@ micro_exec :: #force_inline proc(v: ^Vu, t: ^Micro_Table($N), gen: ^u32, pairs: 
 					cpu.fallback_vu_unlabelled[{v == &vu0 ? 0 : 1, u32(index), pc}] += 1
 				}
 			}
-			if v == &vu1 && !t.status {vu1_status_stale = true}
+			if v == &vu1 {vu1_status_stale |= ~vu_status_kept(t.reads) & VU_STATUS_ALL}
 			if exit == .End {return pc, true, false}
 			// Parked as the interpreter parks: the pipeline drained.
 			if park && exit == .Park {
@@ -1289,23 +1308,24 @@ vu_stall_count :: proc(v: ^Vu, uw, lw: u32) {
 @(private)
 vu0_compare :: proc(addr: u32) {
 	@(static) mem0, mem1: [len(vu0_mem)]u8
-	vu_compare(&vu0, vu0_mem[:], mem0[:], mem1[:], vu0_table.programs[:], true, vu0_lookup(addr & u32(len(vu0_micro) - 1) &~ 7), addr, vu0_exec)
+	vu_compare(&vu0, vu0_mem[:], mem0[:], mem1[:], vu0_table.programs[:], VU_STATUS_ALL, vu0_lookup(addr & u32(len(vu0_micro) - 1) &~ 7), addr, vu0_exec)
 }
 @(private)
 vu1_compare :: proc(addr: u32) {
 	@(static) mem0, mem1: [len(vu1_mem)]u8
-	vu_compare(&vu1, vu1_mem[:], mem0[:], mem1[:], vu1_table.programs[:], vu1_table.status, vu1_lookup(addr & u32(len(vu1_micro) - 1) &~ 7), addr, vu1_exec)
+	vu_compare(&vu1, vu1_mem[:], mem0[:], mem1[:], vu1_table.programs[:], vu_status_kept(vu1_table.reads), vu1_lookup(addr & u32(len(vu1_micro) - 1) &~ 7), addr, vu1_exec)
 }
 
 // Run v's program at addr with exec in the interpreter, then compiled from
 // the same state with XGKICK muted, and report differences; mem is v's data
 // memory, mem0 and mem1 scratch of its size, entry the program compiled at
-// addr. Status is compared when status is set: always on VU0, and on VU1
-// only once a program reads it (Micro_Table.status); compiled VU1 code
-// leaves it alone otherwise. Where the run stopped is compared too: tpc,
+// addr. Status is compared in the bits status keeps: all on VU0, and on
+// VU1 those of vu_status_kept once a program reads it (Micro_Table.reads);
+// compiled VU1 code leaves the rest alone. q_flags, which hold I and D, is
+// compared when status keeps those. Where the run stopped is compared too: tpc,
 // and whether VU0 parked. The interpreter's results are kept.
 @(private)
-vu_compare :: proc(v: ^Vu, mem, mem0, mem1: []u8, programs: []^Vu_Program, status: bool, entry: ^Vu_Program, addr: u32, exec: proc(addr: u32, compiled: bool)) {
+vu_compare :: proc(v: ^Vu, mem, mem0, mem1: []u8, programs: []^Vu_Program, status: u32, entry: ^Vu_Program, addr: u32, exec: proc(addr: u32, compiled: bool)) {
 	@(static) reported: int
 	v0 := v^
 	copy(mem0, mem)
@@ -1322,7 +1342,7 @@ vu_compare :: proc(v: ^Vu, mem, mem0, mem1: []u8, programs: []^Vu_Program, statu
 	unit := v == &vu1 ? 1 : 0
 	vf_bad := false
 	for k in 0 ..< 32 {vf_bad ||= v1.vf[k].q != v2.vf[k].q}
-	status_bad := status && (v1.status != v2.status || v1.q_flags != v2.q_flags)
+	status_bad := (v1.status ~ v2.status) & status != 0 || (status & 0x30 != 0 && v1.q_flags != v2.q_flags)
 	mem_bad := !slice.equal(mem, mem1)
 	prog := -1
 	for p, k in programs {if p == entry {prog = k}}
@@ -1626,14 +1646,14 @@ vu_lower :: proc(v: ^Vu, w, pc: u32) -> (taken: bool, target: u32) #no_bounds_ch
 	case 0x12: vi[1] = u16(clip & imm24 != 0) // FCAND
 	case 0x13: vi[1] = u16((clip | imm24) & 0xffffff == 0xffffff) // FCOR
 	case 0x14: // FSEQ
-		if v == &vu1 {vu1_status_read(.Fs, pc)}
+		if v == &vu1 {vu1_status_read(.Fs, pc, VU_STATUS_ALL)}
 		set_vi(vi, it, u16(status & 0xfff == imm12))
 	case 0x15: v.status = (v.status & 0x3f) | (imm12 & 0xfc0) // FSSET
 	case 0x16: // FSAND
-		if v == &vu1 {vu1_status_read(.Fs, pc)}
+		if v == &vu1 {vu1_status_read(.Fs, pc, imm12)}
 		set_vi(vi, it, u16(status & imm12))
 	case 0x17: // FSOR
-		if v == &vu1 {vu1_status_read(.Fs, pc)}
+		if v == &vu1 {vu1_status_read(.Fs, pc, VU_STATUS_ALL)}
 		set_vi(vi, it, u16((status | imm12) & 0xfff == 0xfff))
 	case 0x18: set_vi(vi, it, u16(mac & 0xffff == u32(vi[is]))) // FMEQ
 	case 0x1a: set_vi(vi, it, u16(mac) & vi[is]) // FMAND

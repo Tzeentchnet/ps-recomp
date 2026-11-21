@@ -96,10 +96,11 @@ lanes :: proc(dest: u32) -> [4]bool {
 }
 
 // Which flags an upper op computes: none, MAC (VU1 micro mode, where it is
-// live), or MAC and status (macro mode, VU0 micro mode, VU1 where status is
-// live).
+// live), MAC and status (macro mode, VU0 micro mode, VU1 where status is
+// live), or MAC and status bits 0-3 alone, without the sticky bits (VU1
+// where status is live and only STATUS_LOW is kept).
 @(private)
-Flags :: enum u8 {None, Mac, Mac_Status}
+Flags :: enum u8 {None, Mac, Mac_Status, Mac_Status_Low}
 
 // Emit the upper op, or nothing and slow when it is not specialized.
 // known, when not nil, is updated for the registers written and elides
@@ -147,6 +148,7 @@ emit_upper :: proc(sb: ^strings.Builder, uw: u32, flags: Flags, known: ^Known) -
 		fmt.sbprintf(sb, "x := clamp4(%s); ", e)
 		if flags != .None {fmt.sbprintf(sb, "v.mac = mac4(x, 0x%x); ", dest)}
 		if flags == .Mac_Status {fmt.sbprintf(sb, "put_status(v); ")}
+		if flags == .Mac_Status_Low {fmt.sbprintf(sb, "put_status_low(v); ")}
 		store(sb, dst, dest)
 		end_block(sb)
 	}
@@ -611,13 +613,11 @@ emit_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow: ^map
 		if key not_in slow {slow[strings.clone(key)] = 0}
 		slow[key] += 1
 	}
-	// VU0 computes status, VU1 where it is demanded (reads_status); a
-	// DIV-family lower, on either unit, holds its bits in q_flags until the
-	// pair that sets them (emit_wait_pair).
+	// The flags as analyze chose them (p.flags); a DIV-family lower, on
+	// either unit, holds its bits in q_flags until the pair that sets them
+	// (emit_wait_pair).
 	upper :: proc(sb: ^strings.Builder, p: Pair, unit: Unit, slow: ^map[string]int, known: ^Known) {
-		flags := Flags.Mac_Status
-		if unit == .VU1 && p.out[.Status] & DEPTH_NOW == 0 {flags = p.out[.Mac] & DEPTH_NOW != 0 ? .Mac : .None}
-		if !emit_upper(sb, p.uw, flags, known) {return}
+		if !emit_upper(sb, p.uw, p.flags, known) {return}
 		if known != nil {forget(known)}
 		fmt.sbprintfln(sb, "\t\t\tvu.vu%d_upper(0x%08x)", int(unit), p.uw)
 		fn := p.uw & 63
@@ -786,7 +786,7 @@ emit_wait_pair :: proc(sb: ^strings.Builder, p: Pair, pc: u32, unit: Unit, slow:
 }
 
 @(private = "file")
-emit_program :: proc(sb: ^strings.Builder, n: int, words: []u32, ext: []bool, entries: []u32, unit: Unit, status: bool, slow: ^map[string]int, timed: bool) {
+emit_program :: proc(sb: ^strings.Builder, n: int, words: []u32, ext: []bool, entries: []u32, unit: Unit, status: u32, slow: ^map[string]int, timed: bool) {
 	mask := MASK[unit]
 	saved := kick_timed
 	kick_timed = timed
@@ -891,13 +891,13 @@ emit_program :: proc(sb: ^strings.Builder, n: int, words: []u32, ext: []bool, en
 // the package header and helpers, as emit_head. Counts the
 // pair halves that call the interpreter in slow, by opcode. With entries, it
 // is compiled as a captured image entered only there, eliding clamps as
-// VU_CLAMP_ELIDE says. status: VU1 computes status, as when reads_status
-// holds; VU0 always does. VU1 counts its pairs and tests a pending kick
+// VU_CLAMP_ELIDE says. status: the status bits VU1 keeps (status_kept);
+// VU0 keeps them all. VU1 counts its pairs and tests a pending kick
 // before its stores whether or not the program kicks, so tests/vu_micro
 // compares the count.
-emit_micro :: proc(n: int, words: []u32, unit: Unit, status: bool, slow: ^map[string]int, entries: []u32 = nil) -> string {
+emit_micro :: proc(n: int, words: []u32, unit: Unit, status: u32, slow: ^map[string]int, entries: []u32 = nil) -> string {
 	sb := strings.builder_make()
-	emit_program(&sb, n, words, nil, entries, unit, unit == .VU0 || status, slow, timed = true)
+	emit_program(&sb, n, words, nil, entries, unit, unit == .VU0 ? STATUS_ALL : status, slow, timed = true)
 	return strings.to_string(sb)
 }
 
@@ -921,7 +921,7 @@ emit_head :: proc(sb: ^strings.Builder, unit: Unit, vu_import: string) {
 generate :: proc(img: mips.Image, out_dir, runtime, capture: string, unit: Unit, slow: ^map[string]int) -> (programs: int, ok: bool) {
 	if unit == .VU0 && capture == "" {return 0, true}
 	progs := load_programs(img, capture, unit) or_return
-	status := reads_status(progs[:], unit)
+	status := status_kept(reads_status(progs[:], unit))
 	u := int(unit)
 	sb := strings.builder_make()
 	emit_head(&sb, unit, fmt.tprintf("%s/vu", mips.import_path(runtime, 1)))
@@ -1113,6 +1113,13 @@ clip :: #force_inline proc "contextless" (v: ^vu.Vu, s, t: [4]f32) #no_bounds_ch
 put_status :: #force_inline proc "contextless" (v: ^vu.Vu) {
 	st := u32(v.mac & 0x0f != 0) | u32(v.mac & 0xf0 != 0) << 1
 	v.status = (v.status &~ 0xf) | st | st << 6
+}
+
+// put_status without the sticky bits, for code that keeps only status bits
+// 0-3 (recomp/vu status_kept).
+put_status_low :: #force_inline proc "contextless" (v: ^vu.Vu) {
+	st := u32(v.mac & 0x0f != 0) | u32(v.mac & 0xf0 != 0) << 1
+	v.status = (v.status &~ 0xf) | st
 }
 
 // Status I (bit 4, 0/0) and D (bit 5, x/0) for a DIV-family op of a / b, as

@@ -48,6 +48,7 @@ Pair :: struct {
 	reads:      [Flag]u8, // the depths of each flag the pair reads (Depths)
 	kills:      bit_set[Flag], // the flags the pair sets whole
 	out:        [Flag]u8, // the depths of each flag after the pair that can be seen
+	flags:      Flags, // the flags its upper op computes (analyze)
 	waits:      Waits, // the Q and P waits the pair can start with, when not run as a delay slot (demand_waits)
 	stall:      bool, // the pair can stall before it runs (stall_waits)
 	lap:        Lap, // the branch's part in a loop that waits for the EE (wait_loops)
@@ -386,8 +387,9 @@ classify :: proc(lw, uw: u32) -> Pair {
 // shifts and reads itself; an E bit only the newest, which the EE can read
 // and the next program starts from, and so does a park (wait_loops), after
 // which the runtime takes every older value from the newest. Status counts only with status set
-// (reads_status): no upper op sets it whole, as its sticky bits keep every
-// earlier write, so a demand on it reaches every upper op before.
+// (reads_status): unless only its low bits are kept (analyze), no upper op
+// sets it whole, as its sticky bits keep every earlier write, so a demand
+// on it reaches every upper op before.
 @(private)
 demand_flags :: proc(pairs: []Pair, ext: []bool, mask: u32, status: bool) {
 	n := len(pairs)
@@ -877,28 +879,53 @@ load_programs :: proc(img: mips.Image, capture: string, unit: Unit) -> (progs: [
 	return progs, true
 }
 
-// Whether a unit's compiled code computes status: always on VU0, where the
-// EE reads it with CFC2 and macro ops set it; on VU1 only when one of its
-// programs, in any pair, compiled or not, reads it (FSEQ, FSAND, FSOR). VU1
-// status is otherwise never read: the EE has no path to it, and VU0 reaches
-// it only through its window onto VU1's registers (the runtime's
-// vu0_window_load), at an address with bit 0x400 set that no captured VU0
-// program uses; such a read sees the status VU1 last stored. Code no
-// program covers runs in the interpreter, which computes status itself.
-// Either read after compiled VU1 code ran without status is a compat row
-// (the runtime's vu1_status_read).
+// The status bits compiled code keeps exact (status_kept): every bit, or
+// only Z, S, U and O (bits 0-3), which each upper op that writes MAC sets
+// whole, without the sticky bits that keep every earlier write.
+STATUS_ALL :: 0xfff
+STATUS_LOW :: 0x00f
+
+// The status bits a unit's programs read, in any pair, compiled or not:
+// every bit on VU0, where the EE reads status with CFC2 and macro ops set
+// it; on VU1 those of FSAND's immediate, and every bit for FSEQ and FSOR,
+// which compare the whole status. VU1 status is otherwise never read: the
+// EE has no path to it, and VU0 reaches it only through its window onto
+// VU1's registers (the runtime's vu0_window_load), at an address with bit
+// 0x400 set that no captured VU0 program uses; such a read sees the status
+// VU1 last stored. Code no program covers runs in the interpreter, which
+// computes status itself. Either read of a bit compiled VU1 code did not
+// keep (status_kept) is a compat row (the runtime's vu1_status_read).
 @(private)
-reads_status :: proc(progs: []Prog, unit: Unit) -> bool {
-	if unit == .VU0 {return true}
-	for p in progs {
-		for i := 0; i + 1 < len(p.words); i += 2 {
-			if p.words[i + 1] & (1 << 31) != 0 {continue} // an I-bit pair's lower is the I value
-			switch p.words[i] >> 25 {
-			case 0x14, 0x16, 0x17: return true
-			}
+reads_status :: proc(progs: []Prog, unit: Unit) -> (bits: u32) {
+	if unit == .VU0 {return STATUS_ALL}
+	for p in progs {bits |= words_reads_status(p.words[:])}
+	return bits
+}
+
+// The status bits words, pairs from micro address 0, read, as
+// reads_status: FSAND's immediate, every bit for FSEQ and FSOR, outside
+// I-bit pairs (whose lower is the I value). As the runtime's
+// vu_status_reads.
+words_reads_status :: proc(words: []u32) -> (bits: u32) {
+	for i := 0; i + 1 < len(words); i += 2 {
+		if words[i + 1] & (1 << 31) != 0 {continue}
+		lw := words[i]
+		switch lw >> 25 {
+		case 0x16: bits |= (lw >> 10) & 0x800 | lw & 0x7ff // FSAND
+		case 0x14, 0x17: bits |= STATUS_ALL // FSEQ, FSOR
 		}
 	}
-	return false
+	return bits
+}
+
+// The status bits compiled code keeps exact when its unit's programs read
+// reads (reads_status): none for no read; STATUS_LOW when only those are
+// read, so an upper op that writes MAC ends the demand on status, and the
+// sticky bits are not computed; else every bit. As the runtime's
+// vu_status_kept.
+status_kept :: proc(reads: u32) -> u32 {
+	if reads == 0 {return 0}
+	return reads & ~u32(STATUS_LOW) == 0 ? STATUS_LOW : STATUS_ALL
 }
 
 // Whether the VU1 program being compiled counts its pairs (Vu.cycle) and
@@ -923,15 +950,26 @@ kicks :: proc(words: []u32) -> bool {
 }
 
 // A program's pairs, classified, with flag and Q demand over the pairs ext
-// compiles (nil: all), status demanded when status is set (reads_status),
-// and the dispatch targets for its entries. Both are in the temp allocator.
+// compiles (nil: all), status demanded when status, the bits kept
+// (status_kept), is not 0, each pair's upper flags, and the dispatch
+// targets for its entries. Both are in the temp allocator. With only
+// STATUS_LOW kept, an upper op that writes MAC sets status whole too.
 @(private)
-analyze :: proc(words: []u32, ext: []bool, entries: []u32, unit: Unit, status: bool) -> (pairs: []Pair, target: []bool) {
+analyze :: proc(words: []u32, ext: []bool, entries: []u32, unit: Unit, status: u32) -> (pairs: []Pair, target: []bool) {
 	mask := MASK[unit]
 	pairs = make([]Pair, len(words) / 2, context.temp_allocator)
-	for &p, i in pairs {p = classify(words[2 * i], words[2 * i + 1])}
+	for &p, i in pairs {
+		p = classify(words[2 * i], words[2 * i + 1])
+		if status == STATUS_LOW && .Mac in p.kills {p.kills += {.Status}}
+	}
 	if unit == .VU0 {wait_loops(pairs, ext, mask)} // only VU0 parks
 	demand_waits(pairs, ext, mask)
-	demand_flags(pairs, ext, mask, status)
+	demand_flags(pairs, ext, mask, status != 0)
+	// VU0 computes status, VU1 where it is demanded, without the sticky
+	// bits when only STATUS_LOW is kept.
+	for &p in pairs {
+		p.flags = status == STATUS_LOW ? .Mac_Status_Low : .Mac_Status
+		if unit == .VU1 && p.out[.Status] & DEPTH_NOW == 0 {p.flags = p.out[.Mac] & DEPTH_NOW != 0 ? .Mac : .None}
+	}
 	return pairs, dispatch_targets(pairs, mask, entries)
 }
