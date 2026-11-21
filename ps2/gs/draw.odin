@@ -258,9 +258,9 @@ decode_ctx :: proc(prim: u64) -> (c: Ctx) #no_bounds_check {
 		for i in u32(0) ..= c.tex.mxl {
 			shown_read(c.tex.mtbp[i], c.tex.mtbw[i], c.tex.psm, 0, c.tex.h >> i)
 		}
-		tex_wrap(&c.tex)
+		if !hw_on {tex_wrap(&c.tex)} // the GPU wraps and samples itself
 	}
-	c.px, c.row, c.srow = px_pick(&c)
+	if !hw_on {c.px, c.row, c.srow = px_pick(&c)} // software raster only
 	c.tex.tc = &tc_main
 	return
 }
@@ -285,7 +285,7 @@ draw :: proc(kind, prim: u64) {
 	key := [2]u64{ctx_gen, prim & CTX_PRIM}
 	if key != ctx_key {
 		ctx_cur, ctx_key = decode_ctx(prim), key
-		tc_ctx(&tc_main, &ctx_cur)
+		if !hw_on {tc_ctx(&tc_main, &ctx_cur)} // tc_draw is software only
 		band_ctx_new()
 	}
 	c := &ctx_cur
