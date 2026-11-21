@@ -21,6 +21,7 @@ import "core:os"
 import "core:slice"
 import "core:strconv"
 import "ps:ps2/gs"
+import mem "ps:ps2/mem"
 
 @(private = "file")
 failed := 0
@@ -374,7 +375,41 @@ child :: proc(scale: u32) -> ! {
 			}
 		}
 	}
+	screen_overflow(scale)
 	os.exit(failed != 0 ? 1 : 0)
+}
+
+// The screen read after a ring overflow is still the last frame put out:
+// one overflow moves recording into the slot that holds that frame's scan.
+@(private = "file")
+screen_overflow :: proc(scale: u32) {
+	set_priv :: proc(off: u32, v: u64) {(^u64)(&mem.gsregs[off])^ = v}
+	set_priv(0x00, 1) // PMODE: circuit 1
+	set_priv(0x20, 0) // SMODE2: progressive
+	set_priv(0x70, W / 64 << 9) // DISPFB1: block 0, PSMCT32
+	set_priv(0x80, (W - 1) << 32 | (H - 1) << 44) // DISPLAY1
+	picture(0, W / 64, W, H, 0, 1)
+	gs.scanout()
+	picture(0, W / 64, W, H, 0, 2)
+	gs.scanout()
+	px, _, _ := gs.hw_screen()
+	shown := slice.clone(px, context.temp_allocator)
+	// 50000 sprites of 6 vertices: one overflow of the 1 << 18 vertex ring,
+	// drawn at page 200, away from the shown buffer.
+	gs.gs_write(0x4c, 200 | W / 64 << 16) // FRAME_1
+	gs.gs_write(0x4e, 0x100 | ZMSK) // ZBUF_1
+	gs.gs_write(0x47, 0) // TEST_1
+	for i in 0 ..< u64(50000) {
+		x, y := i % W, i / W % H
+		gs.gs_write(0x00, 6) // PRIM: SPRITE
+		gs.gs_write(0x01, 0x80000000 | i)
+		gs.gs_write(0x05, (x << 4) | (y << 4) << 16) // XYZ2
+		gs.gs_write(0x05, (x + 1) << 4 | ((y + 1) << 4) << 16)
+	}
+	px, _, _ = gs.hw_screen()
+	if !slice.equal(px, shown) {
+		fail("FAIL gs_hw scale %d, screen after overflow: not the last frame put out", scale)
+	}
 }
 
 // Rows 28 k .. 28 k + 27 of the frame (k < 8), from texel rows 0..27 of

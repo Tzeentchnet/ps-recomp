@@ -22,7 +22,7 @@ import "ps:core"
 HW :: true
 
 @(private)
-VERT_CAP :: 1 << 18 // vertices per slot (16 MiB)
+VERT_CAP :: 1 << 18 // vertices per slot (20 MiB)
 @(private)
 STATE_CAP :: 1 << 14
 @(private)
@@ -130,6 +130,7 @@ hw: struct {
 	window:              bool,
 	slots:               [2]Slot,
 	cur:                 int,
+	shown:               int, // slot whose scan holds the last frame hw_frame put out
 	vram:                core.Vk_Buf,
 	down:                core.Vk_Buf, // host copy of vram's first layer, for hw_download
 	read:                core.Vk_Buf, // host copy of scanout, made only when hw_screen reads it
@@ -247,6 +248,7 @@ hw_init :: proc(win: ^sdl.Window, scale: u32) -> bool {
 	hw.clut = core.vk_compute_pipeline(#load("shaders/clut.comp.spv"), hw.comp_layout)
 	hw.decode = core.vk_compute_pipeline(#load("shaders/decode.comp.spv"), hw.comp_layout)
 
+	hw.shown = 1
 	hw_begin_slot()
 	vk.CmdFillBuffer(hw.slots[0].cmd, hw.vram.buf, 0, vk.DeviceSize(vk.WHOLE_SIZE), 0)
 	vk.CmdFillBuffer(hw.slots[0].cmd, hw.clut_cur.buf, 0, vk.DeviceSize(vk.WHOLE_SIZE), 0)
@@ -381,13 +383,15 @@ hw_submit :: proc(wait, signal: vk.Semaphore) {
 	core.vk_submit(s.cmd, s.fence, wait, signal)
 }
 
-// A ring is full: run what the slot holds and start it again.
+// A ring is full: run what the slot holds and go on in the other slot, so
+// the CPU waits only for that slot's older work, not for this submit.
 @(private)
 hw_overflow :: proc() {
 	hw_flush_upload()
 	hw_flush_draws()
 	hw_end_render()
 	hw_submit(0, 0)
+	hw.cur ~= 1
 	hw_begin_slot()
 }
 
@@ -1090,6 +1094,7 @@ hw_frame :: proc(psm, fbp, fbw, dbx, dby: u32, w, h: int) {
 		r := vk.QueuePresentKHR(core.vkc.queue, &info)
 		if r == .ERROR_OUT_OF_DATE_KHR || r == .SUBOPTIMAL_KHR {swap_create()}
 	}
+	hw.shown = hw.cur
 	hw.cur ~= 1
 	hw_begin_slot()
 }
@@ -1144,7 +1149,10 @@ hw_present_record :: proc(s: ^Slot, dst: vk.Image) {
 // The last frame's output, RGBA8888 at the output scale. Scanout stays in
 // device-local memory for presentation and is copied to the host only here.
 hw_screen :: proc() -> (px: []u32, w, h: int) {
-	s := &hw.slots[hw.cur ~ 1]
+	// An overflow since the frame may have moved recording into the shown
+	// slot, whose fence then waits on work not yet submitted.
+	if hw.shown == hw.cur {hw_overflow()}
+	s := &hw.slots[hw.shown]
 	vk.WaitForFences(core.vkc.device, 1, &s.fence, true, max(u64))
 	if hw.read.buf == 0 {
 		hw.read = core.vk_buf_create(s.scan.size, {.TRANSFER_DST}, {.HOST_VISIBLE, .HOST_COHERENT, .HOST_CACHED})
