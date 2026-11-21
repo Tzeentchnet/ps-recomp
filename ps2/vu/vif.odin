@@ -237,6 +237,26 @@ vif_unpack :: proc(v: ^Vif, cmd, imm, num: u32, src: []u32) #no_bounds_check {
 	num := num == 0 ? 256 : num
 	bits := vif_unpack_bits(cmd)
 	bytes := ([^]u8)(raw_data(src))
+	if !masked && v.wl <= v.cl && v.mode < 2 {
+		// The shapes games send most, keyed by VN, VL, unsigned and row add.
+		fast := true
+		switch cmd & 0xf | (unsigned ? 0x10 : 0) | (v.mode == 1 ? 0x20 : 0) {
+		case 0x0c, 0x1c: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 0, false, false)
+		case 0x2c, 0x3c: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 0, false, true)
+		case 0x08, 0x18: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 2, 0, false, false)
+		case 0x28, 0x38: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 2, 0, false, true)
+		case 0x0d: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 1, true, false)
+		case 0x1d: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 1, false, false)
+		case 0x2d: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 1, true, true)
+		case 0x3d: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 1, false, true)
+		case 0x0e: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 2, true, false)
+		case 0x1e: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 2, false, false)
+		case 0x2e: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 2, true, true)
+		case 0x3e: vif_unpack_fast(v, v.row, addr, num, qmask, bytes, 3, 2, false, true)
+		case: fast = false
+		}
+		if fast {return}
+	}
 	elem := u32(32) >> vl
 	sidx: u32 = 0 // source vector index
 	cyc: u32 = 0
@@ -295,6 +315,47 @@ vif_unpack :: proc(v: ^Vif, cmd, imm, num: u32, src: []u32) #no_bounds_check {
 				cyc = 0
 			}
 		} else if cyc == v.wl {
+			cyc = 0
+		}
+	}
+}
+
+// vif_unpack for one V4 or V3 shape with no write mask, no filling (wl <=
+// cl) and mode 0 or 1: source vector i is the i-th write, each lane is
+// read at its fixed offset, and the row adds without being written back.
+// The destination steps as in vif_unpack's loop, skipping cl - wl
+// quadwords after every wl writes. Unchecked for the same reasons as
+// vif_unpack: the destination wraps by qmask and the source is sized by
+// vif_unpack_words.
+@(private)
+vif_unpack_fast :: proc(v: ^Vif, row: [4]u32, addr, num, qmask: u32, bytes: [^]u8, $VN, $VL: u32, $SIGNED, $ROW: bool) #no_bounds_check {
+	ELEM :: 4 >> VL // bytes a lane
+	STRIDE :: ELEM * (VN + 1)
+	// Locals and the row argument, so the stores into VU memory need not
+	// reload them from v.
+	vm := ([^]u8)(raw_data(v.vu.mem))
+	wl, skip := v.wl, v.cl - v.wl
+	addr := addr
+	cyc: u32 = 0
+	for i in 0 ..< num {
+		s := bytes[i * STRIDE:]
+		val: [4]u32
+		#unroll for c in 0 ..= VN {
+			when VL == 0 {
+				val[c] = (^u32)(&s[c * ELEM])^
+			} else when VL == 1 {
+				h := (^u16)(&s[c * ELEM])^
+				val[c] = SIGNED ? u32(i32(i16(h))) : u32(h)
+			} else {
+				val[c] = SIGNED ? u32(i32(i8(s[c]))) : u32(s[c])
+			}
+		}
+		when ROW {val += row}
+		(^[4]u32)(&vm[(addr & qmask) * 16])^ = val
+		addr += 1
+		cyc += 1
+		if cyc == wl {
+			addr += skip
 			cyc = 0
 		}
 	}

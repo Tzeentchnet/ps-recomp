@@ -56,6 +56,10 @@
 //
 // Then VU0's window onto VU1's registers, read and written by LQ and SQ.
 //
+// Then UNPACK against a reference model, the common shapes vif_unpack
+// takes a fast loop for and some it does not, over the cycle settings,
+// modes, signedness and TOPS-relative addresses.
+//
 // Then the XGKICK latch: the packet is read when the program stops or kicks
 // again, not at the instruction, so a tag stored in the pair after the kick
 // is the tag sent; a walk with no EOP inside VU1 memory sends nothing. Each
@@ -386,6 +390,86 @@ all_vi :: proc() {
 		if v.vi[n] != u16(n) {fail("IADDIU vi%d: vi%d = %d", n, n, v.vi[n])}
 	}
 	if v.vi[0] != 0 {fail("IADDIU vi0: vi0 = %d", v.vi[0])}
+}
+
+// UNPACK on VIF1 against a reference: each shape the fast path takes and a
+// few it leaves to the general loop, signed and unsigned, in modes 0, 1 and
+// 2 (row writeback), at cycle settings with and without skipped quadwords,
+// from an address whose writes wrap past the end of VU1 memory and from a
+// TOPS-relative one.
+unpacks :: proc() {
+	v := &vu.vifs[1]
+	saved := v^
+	Shape :: struct {
+		code:   u32, // VN << 2 | VL
+		vn, vl: u32,
+	}
+	shapes := [?]Shape{{0xc, 3, 0}, {0x8, 2, 0}, {0xd, 3, 1}, {0xe, 3, 2}, {0x9, 2, 1}, {0x6, 1, 2}, {0x0, 0, 0}}
+	cycles := [?][2]u32{{4, 4}, {4, 2}, {1, 1}, {3, 1}} // CL, WL
+	imms := [?]u32{0x3fc, 0x8010}
+	seed: u32 = 0x1234567
+	row := [4]u32{0x01000000, 0xfffffff0, 7, 0x80000000}
+	for sh in shapes {
+		for cy in cycles {
+			for mode in u32(0) ..= 2 {
+				for unsigned in u32(0) ..= 1 {
+					for imm0 in imms {
+						NUM :: 7
+						imm := imm0 | unsigned << 14
+						words: [NUM * 4]u32
+						for &w in words {
+							seed = seed * 1103515245 + 12345
+							w = seed ~ seed << 13
+						}
+						nw := (NUM * (32 >> sh.vl) * (sh.vn + 1) + 31) / 32
+						v.tops = 0x200
+						for &b, k in vu.vu1_mem {b = u8(k * 7)}
+						want: [vu.VU1_MEM / 16][4]u32
+						copy(([^]u8)(&want)[:vu.VU1_MEM], vu.vu1_mem[:])
+						wrow := row
+						addr := imm & 0x3ff + (imm & 0x8000 != 0 ? v.tops : 0)
+						cyc: u32 = 0
+						elem := u32(32) >> sh.vl
+						for i in u32(0) ..< NUM {
+							val: [4]u32
+							for c in u32(0) ..= sh.vn {
+								bit := i * elem * (sh.vn + 1) + c * elem
+								x := (words[bit / 32] >> (bit % 32)) & (elem == 32 ? 0xffffffff : (1 << elem) - 1)
+								if unsigned == 0 && elem < 32 && x >> (elem - 1) != 0 {x |= ~u32(0) << elem}
+								val[c] = x
+							}
+							switch sh.vn {
+							case 0: val = val[0]
+							case 1: val = {val[0], val[1], val[0], val[1]}
+							}
+							if mode != 0 {val += wrow}
+							if mode == 2 {wrow = val}
+							want[addr & 0x3ff] = val
+							addr += 1
+							cyc += 1
+							if cyc == cy[1] {
+								addr += cy[0] - cy[1]
+								cyc = 0
+							}
+						}
+						feed(v, 0x01000000 | cy[1] << 8 | cy[0], 0x05000000 | mode, 0x30000000, row[0], row[1], row[2], row[3])
+						code := make([dynamic]u32, context.temp_allocator)
+						append(&code, (0x60 | sh.code) << 24 | NUM << 16 | imm)
+						append(&code, ..words[:nw])
+						feed(v, ..code[:])
+						got := (^[vu.VU1_MEM / 16][4]u32)(&vu.vu1_mem[0])
+						for q in 0 ..< vu.VU1_MEM / 16 {
+							if got[q] != want[q] {
+								fail("UNPACK %x imm %x CL %d WL %d mode %d: qword %x = %x, want %x", sh.code, imm, cy[0], cy[1], mode, q, got[q], want[q])
+							}
+						}
+						if v.row != wrow {fail("UNPACK %x imm %x CL %d WL %d mode %d: row %x, want %x", sh.code, imm, cy[0], cy[1], mode, v.row, wrow)}
+					}
+				}
+			}
+		}
+	}
+	v.cl, v.wl, v.mode, v.row, v.tops = saved.cl, saved.wl, saved.mode, saved.row, saved.tops
 }
 
 @(private = "file")
@@ -1904,6 +1988,7 @@ main :: proc() {
 	ibit()
 	vif_head()
 	tops_wrap()
+	unpacks()
 	gif_paths()
 	gif_tte()
 	spr_interleave()
